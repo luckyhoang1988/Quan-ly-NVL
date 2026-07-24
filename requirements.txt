@@ -1,0 +1,13 @@
+# NVL/WMS — Python 3.12 · pinned dependencies
+# Cài lại môi trường:  py -3.12 -m venv .venv && .\.venv\Scripts\pip install -r requirements.txt
+
+# --- Direct dependencies ---
+Django==5.2.16            # LTS
+psycopg[binary]==3.3.4    # PostgreSQL adapter (psycopg 3)
+python-dotenv==1.2.2      # đọc cấu hình từ file .env
+
+# --- Transitive dependencies (pinned for reproducibility) ---
+asgiref==3.12.1
+sqlparse==0.5.5
+typing_extensions==4.16.0
+tzdata==2026.3

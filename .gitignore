@@ -1,0 +1,67 @@
+# ===== NVL/WMS — .gitignore (Django · Python 3.12) =====
+
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Django ---
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Uploaded files & collected static (generated, không commit)
+/media/
+/mediafiles/
+/static/
+/staticfiles/
+
+# Migrations: GIỮ trong repo (KHÔNG ignore) — chỉ bỏ file cache dưới đây
+
+# --- Secrets / cấu hình môi trường ---
+# Chứa SECRET_KEY, mật khẩu PostgreSQL, ... — TUYỆT ĐỐI không commit
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- Test / coverage ---
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# --- Packaging / build ---
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Docker (Phase 1+) ---
+# docker-compose.override.yml
