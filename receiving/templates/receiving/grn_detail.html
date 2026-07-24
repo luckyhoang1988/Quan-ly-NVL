@@ -21,6 +21,12 @@
     {% if grn.status == 'RECEIVED' %}
       <a href="{% url 'receiving:grn_print' grn.pk %}" class="btn btn-outline-primary" target="_blank">In phiếu GRN</a>
     {% endif %}
+    {% if can_close %}
+      <form method="post" action="{% url 'receiving:grn_close' grn.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-secondary">Đóng GRN</button>
+      </form>
+    {% endif %}
   </div>
 </div>
 
@@ -102,6 +108,7 @@
         <th>Trạng thái</th>
         <th>Lý do</th>
         <th>Ngày tạo</th>
+        <th>Xử lý</th>
       </tr>
     </thead>
     <tbody>
@@ -110,6 +117,26 @@
         <td>{{ ret.get_status_display }}</td>
         <td>{{ ret.reason }}</td>
         <td>{{ ret.created_at|date:'d/m/Y H:i' }}</td>
+        <td>
+          {% if can_approve_return and ret.status == 'PENDING' %}
+          <form method="post" action="{% url 'receiving:grn_return_approve' ret.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-primary">Duyệt</button>
+          </form>
+          {% endif %}
+          {% if can_manage_return and ret.status == 'APPROVED' %}
+          <form method="post" action="{% url 'receiving:grn_return_mark_returned' ret.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-primary">Xác nhận đã trả</button>
+          </form>
+          {% endif %}
+          {% if can_approve_return and ret.status == 'RETURNED' %}
+          <form method="post" action="{% url 'receiving:grn_return_close' ret.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-outline-secondary">Đóng</button>
+          </form>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

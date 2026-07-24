@@ -21,8 +21,15 @@ from purchasing.services import sync_po_status
 from quality.services import start_qc
 
 from .forms import GrnForm, GrnItemFormSet, ReceiveQtyFormSet, SubmitToQcForm
-from .models import Grn
-from .services import submit_to_pending_qc, tolerance_alerts
+from .models import Grn, GrnReturn
+from .services import (
+    approve_return,
+    close_grn,
+    close_return,
+    mark_return_returned,
+    submit_to_pending_qc,
+    tolerance_alerts,
+)
 
 
 def grn_permission_required(action):
@@ -57,10 +64,17 @@ def grn_detail(request, pk):
     """READ — chi tiết GRN: items, lịch sử QC, phiếu trả hàng (nếu có)."""
     grn = get_object_or_404(
         Grn.objects.select_related('supplier', 'po').prefetch_related('items', 'qc_inspections', 'returns'), pk=pk)
+    can_close = (
+        request.user.can('approve', 'grn')
+        and grn.status in (Grn.Status.RECEIVED, Grn.Status.REJECTED)
+    )
     return render(request, 'receiving/grn_detail.html', {
         'grn': grn,
         'can_update': request.user.can('update', 'grn'),
         'can_qc': request.user.can('approve', 'qc'),
+        'can_close': can_close,
+        'can_manage_return': request.user.can('update', 'grn'),
+        'can_approve_return': request.user.can('approve', 'grn'),
     })
 
 
@@ -181,3 +195,55 @@ def grn_receive_qty(request, pk):
     return render(request, 'receiving/grn_receive_qty.html', {
         'grn': obj, 'formset': formset, 'submit_form': submit_form,
     })
+
+
+@grn_permission_required('approve')
+def grn_close(request, pk):
+    """RECEIVED/REJECTED -> CLOSED (archive, POST-only)."""
+    obj = get_object_or_404(Grn, pk=pk)
+    if request.method == 'POST':
+        try:
+            close_grn(obj, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã đóng GRN "{obj.grn_no}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=obj.pk)
+
+
+@grn_permission_required('approve')
+def grn_return_approve(request, pk):
+    """GRN_RETURN: PENDING -> APPROVED (POST-only)."""
+    ret = get_object_or_404(GrnReturn, pk=pk)
+    if request.method == 'POST':
+        try:
+            approve_return(ret, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã duyệt phiếu trả hàng RETURN-{ret.grn.grn_no}.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=ret.grn_id)
+
+
+@grn_permission_required('update')
+def grn_return_mark_returned(request, pk):
+    """GRN_RETURN: APPROVED -> RETURNED (POST-only)."""
+    ret = get_object_or_404(GrnReturn, pk=pk)
+    if request.method == 'POST':
+        try:
+            mark_return_returned(ret, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã xác nhận trả hàng RETURN-{ret.grn.grn_no}.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=ret.grn_id)
+
+
+@grn_permission_required('approve')
+def grn_return_close(request, pk):
+    """GRN_RETURN: RETURNED -> CLOSED (archive, POST-only)."""
+    ret = get_object_or_404(GrnReturn, pk=pk)
+    if request.method == 'POST':
+        try:
+            close_return(ret, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã đóng phiếu trả hàng RETURN-{ret.grn.grn_no}.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=ret.grn_id)

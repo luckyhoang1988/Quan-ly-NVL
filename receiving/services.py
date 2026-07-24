@@ -1,4 +1,5 @@
-"""Transaction nghiệp vụ GRN (mục 2a) — state DRAFT -> PENDING_QC.
+"""Transaction nghiệp vụ GRN (mục 2a) — state DRAFT -> PENDING_QC -> ... -> CLOSED,
+và workflow GRN_RETURN (mục 2c) PENDING -> APPROVED -> RETURNED -> CLOSED.
 
 Chuyển tiếp PENDING_QC -> QC_IN_PROGRESS (``start_qc``) và các nhánh QC PASS/
 FAIL/PARTIAL_PASS nằm ở ``quality.services`` vì gắn liền với ``QcInspection``
@@ -10,7 +11,7 @@ from django.db import transaction
 from accounts.audit import log_action
 from accounts.models import AuditLog
 
-from .models import Grn
+from .models import Grn, GrnReturn
 
 
 @transaction.atomic
@@ -30,6 +31,82 @@ def submit_to_pending_qc(grn, actor=None, ip_address=None):
         ip_address=ip_address,
     )
     return grn
+
+
+@transaction.atomic
+def close_grn(grn, actor=None, ip_address=None):
+    """RECEIVED/REJECTED -> CLOSED (archive, State CLOSED mục 2a).
+
+    GRN REJECTED chỉ đóng được sau khi mọi ``GrnReturn`` liên quan đã xử lý
+    xong (RETURNED/CLOSED) — tránh archive khi hàng trả NCC còn dang dở.
+    """
+    grn = Grn.objects.select_for_update().get(pk=grn.pk)
+    if grn.status not in (Grn.Status.RECEIVED, Grn.Status.REJECTED):
+        raise ValidationError(f'Không thể đóng GRN khi đang ở trạng thái {grn.status}.')
+    if grn.status == Grn.Status.REJECTED:
+        unresolved = grn.returns.exclude(status__in=[GrnReturn.Status.RETURNED, GrnReturn.Status.CLOSED])
+        if unresolved.exists():
+            raise ValidationError('Còn phiếu trả hàng chưa xử lý xong (RETURNED/CLOSED), chưa thể đóng GRN.')
+
+    grn.status = Grn.Status.CLOSED
+    grn.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=grn,
+        description=f'Đóng GRN: {grn.grn_no} -> CLOSED.',
+        ip_address=ip_address,
+    )
+    return grn
+
+
+@transaction.atomic
+def approve_return(grn_return, actor=None, ip_address=None):
+    """GRN_RETURN: PENDING -> APPROVED (Manager/Admin duyệt trả hàng NCC)."""
+    grn_return = GrnReturn.objects.select_for_update().get(pk=grn_return.pk)
+    if grn_return.status != GrnReturn.Status.PENDING:
+        raise ValidationError(f'Không thể duyệt phiếu trả hàng khi đang ở trạng thái {grn_return.status}.')
+
+    grn_return.status = GrnReturn.Status.APPROVED
+    grn_return.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.APPROVE, target=grn_return,
+        description=f'Duyệt phiếu trả hàng RETURN-{grn_return.grn.grn_no}: PENDING -> APPROVED.',
+        ip_address=ip_address,
+    )
+    return grn_return
+
+
+@transaction.atomic
+def mark_return_returned(grn_return, actor=None, ip_address=None):
+    """GRN_RETURN: APPROVED -> RETURNED (đã trả hàng vật lý cho NCC)."""
+    grn_return = GrnReturn.objects.select_for_update().get(pk=grn_return.pk)
+    if grn_return.status != GrnReturn.Status.APPROVED:
+        raise ValidationError(f'Không thể xác nhận đã trả hàng khi đang ở trạng thái {grn_return.status}.')
+
+    grn_return.status = GrnReturn.Status.RETURNED
+    grn_return.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=grn_return,
+        description=f'Phiếu trả hàng RETURN-{grn_return.grn.grn_no}: APPROVED -> RETURNED.',
+        ip_address=ip_address,
+    )
+    return grn_return
+
+
+@transaction.atomic
+def close_return(grn_return, actor=None, ip_address=None):
+    """GRN_RETURN: RETURNED -> CLOSED (archive)."""
+    grn_return = GrnReturn.objects.select_for_update().get(pk=grn_return.pk)
+    if grn_return.status != GrnReturn.Status.RETURNED:
+        raise ValidationError(f'Không thể đóng phiếu trả hàng khi đang ở trạng thái {grn_return.status}.')
+
+    grn_return.status = GrnReturn.Status.CLOSED
+    grn_return.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=grn_return,
+        description=f'Đóng phiếu trả hàng RETURN-{grn_return.grn.grn_no}: RETURNED -> CLOSED.',
+        ip_address=ip_address,
+    )
+    return grn_return
 
 
 def tolerance_alerts(grn):

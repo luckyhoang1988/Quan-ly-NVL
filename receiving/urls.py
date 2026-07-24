@@ -13,4 +13,8 @@ urlpatterns = [
     path('<int:pk>/edit/', views.grn_update, name='grn_update'),
     path('<int:pk>/submit/', views.grn_submit, name='grn_submit'),
     path('<int:pk>/receive/', views.grn_receive_qty, name='grn_receive_qty'),
+    path('<int:pk>/close/', views.grn_close, name='grn_close'),
+    path('returns/<int:pk>/approve/', views.grn_return_approve, name='grn_return_approve'),
+    path('returns/<int:pk>/mark-returned/', views.grn_return_mark_returned, name='grn_return_mark_returned'),
+    path('returns/<int:pk>/close/', views.grn_return_close, name='grn_return_close'),
 ]

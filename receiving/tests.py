@@ -14,6 +14,7 @@ from quality.models import QcInspection
 from warehouse.models import Location, Warehouse
 
 from .models import Grn, GrnItem, GrnReturn
+from .services import approve_return, close_grn, close_return, mark_return_returned
 
 User = get_user_model()
 
@@ -138,6 +139,191 @@ class GrnReturnModelTest(TestCase):
         ret = GrnReturn.objects.create(grn=self.grn)
         self.assertEqual(ret.status, GrnReturn.Status.PENDING)
         self.assertEqual(ret.reason, 'QC Fail')
+
+
+class GrnCloseServiceTest(TestCase):
+    """State CLOSED (mục 2a Workflow States) — ``close_grn``. ``TC-GRN-CLOSE-<seq>``."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+
+    def _grn(self, status):
+        return Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=self.manager, status=status)
+
+    def test_TC_GRN_CLOSE_001_received_transitions_to_closed(self):
+        grn = self._grn(Grn.Status.RECEIVED)
+        close_grn(grn, actor=self.manager)
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.CLOSED)
+
+    def test_TC_GRN_CLOSE_002_writes_audit_log(self):
+        grn = self._grn(Grn.Status.RECEIVED)
+        close_grn(grn, actor=self.manager)
+        self.assertTrue(
+            AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_id=str(grn.pk)).exists())
+
+    def test_TC_GRN_CLOSE_003_draft_cannot_be_closed(self):
+        grn = self._grn(Grn.Status.DRAFT)
+        with self.assertRaises(ValidationError):
+            close_grn(grn, actor=self.manager)
+
+    def test_TC_GRN_CLOSE_004_pending_qc_cannot_be_closed(self):
+        grn = self._grn(Grn.Status.PENDING_QC)
+        with self.assertRaises(ValidationError):
+            close_grn(grn, actor=self.manager)
+
+    def test_TC_GRN_CLOSE_005_rejected_with_unresolved_return_cannot_be_closed(self):
+        grn = self._grn(Grn.Status.REJECTED)
+        GrnReturn.objects.create(grn=grn)  # mặc định PENDING
+        with self.assertRaises(ValidationError):
+            close_grn(grn, actor=self.manager)
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.REJECTED)
+
+    def test_TC_GRN_CLOSE_006_rejected_with_returned_return_can_be_closed(self):
+        grn = self._grn(Grn.Status.REJECTED)
+        GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.RETURNED)
+        close_grn(grn, actor=self.manager)
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.CLOSED)
+
+
+class GrnReturnWorkflowServiceTest(TestCase):
+    """GRN_RETURN Workflow (mục 2c): PENDING -> APPROVED -> RETURNED -> CLOSED.
+    ``TC-GRN-RET-<seq>``.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.grn = Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=self.manager, status=Grn.Status.REJECTED)
+
+    def test_TC_GRN_RET_002_001_approve_pending_to_approved(self):
+        ret = GrnReturn.objects.create(grn=self.grn)
+        approve_return(ret, actor=self.manager)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, GrnReturn.Status.APPROVED)
+
+    def test_TC_GRN_RET_002_002_approve_rejects_when_not_pending(self):
+        ret = GrnReturn.objects.create(grn=self.grn, status=GrnReturn.Status.APPROVED)
+        with self.assertRaises(ValidationError):
+            approve_return(ret, actor=self.manager)
+
+    def test_TC_GRN_RET_003_001_mark_returned_approved_to_returned(self):
+        ret = GrnReturn.objects.create(grn=self.grn, status=GrnReturn.Status.APPROVED)
+        mark_return_returned(ret, actor=self.manager)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, GrnReturn.Status.RETURNED)
+
+    def test_TC_GRN_RET_003_002_mark_returned_rejects_when_not_approved(self):
+        ret = GrnReturn.objects.create(grn=self.grn)  # PENDING
+        with self.assertRaises(ValidationError):
+            mark_return_returned(ret, actor=self.manager)
+
+    def test_TC_GRN_RET_004_001_close_returned_to_closed(self):
+        ret = GrnReturn.objects.create(grn=self.grn, status=GrnReturn.Status.RETURNED)
+        close_return(ret, actor=self.manager)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, GrnReturn.Status.CLOSED)
+
+    def test_TC_GRN_RET_004_002_close_rejects_when_not_returned(self):
+        ret = GrnReturn.objects.create(grn=self.grn, status=GrnReturn.Status.APPROVED)
+        with self.assertRaises(ValidationError):
+            close_return(ret, actor=self.manager)
+
+    def test_TC_GRN_RET_005_001_full_lifecycle_then_grn_can_be_closed(self):
+        ret = GrnReturn.objects.create(grn=self.grn)
+        approve_return(ret, actor=self.manager)
+        mark_return_returned(ret, actor=self.manager)
+        close_return(ret, actor=self.manager)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, GrnReturn.Status.CLOSED)
+        close_grn(self.grn, actor=self.manager)
+        self.grn.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.CLOSED)
+
+
+class GrnCloseAndReturnViewTest(TestCase):
+    """View/URL/permission cho grn_close + grn_return_* (mục 2a/2c). ``TC-GRN-VIEW-<seq>``."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.manager = User.objects.create_user(
+            username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+
+    def _grn(self, status, created_by=None):
+        return Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=created_by or self.manager, status=status)
+
+    def test_TC_GRN_VIEW_005_001_staff_forbidden_to_close_grn(self):
+        self.client.force_login(self.staff)
+        grn = self._grn(Grn.Status.RECEIVED)
+        response = self.client.post(reverse('receiving:grn_close', args=[grn.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GRN_VIEW_005_002_manager_can_close_received_grn(self):
+        self.client.force_login(self.manager)
+        grn = self._grn(Grn.Status.RECEIVED)
+        response = self.client.post(reverse('receiving:grn_close', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.CLOSED)
+
+    def test_TC_GRN_VIEW_005_003_close_button_only_shown_for_received_or_rejected(self):
+        self.client.force_login(self.manager)
+        draft = self._grn(Grn.Status.DRAFT)
+        response = self.client.get(reverse('receiving:grn_detail', args=[draft.pk]))
+        self.assertNotContains(response, reverse('receiving:grn_close', args=[draft.pk]))
+        received = self._grn(Grn.Status.RECEIVED)
+        response = self.client.get(reverse('receiving:grn_detail', args=[received.pk]))
+        self.assertContains(response, reverse('receiving:grn_close', args=[received.pk]))
+
+    def test_TC_GRN_VIEW_006_001_staff_forbidden_to_approve_return(self):
+        self.client.force_login(self.staff)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn)
+        response = self.client.post(reverse('receiving:grn_return_approve', args=[ret.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GRN_VIEW_006_002_manager_can_approve_return(self):
+        self.client.force_login(self.manager)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn)
+        response = self.client.post(reverse('receiving:grn_return_approve', args=[ret.pk]))
+        ret.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(ret.status, GrnReturn.Status.APPROVED)
+
+    def test_TC_GRN_VIEW_006_003_staff_can_mark_return_returned(self):
+        """STAFF có 'update' trên grn (không có 'approve') -> đủ quyền xác nhận đã trả hàng."""
+        self.client.force_login(self.staff)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.APPROVED)
+        response = self.client.post(reverse('receiving:grn_return_mark_returned', args=[ret.pk]))
+        ret.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(ret.status, GrnReturn.Status.RETURNED)
+
+    def test_TC_GRN_VIEW_006_004_invalid_transition_shows_error_message(self):
+        self.client.force_login(self.manager)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn)  # PENDING
+        response = self.client.post(
+            reverse('receiving:grn_return_mark_returned', args=[ret.pk]), follow=True)
+        ret.refresh_from_db()
+        self.assertEqual(ret.status, GrnReturn.Status.PENDING)
+        error_messages = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('Không thể xác nhận đã trả hàng' in m for m in error_messages))
 
 
 class GrnViewTest(TestCase):

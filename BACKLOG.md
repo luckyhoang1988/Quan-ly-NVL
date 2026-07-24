@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 16 / 60 FR
+**Tổng tiến độ:** 20 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -160,31 +160,31 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 ### 2a. Phiếu Nhập (GRN) — `receiving` app
 
 #### Functional Requirements (7 FR)
-- [ ] **FR-GRN-01** `MUST` — Tạo GRN với đầy đủ thông tin (Mã tự động, Ngày, NCC, PO, Chi tiết SKU)
-- [ ] **FR-GRN-02** `MUST` — Workflow GRN: DRAFT → PENDING_QC → RECEIVED → CLOSED
-- [ ] **FR-GRN-03** `MUST` — Khi GRN RECEIVED (QC pass), tự động tạo batch & cập nhật inventory tăng
+- [x] **FR-GRN-01** `MUST` — Tạo GRN với đầy đủ thông tin (Mã tự động, Ngày, NCC, PO, Chi tiết SKU)
+- [x] **FR-GRN-02** `MUST` — Workflow GRN: DRAFT → PENDING_QC → RECEIVED → CLOSED — đầy đủ mọi transition (`receiving/services.py`: `submit_to_pending_qc`, `close_grn`; `quality/services.py`: `start_qc`, `qc_pass`/`qc_fail`/`qc_partial_pass`); GRN REJECTED chỉ `close_grn` được sau khi GRN_RETURN liên quan đã RETURNED/CLOSED
+- [x] **FR-GRN-03** `MUST` — Khi GRN RECEIVED (QC pass), tự động tạo batch & cập nhật inventory tăng
 - [x] **FR-GRN-04** `MUST` — Support partial GRN (nhận 1 phần, chờ phần còn lại)
-- [ ] **FR-GRN-05** `MUST` — Ghi lại ký nhận từ: Mua hàng, QC, Kho (audit trail)
+- [x] **FR-GRN-05** `MUST` — Ghi lại ký nhận từ: Mua hàng, QC, Kho (audit trail) — dùng `accounts.AuditLog` (GenericForeignKey) chung, ghi actor+action ở mọi transition; chưa có bảng chữ ký riêng biệt theo 3 vai trò
 - [x] **FR-GRN-06** `MUST` — In phiếu GRN với barcode để dán trên hàng
 - [x] **FR-GRN-07** `SHOULD` — So sánh Qty GRN vs Qty PO để alert nếu vượt
 
 #### Workflow States
-- [ ] State `DRAFT`: form tạo GRN, nút Save/Submit/Cancel
-- [ ] State `PENDING_QC`: nhân viên Kho nhập Qty thực tế nhận, nút Submit to QC
-- [ ] State `QC_IN_PROGRESS`: QC nhập kết quả Pass/Fail/Partial, nút Approve/Reject
-- [ ] State `RECEIVED` (Pass): auto tạo Batch + cập nhật inventory tăng, khóa edit
-- [ ] State `REJECTED` (Fail): auto tạo GRN_RETURN
-- [ ] State `CLOSED`: archive
-- [ ] Transition test: DRAFT → PENDING_QC → QC_IN_PROGRESS → RECEIVED/REJECTED → CLOSED
+- [x] State `DRAFT`: form tạo GRN, nút Save/Submit/Cancel
+- [x] State `PENDING_QC`: nhân viên Kho nhập Qty thực tế nhận, nút Submit to QC
+- [x] State `QC_IN_PROGRESS`: QC nhập kết quả Pass/Fail/Partial, nút Approve/Reject
+- [x] State `RECEIVED` (Pass): auto tạo Batch + cập nhật inventory tăng, khóa edit
+- [x] State `REJECTED` (Fail): auto tạo GRN_RETURN
+- [x] State `CLOSED`: archive — `close_grn` (`receiving/services.py`), view `grn_close`, nút "Đóng GRN" ở `grn_detail.html` (quyền `approve` trên module `grn`)
+- [x] Transition test: DRAFT → PENDING_QC → QC_IN_PROGRESS → RECEIVED/REJECTED → CLOSED — `GrnCloseServiceTest` (`receiving/tests.py`)
 
 #### Data Model (tham khảo — bảng grn/grn_items)
-- [ ] `grn`: id, grn_no (auto GRN-YYYYMM-XXX), po_id (FK), supplier_id (FK), grn_date, status, created_by (FK User), created_at
-- [ ] `grn_items`: id, grn_id (FK), product_id (FK), qty_ordered, qty_received, mfg_date, exp_date, batch_code, unit_price, status
+- [x] `grn`: id, grn_no (auto GRN-YYYYMM-XXX), po_id (FK), supplier_id (FK), grn_date, status, created_by (FK User), created_at
+- [x] `grn_items`: id, grn_id (FK), product_id (FK), qty_ordered, qty_received, mfg_date, exp_date, batch_code, unit_price, status
 
 #### Quantity Handling & Edge Cases
-- [ ] BR-GRN-001: `qty_received <= qty_ordered`
-- [ ] BR-GRN-006: `exp_date > mfg_date` (luôn đúng)
-- [ ] BR-GRN-007: `qty_received = 0` → status = RECEIVED nhưng qty không tăng
+- [x] BR-GRN-001: `qty_received <= qty_ordered` — validated tại `receiving/models.py:104`
+- [x] BR-GRN-006: `exp_date > mfg_date` (luôn đúng) — validated tại `receiving/models.py:107`, test `TC-GRN-005-001`
+- [x] BR-GRN-007: `qty_received = 0` → status = RECEIVED nhưng qty không tăng — thỏa mãn tự nhiên qua logic hiện có (Batch/`_credit_inventory` cộng đúng qty_received, bằng 0 thì không tăng)
 - [x] **Qty tolerance check**: Alert nếu chênh lệch > tolerance % (config per supplier)
 - [x] **Qty validation**: `qty_grn <= qty_po` (không cho nhập vượt quá PO)
 
@@ -207,32 +207,33 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 ### 2c. GRN ↔ QC Integration & Batch Lifecycle (dùng chung cho cả 2)
 
-- [ ] **QC result mapping**:
+- [x] **QC result mapping**:
   - PASS → GRN: RECEIVED, tạo Batch status ACTIVE
   - FAIL → GRN: REJECTED, tạo GRN_RETURN, inventory KHÔNG cập nhật
   - PARTIAL_PASS → GRN: RECEIVED, Batch split: ACTIVE (qty pass) + QUARANTINE (qty fail)
-- [ ] **Batch status enum**: ACTIVE, PARTIAL_USED, QUARANTINE, EXPIRED, CLOSED
-- [ ] **Quarantine batch**: không thể xuất (GIN reject), admin quyết định scrap/return/rework, alert nếu quarantine > 7 ngày (⏸️ tính on-the-fly, chưa cần Celery)
+  (`quality/services.py:71-180`, xem `qc_pass`/`qc_fail`/`qc_partial_pass`)
+- [x] **Batch status enum**: ACTIVE, PARTIAL_USED, QUARANTINE, EXPIRED, CLOSED — định nghĩa ở `inventory` app
+- [ ] **Quarantine batch**: không thể xuất (GIN reject), admin quyết định scrap/return/rework, alert nếu quarantine > 7 ngày (⏸️ tính on-the-fly, chưa cần Celery) — thuộc Phase 3 (GIN), chưa làm
 
 #### GRN_RETURN Workflow (tự động tạo từ QC FAIL)
-- [ ] State: PENDING → APPROVED → RETURNED → CLOSED
-- [ ] Link tới GRN gốc (ref field), reason auto-fill "QC Fail"
+- [x] State: PENDING → APPROVED → RETURNED → CLOSED — `approve_return`/`mark_return_returned`/`close_return` (`receiving/services.py`), view + nút "Duyệt"/"Xác nhận đã trả"/"Đóng" ở `grn_detail.html` (duyệt/đóng cần quyền `approve`; xác nhận đã trả chỉ cần `update` — STAFF làm được)
+- [x] Link tới GRN gốc (ref field), reason auto-fill "QC Fail" — `quality/services.py:103,115`
 - [ ] ⏸️ Auto-email supplier khi reject — **hoãn** (cần Celery/email async); tạm thời: hiện thông báo trong app, gửi email thủ công
 
 #### Inventory Update Triggers (transaction, atomicity)
-- [ ] **GRN RECEIVED transaction**: Create Batch → Update Inventory (qty_on_hand, qty_available) → Update GRN status → Audit log — all-or-nothing, rollback nếu fail bước nào
-- [ ] **QC FAIL transaction**: Create GRN_RETURN → Update GRN status REJECTED → Audit log — **không** update Inventory
-- [ ] **PARTIAL_PASS transaction**: Create 2 Batch (ACTIVE + QUARANTINE) → Update Inventory (chỉ cộng phần pass) → Update GRN status
+- [x] **GRN RECEIVED transaction**: Create Batch → Update Inventory (qty_on_hand, qty_available) → Update GRN status → Audit log — all-or-nothing, rollback nếu fail bước nào (`quality/services.py:71-99`, `@transaction.atomic` + `select_for_update`)
+- [x] **QC FAIL transaction**: Create GRN_RETURN → Update GRN status REJECTED → Audit log — **không** update Inventory (`quality/services.py:102-122`)
+- [x] **PARTIAL_PASS transaction**: Create 2 Batch (ACTIVE + QUARANTINE) → Update Inventory (chỉ cộng phần pass) → Update GRN status (`quality/services.py:125-180`)
 
 #### Audit Trail (bắt buộc, khó thêm sau)
-- [ ] Ghi WHO/WHEN/WHAT/WHY cho mọi state transition của GRN, QC, Batch
-- [ ] Ví dụ: `2026-07-16 10:30 | User#5 (QC) | GRN#001 | QC_IN_PROGRESS→RECEIVED | "All PASS"`
+- [x] Ghi WHO/WHEN/WHAT/WHY cho mọi state transition của GRN, QC, Batch — qua `accounts.AuditLog` (`log_action()`), gọi ở tạo GRN, submit PENDING_QC, start QC, QC PASS/FAIL/PARTIAL
+- [x] Ví dụ: `2026-07-16 10:30 | User#5 (QC) | GRN#001 | QC_IN_PROGRESS→RECEIVED | "All PASS"` — đúng hình dạng dữ liệu hiện lưu (actor/action/reason)
 
 ### ✅ Definition of Done — Phase 2
-- [ ] Test đầy đủ 1 vòng: tạo GRN từ PO stub → nhập Qty thực tế → QC PASS → Batch tạo tự động → Inventory tăng đúng số
-- [ ] Test đường FAIL: QC FAIL → GRN_RETURN tạo, Inventory KHÔNG đổi (unit test riêng, đây là chỗ dễ sai)
-- [ ] Test đường PARTIAL_PASS: 2 batch tạo đúng, Inventory chỉ cộng phần pass
-- [ ] Manual UAT theo Test Case (xem Phụ lục B) nếu chưa có FSD chi tiết cho GRN/QC
+- [x] Test đầy đủ 1 vòng: tạo GRN từ PO stub → nhập Qty thực tế → QC PASS → Batch tạo tự động → Inventory tăng đúng số — `test_TC_QC_PASS_001_001_creates_active_batch_and_credits_inventory` (`quality/tests.py:127`)
+- [x] Test đường FAIL: QC FAIL → GRN_RETURN tạo, Inventory KHÔNG đổi (unit test riêng, đây là chỗ dễ sai) — `test_TC_QC_FAIL_001_001_creates_return_rejects_grn_no_inventory_change` (`quality/tests.py:154`)
+- [x] Test đường PARTIAL_PASS: 2 batch tạo đúng, Inventory chỉ cộng phần pass — `test_TC_QC_PARTIAL_001_001_splits_batch_and_credits_only_passed_qty` (`quality/tests.py:181`)
+- [ ] Manual UAT theo Test Case (xem Phụ lục B) nếu chưa có FSD chi tiết cho GRN/QC — chưa chạy UAT thủ công sống qua `runserver`
 
 ---
 
