@@ -13,4 +13,5 @@ urlpatterns = [
     path('batches/<int:pk>/', views.batch_detail, name='batch_detail'),
     path('transfers/', views.transfer_list, name='transfer_list'),
     path('transfers/new/', views.transfer_create, name='transfer_create'),
+    path('products/<int:pk>/eoq/', views.product_eoq, name='product_eoq'),
 ]

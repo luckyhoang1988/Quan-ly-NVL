@@ -38,6 +38,7 @@
         <th>Qty available</th>
         <th>Min / Max</th>
         <th>Cảnh báo</th>
+        <th>EOQ</th>
       </tr>
     </thead>
     <tbody>
@@ -64,9 +65,12 @@
             <span class="badge bg-success">Bình thường</span>
           {% endif %}
         </td>
+        <td>
+          <a class="btn btn-sm btn-outline-secondary" href="{% url 'inventory:product_eoq' row.inventory.product_id %}">Tính EOQ</a>
+        </td>
       </tr>
       {% empty %}
-      <tr><td colspan="9" class="text-center text-muted">Chưa có dữ liệu tồn kho.</td></tr>
+      <tr><td colspan="10" class="text-center text-muted">Chưa có dữ liệu tồn kho.</td></tr>
       {% endfor %}
     </tbody>
   </table>

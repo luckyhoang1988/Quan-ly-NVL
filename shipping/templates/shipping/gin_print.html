@@ -43,7 +43,8 @@
         <h2>{{ item.product.product_code }} — {{ item.product.name }}</h2>
         <div class="meta">
           GIN: {{ gin.gin_no }}<br>
-          Qty xuất: {{ alloc.qty_allocated }}
+          Qty xuất: {{ alloc.qty_allocated }}<br>
+          Vị trí: {{ alloc.batch.location }}
           {% if alloc.batch.exp_date %}<br>HSD: {{ alloc.batch.exp_date }}{% endif %}
         </div>
         <svg class="barcode" data-code="{{ alloc.batch.batch_code }}"></svg>

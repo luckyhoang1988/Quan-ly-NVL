@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% block title %}EOQ {{ product.product_code }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">EOQ — {{ product.product_code }} · {{ product.name }}</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'catalog:product_update' product.pk %}" class="btn btn-outline-secondary btn-sm">Sửa thông tin SKU</a>
+    <a href="{% url 'inventory:inventory_list' %}" class="btn btn-outline-secondary btn-sm">« Tồn kho</a>
+  </div>
+</div>
+
+{% if result.eoq is not None %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <p class="mb-2">Số lượng đặt hàng tối ưu (EOQ):</p>
+      <p class="display-6 mb-0">{{ result.eoq }} {{ product.uom }} / lần đặt</p>
+    </div>
+  </div>
+{% else %}
+  <div class="alert alert-warning">
+    <strong>Chưa đủ dữ liệu để tính EOQ.</strong>
+    <ul class="mb-0">
+      {% for reason in result.missing %}
+        <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+<div class="card">
+  <div class="card-body">
+    <h2 class="h6">Dữ liệu đầu vào</h2>
+    <dl class="row mb-0">
+      <dt class="col-sm-5">Nhu cầu năm (D) — 365 ngày qua</dt>
+      <dd class="col-sm-7">{{ result.annual_demand }} {{ product.uom }}</dd>
+
+      <dt class="col-sm-5">Đơn giá bình quân (theo lịch sử mua)</dt>
+      <dd class="col-sm-7">{{ result.avg_unit_cost|floatformat:2|default:"—" }}</dd>
+
+      <dt class="col-sm-5">Chi phí đặt hàng/lần (S)</dt>
+      <dd class="col-sm-7">{{ result.ordering_cost|default:"—" }}</dd>
+
+      <dt class="col-sm-5">% chi phí lưu kho/năm</dt>
+      <dd class="col-sm-7">{{ result.holding_cost_rate|default:"—" }}{% if result.holding_cost_rate %}%{% endif %}</dd>
+
+      <dt class="col-sm-5">Chi phí lưu kho/đơn vị/năm (H)</dt>
+      <dd class="col-sm-7">{{ result.holding_cost_per_unit|floatformat:2|default:"—" }}</dd>
+    </dl>
+  </div>
+</div>
+{% endblock %}

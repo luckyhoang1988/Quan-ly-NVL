@@ -56,7 +56,7 @@ def gin_detail(request, pk):
     """READ — chi tiết GIN: dòng hàng + batch đã phân bổ."""
     gin = get_object_or_404(
         Gin.objects.select_related('warehouse', 'requested_by')
-        .prefetch_related('items__product', 'items__allocations__batch'),
+        .prefetch_related('items__product', 'items__allocations__batch__location'),
         pk=pk,
     )
     return render(request, 'shipping/gin_detail.html', {
@@ -76,7 +76,7 @@ def gin_print(request, pk):
     """
     gin = get_object_or_404(
         Gin.objects.select_related('warehouse')
-        .prefetch_related('items__product', 'items__allocations__batch'),
+        .prefetch_related('items__product', 'items__allocations__batch__location'),
         pk=pk,
     )
     return render(request, 'shipping/gin_print.html', {'gin': gin})
@@ -121,7 +121,7 @@ def gin_start_picking(request, pk):
 def gin_picking(request, pk):
     """State PICKING: xem allocation FIFO đã gợi ý, đổi batch nếu cần (FR-GIN-03)."""
     obj = get_object_or_404(
-        Gin.objects.prefetch_related('items__product', 'items__allocations__batch'), pk=pk,
+        Gin.objects.prefetch_related('items__product', 'items__allocations__batch__location'), pk=pk,
     )
     if obj.status != Gin.Status.PICKING:
         messages.error(request, f'GIN "{obj.gin_no}" không ở trạng thái PICKING.')

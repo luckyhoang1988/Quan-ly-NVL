@@ -66,7 +66,7 @@
         <td>{{ item.qty_issued }}</td>
         <td>
           {% for alloc in item.allocations.all %}
-            {{ alloc.batch.batch_code }} x{{ alloc.qty_allocated }}{% if alloc.is_override %} (đổi lô){% endif %}<br>
+            {{ alloc.batch.batch_code }} x{{ alloc.qty_allocated }} — vị trí {{ alloc.batch.location }}{% if alloc.is_override %} (đổi lô){% endif %}<br>
           {% empty %}
             <span class="text-muted">—</span>
           {% endfor %}

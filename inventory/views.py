@@ -13,11 +13,12 @@ from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip
+from catalog.models import Product
 from warehouse.models import Warehouse
 
 from .forms import StockTransferForm
 from .models import Batch, Inventory, StockTransfer
-from .services import expiring_soon_batches, sync_expired_batches, transfer_stock
+from .services import calculate_eoq, expiring_soon_batches, sync_expired_batches, transfer_stock
 
 
 @login_required
@@ -160,3 +161,15 @@ def transfer_list(request):
         'to_location__warehouse', 'created_by',
     )
     return render(request, 'inventory/transfer_list.html', {'transfers': transfers})
+
+
+@login_required
+def product_eoq(request, pk):
+    """FR-INV-05: tính EOQ cho 1 SKU — xem ``inventory.services.calculate_eoq``
+    cho công thức/nguồn dữ liệu. Chỉ đọc, không ghi gì.
+    """
+    product = get_object_or_404(Product, pk=pk)
+    return render(request, 'inventory/product_eoq.html', {
+        'product': product,
+        'result': calculate_eoq(product),
+    })

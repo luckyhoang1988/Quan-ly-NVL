@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 47 / 60 FR
+**Tổng tiến độ:** 49 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -247,14 +247,14 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] **FR-INV-02** `MUST` — Cảnh báo lô sắp hết hạn (< 30 ngày)
 - [x] **FR-INV-03** `MUST` — Theo dõi lịch sử chuyển động tồn kho (audit trail) — `inventory/services.py::record_movement` + model `StockMovement`, gọi từ QC pass/partial-pass, GIN issue, Stock Opname adjustment, và stock transfer; test `StockMovementServiceTest` (`inventory/tests.py`)
 - [x] **FR-INV-04** `MUST` — Hỗ trợ FIFO/LIFO logic khi xuất hàng — `inventory/services.py::suggest_fifo_batches` (dùng bởi `shipping.services.start_picking`); test `FifoSuggestionServiceTest` (`inventory/tests.py`)
-- [ ] **FR-INV-05** `SHOULD` — Tính toán EOQ (Economic Order Quantity)
+- [x] **FR-INV-05** `SHOULD` — Tính toán EOQ (Economic Order Quantity)
 
 #### Batch → Inventory Link
 - [ ] `Inventory.qty_on_hand` phản ánh tổng batch vật lý còn trong kho (kể cả EXPIRED — hàng vẫn nằm đó); nhưng FIFO/GIN chỉ được chọn batch `status = ACTIVE`
 - [ ] Batch `QUARANTINE` tính riêng vào `qty_quarantine`, KHÔNG cộng vào `qty_available`
 
 > ✅ FR-INV-01/02 đã lên UI: `inventory` app có `batch_list`/`batch_detail` (danh sách + chi tiết lô, kèm lịch sử `StockMovement`) và banner cảnh báo lô `ACTIVE` sắp hết hạn (`expiring_soon_batches()`, tính on-the-fly mỗi lần load trang — ⏸️ chưa cần Celery/cron).
-> ⏸️ FR-INV-05 (EOQ): SHOULD, có thể defer sang Phase 6 (cùng Reporting) nếu thời gian gấp.
+> ✅ FR-INV-05 (EOQ) đã lên UI: `inventory/services.py::calculate_eoq` (D = tổng qty ISSUE 365 ngày qua từ `StockMovement`, S/H từ 2 field mới `Product.ordering_cost`/`holding_cost_rate` cộng đơn giá bình quân từ lịch sử `PurchaseOrderItem.unit_price`) — view `inventory:product_eoq`, link "Tính EOQ" ở `inventory_list.html`. Thiếu dữ liệu thì hiển thị rõ lý do, không tự suy đoán giá trị mặc định. Test `EoqServiceTest`/`EoqViewTest` (`inventory/tests.py`).
 
 ### 3b. Phiếu Xuất (GIN) — `shipping` app
 
@@ -265,7 +265,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] **FR-GIN-04** `MUST` — Khi GIN issued, tự động cập nhật inventory & batch quantity
 - [x] **FR-GIN-05** `MUST` — Ghi lại Qty thực tế xuất vs Qty yêu cầu (có thể khác)
 - [x] **FR-GIN-06** `MUST` — In phiếu xuất & barcode để kiểm soát
-- [ ] **FR-GIN-07** `SHOULD` — Gợi ý kho/vị trí có hàng dựa trên logic
+- [x] **FR-GIN-07** `SHOULD` — Gợi ý kho/vị trí có hàng dựa trên logic
 
 #### Workflow States
 - [x] State `DRAFT`: chọn SKU/Qty, hệ thống suggest lô FIFO

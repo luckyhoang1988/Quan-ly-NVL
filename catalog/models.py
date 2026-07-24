@@ -12,6 +12,12 @@ class Product(models.Model):
     uom = models.CharField(max_length=20, verbose_name='Đơn vị tính', help_text='vd kg, cái, thùng.')
     min_level = models.PositiveIntegerField(null=True, blank=True, help_text='Ngưỡng tồn kho tối thiểu.')
     max_level = models.PositiveIntegerField(null=True, blank=True, help_text='Ngưỡng tồn kho tối đa.')
+    ordering_cost = models.DecimalField(
+        max_digits=14, decimal_places=2, null=True, blank=True,
+        help_text='Chi phí đặt hàng mỗi lần (S, VNĐ) — dùng tính EOQ (FR-INV-05).')
+    holding_cost_rate = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text='% chi phí lưu kho/năm trên đơn giá bình quân (H) — dùng tính EOQ (FR-INV-05).')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

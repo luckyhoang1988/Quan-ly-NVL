@@ -13,6 +13,7 @@
     <thead>
       <tr>
         <th>Batch</th>
+        <th>Vị trí</th>
         <th>HSD</th>
         <th>Qty phân bổ</th>
         <th>Trạng thái</th>
@@ -23,6 +24,7 @@
       {% for alloc in item.allocations.all %}
       <tr>
         <td>{{ alloc.batch.batch_code }}</td>
+        <td>{{ alloc.batch.location }}</td>
         <td>{{ alloc.batch.exp_date|default:"—" }}</td>
         <td>{{ alloc.qty_allocated }}</td>
         <td>
@@ -43,7 +45,7 @@
         </td>
       </tr>
       {% empty %}
-      <tr><td colspan="5" class="text-center text-muted">Chưa có batch nào được phân bổ.</td></tr>
+      <tr><td colspan="6" class="text-center text-muted">Chưa có batch nào được phân bổ.</td></tr>
       {% endfor %}
     </tbody>
   </table>

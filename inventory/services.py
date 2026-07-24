@@ -1,14 +1,18 @@
 """Nghiệp vụ inventory (mục 3a): audit trail chuyển động (FR-INV-03), FIFO
-issue helper (FR-INV-04) cho GIN dùng, và cảnh báo/tự-đóng hạn (FR-INV-02).
+issue helper (FR-INV-04) cho GIN dùng, cảnh báo/tự-đóng hạn (FR-INV-02), và
+tính EOQ (FR-INV-05).
 
 Theo convention ⏸️ của CLAUDE.md: EXPIRED và cảnh báo sắp hết hạn tính
 on-the-fly mỗi lần cần (gọi trước khi FIFO chọn batch / khi xem dashboard),
 KHÔNG dùng Celery/cron.
 """
 import datetime
+import math
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Avg, Sum
 from django.utils import timezone
 
 from accounts.audit import log_action
@@ -174,3 +178,62 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
         ip_address=ip_address,
     )
     return transfer
+
+
+def calculate_eoq(product):
+    """FR-INV-05: EOQ = sqrt(2 x D x S / H).
+
+    - D (nhu cầu năm): tổng qty xuất (``StockMovement`` loại ISSUE, trị tuyệt
+      đối) trong 365 ngày gần nhất, gộp mọi kho — EOQ là quyết định đặt hàng
+      ở mức SKU, không tách theo từng kho.
+    - S (chi phí đặt hàng/lần): ``product.ordering_cost``, nhập tay.
+    - H (chi phí lưu kho/đơn vị/năm): ``product.holding_cost_rate`` % nhân
+      đơn giá bình quân, đơn giá lấy từ lịch sử ``PurchaseOrderItem.unit_price``
+      (mọi NCC, mọi PO) — không có bảng giá riêng nên dùng giá mua thực tế.
+
+    Trả về dict: khi đủ dữ liệu có ``eoq`` (làm tròn) + các input đã dùng;
+    khi thiếu dữ liệu, ``eoq=None`` kèm ``missing`` liệt kê lý do — không tự
+    suy đoán giá trị mặc định cho S/H vì mỗi SKU có đặc thù chi phí khác nhau.
+    """
+    from purchasing.models import PurchaseOrderItem
+
+    since = timezone.now() - datetime.timedelta(days=365)
+    issued = StockMovement.objects.filter(
+        product=product, movement_type=StockMovement.MovementType.ISSUE, created_at__gte=since,
+    ).aggregate(total=Sum('qty'))['total'] or 0
+    annual_demand = abs(issued)
+
+    avg_unit_cost = PurchaseOrderItem.objects.filter(product=product).aggregate(
+        avg=Avg('unit_price'))['avg']
+
+    missing = []
+    if annual_demand <= 0:
+        missing.append('Chưa có lịch sử xuất kho (ISSUE) trong 365 ngày qua để tính nhu cầu năm (D).')
+    if not avg_unit_cost:
+        missing.append('Chưa có lịch sử đơn giá mua (PurchaseOrderItem) để tính đơn giá bình quân.')
+    if not product.ordering_cost:
+        missing.append('Chưa cấu hình "Chi phí đặt hàng" (ordering_cost) cho SKU này.')
+    if not product.holding_cost_rate:
+        missing.append('Chưa cấu hình "% chi phí lưu kho" (holding_cost_rate) cho SKU này.')
+
+    result = {
+        'annual_demand': annual_demand,
+        'avg_unit_cost': avg_unit_cost,
+        'ordering_cost': product.ordering_cost,
+        'holding_cost_rate': product.holding_cost_rate,
+        'holding_cost_per_unit': None,
+        'eoq': None,
+        'missing': missing,
+    }
+    if missing:
+        return result
+
+    holding_cost_per_unit = avg_unit_cost * (product.holding_cost_rate / Decimal('100'))
+    result['holding_cost_per_unit'] = holding_cost_per_unit
+    if holding_cost_per_unit <= 0:
+        result['missing'].append('Chi phí lưu kho/đơn vị tính ra bằng 0 — kiểm tra lại đơn giá/tỷ lệ %.')
+        return result
+
+    eoq = math.sqrt(2 * float(annual_demand) * float(product.ordering_cost) / float(holding_cost_per_unit))
+    result['eoq'] = round(eoq)
+    return result

@@ -513,6 +513,27 @@ class GinViewTest(TestCase):
         response = self.client.get(reverse('shipping:gin_detail', args=[gin.pk]))
         self.assertEqual(response.status_code, 200)
 
+    def test_TC_GIN_VIEW_007_001_detail_shows_batch_location(self):
+        """FR-GIN-07: trang chi tiết GIN hiển thị vị trí batch đã phân bổ."""
+        gin = self._gin_with_batch(status=Gin.Status.PICKING)
+        item = gin.items.first()
+        batch = Batch.objects.get(batch_code='LOT-0001')
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=10)
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertContains(response, str(self.location))
+
+    def test_TC_GIN_VIEW_007_002_picking_page_shows_batch_location(self):
+        """FR-GIN-07: trang soạn hàng hiển thị vị trí batch (cả gợi ý FIFO và
+        dropdown đổi batch khác)."""
+        gin = self._gin_with_batch(status=Gin.Status.PICKING)
+        item = gin.items.first()
+        batch = Batch.objects.get(batch_code='LOT-0001')
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=10)
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('shipping:gin_picking', args=[gin.pk]))
+        self.assertContains(response, str(self.location))
+
     def test_TC_GIN_VIEW_006_001_staff_forbidden_to_override_allocation(self):
         self.client.force_login(self.staff)
         gin = self._gin_with_batch(status=Gin.Status.PICKING)

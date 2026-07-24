@@ -48,6 +48,17 @@ GinItemFormSet = inlineformset_factory(
 )
 
 
+class BatchLocationChoiceField(forms.ModelChoiceField):
+    """FR-GIN-07: hiển thị kèm vị trí (``batch.location``) trong dropdown chọn
+    batch, để người soạn hàng thấy ngay batch thay thế đang nằm ở đâu trong
+    kho thay vì chỉ thấy mã lô.
+    """
+
+    def label_from_instance(self, obj):
+        exp = obj.exp_date or '—'
+        return f'{obj.batch_code} — {obj.location} (HSD {exp}, còn {obj.qty_available})'
+
+
 class GinAllocationOverrideForm(forms.Form):
     """FR-GIN-03: đổi batch khác gợi ý FIFO cho 1 dòng allocation (state PICKING).
 
@@ -57,7 +68,7 @@ class GinAllocationOverrideForm(forms.Form):
     (curl trực tiếp), không dựa hoàn toàn vào queryset đã lọc.
     """
 
-    batch = forms.ModelChoiceField(queryset=Batch.objects.none(), label='Batch mới')
+    batch = BatchLocationChoiceField(queryset=Batch.objects.none(), label='Batch mới')
     reason = forms.CharField(
         label='Lý do đổi batch', widget=forms.Textarea(attrs={'rows': 1}),
     )
@@ -65,7 +76,7 @@ class GinAllocationOverrideForm(forms.Form):
     def __init__(self, *args, product=None, warehouse=None, **kwargs):
         super().__init__(*args, **kwargs)
         if product is not None and warehouse is not None:
-            self.fields['batch'].queryset = Batch.objects.filter(
+            self.fields['batch'].queryset = Batch.objects.select_related('location').filter(
                 product=product, location__warehouse=warehouse, status=Batch.Status.ACTIVE,
             ).order_by('exp_date', 'created_at')
         _bootstrapify(self.fields)

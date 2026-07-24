@@ -10,11 +10,13 @@ from django.utils import timezone
 from accounts.models import AuditLog
 from catalog.models import Product
 from partners.models import Supplier
+from purchasing.models import PurchaseOrder, PurchaseOrderItem
 from warehouse.models import Location, Warehouse
 
 from .models import Batch, Inventory, StockMovement, StockTransfer
 from .services import (
-    expiring_soon_batches, record_movement, suggest_fifo_batches, sync_expired_batches, transfer_stock,
+    calculate_eoq, expiring_soon_batches, record_movement, suggest_fifo_batches, sync_expired_batches,
+    transfer_stock,
 )
 
 User = get_user_model()
@@ -534,3 +536,84 @@ class StockTransferViewTest(TestCase):
         transfer_stock(batch=self.batch, to_location=self.location2, qty=10, actor=self.staff)
         response = self.client.get(reverse('inventory:transfer_list'))
         self.assertContains(response, self.location2.code)
+
+
+class EoqServiceTest(TestCase):
+    """``calculate_eoq`` (FR-INV-05). ``TC-INV-EOQ-<seq>``."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+
+    def _issue_movement(self, qty, created_at=None):
+        movement = StockMovement.objects.create(
+            product=self.product, warehouse=self.warehouse,
+            movement_type=StockMovement.MovementType.ISSUE, qty=-qty, qty_on_hand_after=0,
+        )
+        if created_at is not None:
+            StockMovement.objects.filter(pk=movement.pk).update(created_at=created_at)
+        return movement
+
+    def _po_item(self, unit_price):
+        po = PurchaseOrder.objects.create(po_no=f'PO-{PurchaseOrder.objects.count() + 1:04d}', supplier=self.supplier)
+        return PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=10, unit_price=unit_price)
+
+    def test_TC_INV_EOQ_001_missing_all_data_lists_every_reason(self):
+        result = calculate_eoq(self.product)
+        self.assertIsNone(result['eoq'])
+        self.assertEqual(len(result['missing']), 4)
+
+    def test_TC_INV_EOQ_002_computes_eoq_when_data_complete(self):
+        self.product.ordering_cost = 100000
+        self.product.holding_cost_rate = 20
+        self.product.save()
+        self._po_item(50)
+        self._issue_movement(1200)
+
+        result = calculate_eoq(self.product)
+        self.assertEqual(result['annual_demand'], 1200)
+        self.assertEqual(result['missing'], [])
+        # D=1200, S=100000, đơn giá=50, H=50*20%=10 -> EOQ=sqrt(2*1200*100000/10)=4899 (làm tròn)
+        self.assertEqual(result['eoq'], 4899)
+
+    def test_TC_INV_EOQ_003_excludes_issue_movements_older_than_365_days(self):
+        self.product.ordering_cost = 100000
+        self.product.holding_cost_rate = 20
+        self.product.save()
+        self._po_item(50)
+        self._issue_movement(1200)
+        self._issue_movement(500, created_at=timezone.now() - datetime.timedelta(days=400))
+
+        result = calculate_eoq(self.product)
+        self.assertEqual(result['annual_demand'], 1200)
+
+    def test_TC_INV_EOQ_004_missing_ordering_cost_only(self):
+        self.product.holding_cost_rate = 20
+        self.product.save()
+        self._po_item(50)
+        self._issue_movement(1200)
+
+        result = calculate_eoq(self.product)
+        self.assertIsNone(result['eoq'])
+        self.assertEqual(len(result['missing']), 1)
+        self.assertIn('Chi phí đặt hàng', result['missing'][0])
+
+
+class EoqViewTest(TestCase):
+    """View ``product_eoq`` (FR-INV-05). ``TC-INV-EOQ-VIEW-<seq>``."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+
+    def test_TC_INV_EOQ_VIEW_001_login_required(self):
+        response = self.client.get(reverse('inventory:product_eoq', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 302)
+
+    def test_TC_INV_EOQ_VIEW_002_shows_missing_data_warning(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('inventory:product_eoq', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Chưa đủ dữ liệu')
