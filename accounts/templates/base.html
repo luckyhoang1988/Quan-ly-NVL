@@ -1,45 +1,95 @@
+{% load static %}
 <!doctype html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}NVL / WMS{% endblock %}</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="{% static 'vendor/bootstrap/css/bootstrap.min.css' %}" rel="stylesheet">
+  <link href="{% static 'vendor/bootstrap-icons/bootstrap-icons.min.css' %}" rel="stylesheet">
+  <style>
+    .sidebar { width: 240px; min-height: 100vh; flex-shrink: 0; }
+    .sidebar .brand { font-size: 1.15rem; font-weight: 600; letter-spacing: .02em; }
+    .sidebar .nav-link { color: rgba(255,255,255,.75); border-radius: .5rem; padding: .55rem .8rem; display: flex; align-items: center; gap: .65rem; }
+    .sidebar .nav-link i { font-size: 1.1rem; width: 1.25rem; text-align: center; }
+    .sidebar .nav-link:hover { color: #fff; background-color: rgba(255,255,255,.08); }
+    .sidebar .nav-link.active { color: #fff; background-color: var(--bs-primary); }
+    .sidebar .user-box { background-color: rgba(255,255,255,.06); border-radius: .5rem; padding: .6rem .8rem; }
+    .layout-wrapper { min-height: 100vh; }
+  </style>
 </head>
 <body class="bg-light">
-  {% if user.is_authenticated %}
-  <nav class="navbar navbar-dark bg-dark px-3">
-    <span class="navbar-brand mb-0">NVL / WMS</span>
-    <div class="d-flex align-items-center gap-3 text-white">
-      <a class="small text-white text-decoration-none" href="{% url 'warehouse:warehouse_list' %}">Kho hàng</a>
-      <a class="small text-white text-decoration-none" href="{% url 'catalog:product_list' %}">Sản phẩm</a>
-      <a class="small text-white text-decoration-none" href="{% url 'partners:supplier_list' %}">Nhà cung cấp</a>
-      <a class="small text-white text-decoration-none" href="{% url 'purchasing:po_list' %}">Purchase Order</a>
-      <a class="small text-white text-decoration-none" href="{% url 'receiving:grn_list' %}">GRN</a>
-      {% if user.is_superuser or user.role != 'STAFF' %}
-        <a class="small text-white text-decoration-none" href="{% url 'quality:qc_criteria_list' %}">Tiêu chuẩn QC</a>
-      {% endif %}
-      {% if user.is_superuser or user.role == 'ADMIN' %}
-        <a class="small text-white text-decoration-none" href="{% url 'user_list' %}">Quản lý user</a>
-      {% endif %}
-      <span class="small">{{ user.username }} · {{ user.get_role_display|default:"chưa gán role" }}</span>
+  <div class="d-flex layout-wrapper">
+    {% if user.is_authenticated %}
+    <nav class="sidebar bg-dark d-flex flex-column p-3">
+      <div class="brand text-white d-flex align-items-center gap-2 mb-4">
+        <i class="bi bi-boxes"></i> NVL / WMS
+      </div>
+      <ul class="nav nav-pills flex-column mb-auto gap-1">
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'warehouse' %}active{% endif %}" href="{% url 'warehouse:warehouse_list' %}">
+            <i class="bi bi-building"></i> Kho hàng
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'catalog' %}active{% endif %}" href="{% url 'catalog:product_list' %}">
+            <i class="bi bi-box-seam"></i> Sản phẩm
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'partners' %}active{% endif %}" href="{% url 'partners:supplier_list' %}">
+            <i class="bi bi-truck"></i> Nhà cung cấp
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
+            <i class="bi bi-cart-check"></i> Purchase Order
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'receiving' %}active{% endif %}" href="{% url 'receiving:grn_list' %}">
+            <i class="bi bi-clipboard-check"></i> GRN
+          </a>
+        </li>
+        {% if user.is_superuser or user.role != 'STAFF' %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'quality' %}active{% endif %}" href="{% url 'quality:qc_criteria_list' %}">
+            <i class="bi bi-patch-check"></i> Tiêu chuẩn QC
+          </a>
+        </li>
+        {% endif %}
+        {% if user.is_superuser or user.role == 'ADMIN' %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
+            <i class="bi bi-people"></i> Quản lý user
+          </a>
+        </li>
+        {% endif %}
+      </ul>
+      <hr class="text-white-50">
+      <div class="user-box text-white-50 small mb-2 d-flex align-items-center gap-2">
+        <i class="bi bi-person-circle fs-5"></i>
+        <span>{{ user.username }} · {{ user.get_role_display|default:"chưa gán role" }}</span>
+      </div>
       <form method="post" action="{% url 'logout' %}" class="m-0">
         {% csrf_token %}
-        <button type="submit" class="btn btn-sm btn-outline-light">Đăng xuất</button>
+        <button type="submit" class="btn btn-sm btn-outline-light w-100 d-flex align-items-center justify-content-center gap-2">
+          <i class="bi bi-box-arrow-right"></i> Đăng xuất
+        </button>
       </form>
-    </div>
-  </nav>
-  {% endif %}
-
-  <main class="container py-4">
-    {% if messages %}
-      {% for message in messages %}
-        <div class="alert alert-{{ message.tags }}">{{ message }}</div>
-      {% endfor %}
+    </nav>
     {% endif %}
-    {% block content %}{% endblock %}
-  </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <main class="container-fluid py-4 flex-grow-1">
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <script src="{% static 'vendor/bootstrap/js/bootstrap.bundle.min.js' %}"></script>
 </body>
 </html>

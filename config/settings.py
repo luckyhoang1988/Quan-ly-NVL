@@ -153,6 +153,9 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+# Nguồn asset commit vào repo (vendor offline) — khác với /static/ (output của
+# collectstatic, đã gitignore) để tránh assets vendor bị bỏ qua khi commit.
+STATICFILES_DIRS = [BASE_DIR / 'assets']
 
 # Ảnh evidence QC (FR-QC-06) + ảnh reference tiêu chuẩn QC — file do user upload,
 # không commit vào repo (xem .gitignore: /media/).

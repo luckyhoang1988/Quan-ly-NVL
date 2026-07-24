@@ -1,10 +1,11 @@
+{% load static %}
 <!doctype html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>In GRN {{ grn.grn_no }} — NVL/WMS</title>
-  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <script src="{% static 'vendor/jsbarcode/JsBarcode.all.min.js' %}"></script>
   <style>
     body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 1.5rem; color: #212529; }
     .toolbar { margin-bottom: 1.5rem; }
