@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block title %}Lô {{ batch.batch_code }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Lô hàng {{ batch.batch_code }}</h1>
+  <div class="d-flex gap-2">
+    {% if batch.status == 'ACTIVE' or batch.status == 'PARTIAL_USED' %}
+      <a href="{% url 'inventory:transfer_create' %}?batch={{ batch.pk }}" class="btn btn-primary btn-sm">Điều chuyển »</a>
+    {% endif %}
+    <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">« Danh sách lô hàng</a>
+  </div>
+</div>
+
+{% if is_expiring_soon %}
+  <div class="alert alert-warning py-2">⚠ Lô này sẽ hết hạn trong vòng 30 ngày tới.</div>
+{% elif batch.status == 'EXPIRED' %}
+  <div class="alert alert-danger py-2">⚠ Lô này đã hết hạn.</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">Sản phẩm</dt>
+      <dd class="col-sm-9">{{ batch.product.product_code }} — {{ batch.product.name }}</dd>
+
+      <dt class="col-sm-3">Nhà cung cấp</dt>
+      <dd class="col-sm-9">{{ batch.supplier.name }}</dd>
+
+      <dt class="col-sm-3">Vị trí</dt>
+      <dd class="col-sm-9">{{ batch.location.warehouse.code }} / {{ batch.location.code }}</dd>
+
+      <dt class="col-sm-3">Ngày sản xuất</dt>
+      <dd class="col-sm-9">{{ batch.mfg_date|date:'d/m/Y'|default:'—' }}</dd>
+
+      <dt class="col-sm-3">Hạn sử dụng</dt>
+      <dd class="col-sm-9">{{ batch.exp_date|date:'d/m/Y'|default:'—' }}</dd>
+
+      <dt class="col-sm-3">Qty nhận / đã dùng / khả dụng</dt>
+      <dd class="col-sm-9">{{ batch.qty_received }} / {{ batch.qty_used }} / {{ batch.qty_available }}</dd>
+
+      <dt class="col-sm-3">Trạng thái</dt>
+      <dd class="col-sm-9"><span class="badge bg-secondary">{{ batch.get_status_display }}</span></dd>
+
+      <dt class="col-sm-3">Ngày tạo</dt>
+      <dd class="col-sm-9">{{ batch.created_at|date:'d/m/Y H:i' }}</dd>
+    </dl>
+  </div>
+</div>
+
+<h2 class="h5">Lịch sử chuyển động</h2>
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Thời gian</th>
+        <th>Loại</th>
+        <th>Số lượng</th>
+        <th>Tồn sau giao dịch</th>
+        <th>Tham chiếu</th>
+        <th>Người thực hiện</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in movements %}
+      <tr>
+        <td>{{ m.created_at|date:'d/m/Y H:i' }}</td>
+        <td>{{ m.get_movement_type_display }}</td>
+        <td>{{ m.qty }}</td>
+        <td>{{ m.qty_on_hand_after }}</td>
+        <td>{{ m.reference|default:'—' }}</td>
+        <td>{{ m.created_by.username|default:'—' }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-center text-muted">Chưa có chuyển động nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

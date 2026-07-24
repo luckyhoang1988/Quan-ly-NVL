@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+{% block title %}Đếm hàng — {{ session.so_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Đếm hàng — {{ session.so_no }}</h1>
+  <a href="{% url 'stocktake:so_detail' session.pk %}" class="btn btn-outline-secondary">← Chi tiết phiếu</a>
+</div>
+
+<div class="row justify-content-center mb-4">
+  <div class="col-lg-9">
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
+      {% endif %}
+      <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.product_code.id_for_label }}">{{ form.product_code.label }}</label>
+          {{ form.product_code }}
+          {% for error in form.product_code.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.qty_actual.id_for_label }}">{{ form.qty_actual.label }}</label>
+          {{ form.qty_actual }}
+          {% for error in form.qty_actual.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.reason.id_for_label }}">{{ form.reason.label }}</label>
+          {{ form.reason }}
+          {% for error in form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-2">
+          <button type="submit" class="btn btn-primary w-100">Ghi nhận</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<h2 class="h5 mt-4">Danh sách SKU</h2>
+<div class="table-responsive">
+  <table class="table table-sm table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã SKU</th>
+        <th>Tên sản phẩm</th>
+        <th>Qty hệ thống</th>
+        <th>Qty thực tế</th>
+        <th>Chênh lệch</th>
+        <th>Lý do</th>
+        <th>Người đếm</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in session.items.all %}
+      <tr class="{% if item.qty_actual == None %}{% elif item.variance == 0 %}table-success{% elif item.variance >= -5 and item.variance <= 5 %}table-warning{% else %}table-danger{% endif %}">
+        <td>{{ item.product.product_code }}</td>
+        <td>{{ item.product.name }}</td>
+        <td>{{ item.qty_system }}</td>
+        <td>{{ item.qty_actual|default:"—" }}</td>
+        <td>{% if item.variance != None %}{{ item.variance }}{% else %}—{% endif %}</td>
+        <td>{{ item.get_reason_display|default:"—" }}</td>
+        <td>{{ item.counted_by.username|default:"—" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Không có SKU nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

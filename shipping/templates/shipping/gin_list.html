@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}GIN — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Phiếu Xuất (GIN)</h1>
+  {% if can_create %}
+    <a href="{% url 'shipping:gin_create' %}" class="btn btn-primary">+ Tạo GIN</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã GIN</th>
+        <th>Kho</th>
+        <th>Tham chiếu</th>
+        <th>Trạng thái</th>
+        <th>Người yêu cầu</th>
+        <th>Ngày tạo</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for gin in gins %}
+      <tr>
+        <td>{{ gin.gin_no }}</td>
+        <td>{{ gin.warehouse.code }}</td>
+        <td>{{ gin.get_reference_type_display }} {{ gin.reference_no }}</td>
+        <td><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></td>
+        <td>{{ gin.requested_by.username }}</td>
+        <td>{{ gin.created_at|date:'d/m/Y H:i' }}</td>
+        <td>
+          <a href="{% url 'shipping:gin_detail' gin.pk %}" class="btn btn-sm btn-outline-secondary">Xem</a>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Chưa có GIN nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

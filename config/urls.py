@@ -28,6 +28,9 @@ urlpatterns = [
     path('purchase-orders/', include('purchasing.urls')),
     path('grn/', include('receiving.urls')),
     path('qc/', include('quality.urls')),
+    path('inventory/', include('inventory.urls')),
+    path('gin/', include('shipping.urls')),
+    path('stocktake/', include('stocktake.urls')),
 ]
 
 if settings.DEBUG:

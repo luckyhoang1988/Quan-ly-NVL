@@ -9,8 +9,10 @@ có model + admin để GRN/QC (Phase 2) và unit test BR-WM-001/002 có chỗ b
 theo quy ước cross-cutting trong CLAUDE.md: "qty_available = qty_on_hand -
 qty_reserved là computed, không phải stored input".
 """
+from django.conf import settings
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 
 class Inventory(models.Model):
@@ -80,3 +82,96 @@ class Batch(models.Model):
     @property
     def qty_available(self):
         return self.qty_received - self.qty_used
+
+
+class StockMovement(models.Model):
+    """Lịch sử chuyển động tồn kho (FR-INV-03) — ledger append-only.
+
+    Ghi lại mọi thay đổi ``Inventory.qty_on_hand`` (nhập từ GRN/QC, xuất từ
+    GIN, điều chỉnh kiểm kê ở Phase 4...) kèm số dư sau giao dịch, khác với
+    ``AuditLog`` (ghi state-transition who/what/when, không ghi số lượng).
+    Đừng tạo trực tiếp — dùng ``inventory.services.record_movement()``.
+    """
+
+    class MovementType(models.TextChoices):
+        RECEIPT = 'RECEIPT', 'Nhập kho'
+        ISSUE = 'ISSUE', 'Xuất kho'
+        ADJUSTMENT = 'ADJUSTMENT', 'Điều chỉnh'
+        TRANSFER_OUT = 'TRANSFER_OUT', 'Điều chuyển (xuất)'
+        TRANSFER_IN = 'TRANSFER_IN', 'Điều chuyển (nhập)'
+
+    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='stock_movements')
+    warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='stock_movements')
+    batch = models.ForeignKey(Batch, on_delete=models.PROTECT, null=True, blank=True, related_name='movements')
+    movement_type = models.CharField(max_length=20, choices=MovementType.choices)
+    qty = models.IntegerField(help_text='Dương = nhập, âm = xuất.')
+    qty_on_hand_after = models.PositiveIntegerField()
+    reference = models.CharField(max_length=50, blank=True, help_text='Vd GRN-2607-0001, GIN-2607-0001.')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='stock_movements',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.get_movement_type_display()} {self.qty} — {self.product.product_code}'
+
+
+class StockTransfer(models.Model):
+    """Phiếu điều chuyển tồn kho (FR-WM-06).
+
+    Batch bất biến về vị trí một khi đã tạo (cùng convention với cách
+    ``qc_partial_pass`` tách batch thay vì sửa tại chỗ): mọi điều chuyển —
+    dù cùng kho (chỉ đổi vị trí) hay khác kho — đều tách ``qty`` từ ``batch``
+    nguồn sang ``new_batch`` mới (ACTIVE) tại ``to_location``. Nếu khác kho,
+    ``Inventory`` 2 đầu được cập nhật qua ``StockMovement`` TRANSFER_OUT/
+    TRANSFER_IN; cùng kho thì Inventory không đổi (chỉ là đổi vị trí nội bộ).
+    Đừng tạo trực tiếp — dùng ``inventory.services.transfer_stock()``.
+    """
+
+    transfer_no = models.CharField(
+        max_length=30, unique=True, editable=False, help_text='Tự sinh: TRF-YYYYMM-XXX.')
+    batch = models.ForeignKey(Batch, on_delete=models.PROTECT, related_name='transfers_from')
+    new_batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT, null=True, blank=True, related_name='transferred_from',
+        help_text='Batch mới tách ra tại vị trí đích.',
+    )
+    from_location = models.ForeignKey(
+        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_out')
+    to_location = models.ForeignKey(
+        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_in')
+    qty = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    note = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='stock_transfers',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.transfer_no
+
+    @classmethod
+    def generate_transfer_no(cls):
+        """TRF-YYYYMM-XXX, XXX = sequence trong tháng hiện tại (mirror BR-GRN-001)."""
+        prefix = f'TRF-{timezone.localdate():%Y%m}-'
+        with transaction.atomic():
+            last = (
+                cls.objects.select_for_update()
+                .filter(transfer_no__startswith=prefix)
+                .order_by('-transfer_no')
+                .first()
+            )
+            seq = int(last.transfer_no.rsplit('-', 1)[-1]) + 1 if last else 1
+        return f'{prefix}{seq:03d}'
+
+    def save(self, *args, **kwargs):
+        if not self.transfer_no:
+            self.transfer_no = self.generate_transfer_no()
+        super().save(*args, **kwargs)

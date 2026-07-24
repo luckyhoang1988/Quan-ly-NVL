@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block title %}Lịch sử điều chuyển — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Lịch sử điều chuyển tồn kho</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">« Danh sách lô hàng</a>
+    <a href="{% url 'inventory:transfer_create' %}" class="btn btn-primary btn-sm">+ Điều chuyển mới</a>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã phiếu</th>
+        <th>Batch nguồn</th>
+        <th>Batch mới</th>
+        <th>Từ vị trí</th>
+        <th>Đến vị trí</th>
+        <th>Số lượng</th>
+        <th>Ghi chú</th>
+        <th>Người thực hiện</th>
+        <th>Thời gian</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in transfers %}
+      <tr>
+        <td>{{ t.transfer_no }}</td>
+        <td><a href="{% url 'inventory:batch_detail' t.batch_id %}">{{ t.batch.batch_code }}</a></td>
+        <td>
+          {% if t.new_batch %}
+            <a href="{% url 'inventory:batch_detail' t.new_batch_id %}">{{ t.new_batch.batch_code }}</a>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ t.from_location.warehouse.code }} / {{ t.from_location.code }}</td>
+        <td>{{ t.to_location.warehouse.code }} / {{ t.to_location.code }}</td>
+        <td>{{ t.qty }}</td>
+        <td>{{ t.note|default:'—' }}</td>
+        <td>{{ t.created_by.username|default:'—' }}</td>
+        <td>{{ t.created_at|date:'d/m/Y H:i' }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="9" class="text-center text-muted">Chưa có phiếu điều chuyển nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

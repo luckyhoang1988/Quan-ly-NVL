@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+{% block title %}{{ gin.gin_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ gin.gin_no }}</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'shipping:gin_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
+    {% if gin.status == 'ISSUED' or gin.status == 'CLOSED' %}
+      <a href="{% url 'shipping:gin_print' gin.pk %}" class="btn btn-outline-primary" target="_blank">In phiếu GIN</a>
+    {% endif %}
+    {% if can_update and gin.status == 'DRAFT' %}
+      <form method="post" action="{% url 'shipping:gin_start_picking' gin.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-primary">Bắt đầu soạn hàng (FIFO)</button>
+      </form>
+    {% endif %}
+    {% if can_update and gin.status == 'PICKING' %}
+      <a href="{% url 'shipping:gin_picking' gin.pk %}" class="btn btn-primary">Xem / Đổi batch</a>
+    {% endif %}
+    {% if can_approve and gin.status == 'PICKING' %}
+      <form method="post" action="{% url 'shipping:gin_issue' gin.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-primary">Xuất kho</button>
+      </form>
+    {% endif %}
+    {% if can_approve and gin.status == 'ISSUED' %}
+      <form method="post" action="{% url 'shipping:gin_close' gin.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-secondary">Đóng GIN</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+<dl class="row">
+  <dt class="col-sm-2">Trạng thái</dt>
+  <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></dd>
+  <dt class="col-sm-2">Kho</dt>
+  <dd class="col-sm-4">{{ gin.warehouse }}</dd>
+  <dt class="col-sm-2">Tham chiếu</dt>
+  <dd class="col-sm-4">{{ gin.get_reference_type_display }} {{ gin.reference_no }}</dd>
+  <dt class="col-sm-2">Người yêu cầu</dt>
+  <dd class="col-sm-4">{{ gin.requested_by.username }}</dd>
+  <dt class="col-sm-2">Ngày xuất</dt>
+  <dd class="col-sm-4">{{ gin.issued_at|date:'d/m/Y H:i'|default:"—" }}</dd>
+  <dt class="col-sm-2">Ghi chú</dt>
+  <dd class="col-sm-4">{{ gin.notes|default:"—" }}</dd>
+</dl>
+
+<h2 class="h5 mt-4">Dòng hàng</h2>
+<div class="table-responsive">
+  <table class="table table-sm table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Sản phẩm</th>
+        <th>Qty yêu cầu</th>
+        <th>Qty đã xuất</th>
+        <th>Batch phân bổ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in gin.items.all %}
+      <tr>
+        <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
+        <td>{{ item.qty_requested }}</td>
+        <td>{{ item.qty_issued }}</td>
+        <td>
+          {% for alloc in item.allocations.all %}
+            {{ alloc.batch.batch_code }} x{{ alloc.qty_allocated }}{% if alloc.is_override %} (đổi lô){% endif %}<br>
+          {% empty %}
+            <span class="text-muted">—</span>
+          {% endfor %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="4" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

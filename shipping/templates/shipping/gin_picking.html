@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% block title %}Soạn hàng — {{ gin.gin_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Soạn hàng (FIFO) — {{ gin.gin_no }}</h1>
+  <a href="{% url 'shipping:gin_detail' gin.pk %}" class="btn btn-outline-secondary">← Chi tiết GIN</a>
+</div>
+
+{% for item in gin.items.all %}
+<h2 class="h6 mt-4">{{ item.product.product_code }} — {{ item.product.name }} (yêu cầu {{ item.qty_requested }})</h2>
+<div class="table-responsive">
+  <table class="table table-sm align-middle">
+    <thead>
+      <tr>
+        <th>Batch</th>
+        <th>HSD</th>
+        <th>Qty phân bổ</th>
+        <th>Trạng thái</th>
+        <th>Đổi batch khác</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for alloc in item.allocations.all %}
+      <tr>
+        <td>{{ alloc.batch.batch_code }}</td>
+        <td>{{ alloc.batch.exp_date|default:"—" }}</td>
+        <td>{{ alloc.qty_allocated }}</td>
+        <td>
+          {% if alloc.is_override %}
+            <span class="badge bg-warning text-dark">Đã đổi</span><br>
+            <span class="text-muted small">{{ alloc.override_reason }}</span>
+          {% else %}
+            <span class="text-muted">Gợi ý FIFO</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="{% url 'shipping:gin_allocation_override' alloc.pk %}" class="d-flex gap-1 align-items-start flex-wrap">
+            {% csrf_token %}
+            {{ alloc.override_form.batch }}
+            {{ alloc.override_form.reason }}
+            <button type="submit" class="btn btn-sm btn-outline-primary">Đổi</button>
+          </form>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="5" class="text-center text-muted">Chưa có batch nào được phân bổ.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+{% endblock %}

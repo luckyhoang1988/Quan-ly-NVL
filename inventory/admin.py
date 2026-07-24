@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Batch, Inventory
+from .models import Batch, Inventory, StockMovement, StockTransfer
 
 
 @admin.register(Inventory)
@@ -12,6 +12,26 @@ class InventoryAdmin(admin.ModelAdmin):
     @admin.display(description='Qty available')
     def qty_available(self, obj):
         return obj.qty_available
+
+
+@admin.register(StockMovement)
+class StockMovementAdmin(admin.ModelAdmin):
+    list_display = (
+        'created_at', 'movement_type', 'product', 'warehouse', 'batch',
+        'qty', 'qty_on_hand_after', 'reference', 'created_by',
+    )
+    list_filter = ('movement_type', 'warehouse')
+    search_fields = ('product__product_code', 'reference', 'batch__batch_code')
+
+
+@admin.register(StockTransfer)
+class StockTransferAdmin(admin.ModelAdmin):
+    list_display = (
+        'transfer_no', 'batch', 'new_batch', 'from_location', 'to_location',
+        'qty', 'created_by', 'created_at',
+    )
+    list_filter = ('from_location__warehouse', 'to_location__warehouse')
+    search_fields = ('transfer_no', 'batch__batch_code', 'new_batch__batch_code')
 
 
 @admin.register(Batch)

@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}{{ session.so_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ session.so_no }}</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'stocktake:so_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
+    {% if can_update and session.status == 'PLANNING' %}
+      <form method="post" action="{% url 'stocktake:so_start_execution' session.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-primary">Bắt đầu kiểm đếm</button>
+      </form>
+    {% endif %}
+    {% if can_update and session.status == 'EXECUTION' %}
+      <a href="{% url 'stocktake:so_execution' session.pk %}" class="btn btn-primary">Đếm hàng</a>
+      <form method="post" action="{% url 'stocktake:so_submit_reconciliation' session.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-primary">Gửi đối soát</button>
+      </form>
+    {% endif %}
+    {% if can_approve and session.status == 'RECONCILIATION' %}
+      <form method="post" action="{% url 'stocktake:so_apply_adjustment' session.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-primary">Áp dụng điều chỉnh</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+<dl class="row">
+  <dt class="col-sm-2">Trạng thái</dt>
+  <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ session.get_status_display }}</span></dd>
+  <dt class="col-sm-2">Kho</dt>
+  <dd class="col-sm-4">{{ session.warehouse }}</dd>
+  <dt class="col-sm-2">Vị trí</dt>
+  <dd class="col-sm-4">{{ session.location|default:"Toàn kho" }}</dd>
+  <dt class="col-sm-2">Người tạo</dt>
+  <dd class="col-sm-4">{{ session.created_by.username }}</dd>
+  <dt class="col-sm-2">Đối soát lúc</dt>
+  <dd class="col-sm-4">{{ session.reconciled_at|date:'d/m/Y H:i'|default:"—" }}</dd>
+  <dt class="col-sm-2">Hoàn tất lúc</dt>
+  <dd class="col-sm-4">{{ session.completed_at|date:'d/m/Y H:i'|default:"—" }}</dd>
+  <dt class="col-sm-2">Ghi chú</dt>
+  <dd class="col-sm-4">{{ session.notes|default:"—" }}</dd>
+</dl>
+
+<h2 class="h5 mt-4">Chi tiết SKU (FR-SO-06)</h2>
+<div class="table-responsive">
+  <table class="table table-sm table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã SKU</th>
+        <th>Tên sản phẩm</th>
+        <th>Qty hệ thống</th>
+        <th>Qty thực tế</th>
+        <th>Chênh lệch</th>
+        <th>Lý do</th>
+        <th>Người đếm</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in session.items.all %}
+      <tr class="{% if item.qty_actual == None %}{% elif item.variance == 0 %}table-success{% elif item.variance >= -5 and item.variance <= 5 %}table-warning{% else %}table-danger{% endif %}">
+        <td>{{ item.product.product_code }}</td>
+        <td>{{ item.product.name }}</td>
+        <td>{{ item.qty_system }}</td>
+        <td>{{ item.qty_actual|default:"—" }}</td>
+        <td>{% if item.variance != None %}{{ item.variance }}{% else %}—{% endif %}</td>
+        <td>{{ item.get_reason_display|default:"—" }}</td>
+        <td>{{ item.counted_by.username|default:"—" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Không có SKU nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

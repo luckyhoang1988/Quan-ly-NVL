@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Kiểm Kê (Stock Opname) — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Kiểm Kê (Stock Opname)</h1>
+  {% if can_create %}
+    <a href="{% url 'stocktake:so_create' %}" class="btn btn-primary">+ Tạo phiếu kiểm kê</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã phiếu</th>
+        <th>Kho</th>
+        <th>Vị trí</th>
+        <th>Trạng thái</th>
+        <th>Người tạo</th>
+        <th>Ngày tạo</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for session in sessions %}
+      <tr>
+        <td>{{ session.so_no }}</td>
+        <td>{{ session.warehouse.code }}</td>
+        <td>{{ session.location|default:"Toàn kho" }}</td>
+        <td><span class="badge bg-info text-dark">{{ session.get_status_display }}</span></td>
+        <td>{{ session.created_by.username }}</td>
+        <td>{{ session.created_at|date:'d/m/Y H:i' }}</td>
+        <td>
+          <a href="{% url 'stocktake:so_detail' session.pk %}" class="btn btn-sm btn-outline-secondary">Xem</a>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Chưa có phiếu kiểm kê nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

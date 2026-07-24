@@ -55,6 +55,12 @@ INSTALLED_APPS = [
     # --- NVL/WMS apps (Phase 2) ---
     'receiving',    # GRN (Phiếu Nhập)
     'quality',      # Quality Control (QC)
+
+    # --- NVL/WMS apps (Phase 3) ---
+    'shipping',     # GIN (Phiếu Xuất)
+
+    # --- NVL/WMS apps (Phase 4) ---
+    'stocktake',    # Kiểm kê (Stock Opname)
 ]
 
 # Custom user model (NVL/WMS): thêm role RBAC + soft delete.

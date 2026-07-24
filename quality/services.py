@@ -25,7 +25,8 @@ from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
-from inventory.models import Batch, Inventory
+from inventory.models import Batch, Inventory, StockMovement
+from inventory.services import record_movement
 from receiving.models import Grn, GrnItem, GrnReturn
 
 from .models import QcInspection
@@ -35,10 +36,15 @@ def _batch_code(grn_item, suffix=''):
     return f'{grn_item.label_code}{suffix}'
 
 
-def _credit_inventory(product, warehouse, qty):
+def _credit_inventory(product, warehouse, qty, batch=None, reference='', actor=None):
+    """Cộng ``qty_on_hand`` + ghi ``StockMovement`` RECEIPT (FR-INV-03)."""
     inv, _ = Inventory.objects.select_for_update().get_or_create(product=product, warehouse=warehouse)
     inv.qty_on_hand += qty
     inv.save(update_fields=['qty_on_hand', 'updated_at'])
+    record_movement(
+        product=product, warehouse=warehouse, batch=batch, reference=reference, actor=actor,
+        movement_type=StockMovement.MovementType.RECEIPT, qty=qty,
+    )
     return inv
 
 
@@ -75,12 +81,15 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None):
     grn = inspection.grn
 
     for item in grn.items.select_for_update():
-        Batch.objects.create(
+        batch = Batch.objects.create(
             product=item.product, batch_code=_batch_code(item), supplier=grn.supplier,
             location=location, mfg_date=item.mfg_date, exp_date=item.exp_date,
             qty_received=item.qty_received, status=Batch.Status.ACTIVE,
         )
-        _credit_inventory(item.product, location.warehouse, item.qty_received)
+        _credit_inventory(
+            item.product, location.warehouse, item.qty_received,
+            batch=batch, reference=grn.grn_no, actor=actor,
+        )
         item.qty_pass = item.qty_received
         item.status = GrnItem.Status.RECEIVED
         item.save(update_fields=['qty_pass', 'status'])
@@ -145,12 +154,15 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         has_both = qty_pass > 0 and qty_fail > 0
 
         if qty_pass > 0:
-            Batch.objects.create(
+            pass_batch = Batch.objects.create(
                 product=item.product, batch_code=_batch_code(item, '-A' if has_both else ''),
                 supplier=grn.supplier, location=location, mfg_date=item.mfg_date, exp_date=item.exp_date,
                 qty_received=qty_pass, status=Batch.Status.ACTIVE,
             )
-            _credit_inventory(item.product, location.warehouse, qty_pass)
+            _credit_inventory(
+                item.product, location.warehouse, qty_pass,
+                batch=pass_batch, reference=grn.grn_no, actor=actor,
+            )
         if qty_fail > 0:
             Batch.objects.create(
                 product=item.product, batch_code=_batch_code(item, '-Q' if has_both else ''),

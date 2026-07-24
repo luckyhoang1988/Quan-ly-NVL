@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 20 / 60 FR
+**Tổng tiến độ:** 39 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -101,16 +101,17 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 #### Functional Requirements (6 FR)
 - [x] **FR-WM-01** `MUST` — Tạo & quản lý kho vật lý (CRUD) — Tên kho, địa chỉ, dung tích, hoạt động
 - [x] **FR-WM-02** `MUST` — Tạo & quản lý vị trí lưu trữ trong kho — Mã vị trí (Giá-A-01), dung tích
-- [ ] **FR-WM-03** `MUST` — Hiển thị real-time inventory theo kho, vị trí — Qty on-hand, available, reserved, quarantine (chờ model `Inventory`, mục 1f)
-- [ ] **FR-WM-04** `MUST` — Cảnh báo tồn < Min Level — Gợi ý tạo PO tự động (chờ model `Inventory`, mục 1f)
-- [ ] **FR-WM-05** `MUST` — Cảnh báo tồn > Max Level — Để lại ghi chú cho quản lý (chờ model `Inventory`, mục 1f)
-- [ ] **FR-WM-06** `SHOULD` — Hỗ trợ multi-warehouse chuyển vị trí — Stock transfer, intra-warehouse (chờ tồn kho thật, làm cùng Phase 3 GIN/FIFO)
+- [x] **FR-WM-03** `MUST` — Hiển thị real-time inventory theo kho, vị trí — Qty on-hand, available, reserved, quarantine (chờ model `Inventory`, mục 1f)
+- [x] **FR-WM-04** `MUST` — Cảnh báo tồn < Min Level — Gợi ý tạo PO tự động (chờ model `Inventory`, mục 1f)
+- [x] **FR-WM-05** `MUST` — Cảnh báo tồn > Max Level — Để lại ghi chú cho quản lý (chờ model `Inventory`, mục 1f)
+- [x] **FR-WM-06** `SHOULD` — Hỗ trợ multi-warehouse chuyển vị trí — Stock transfer, intra-warehouse (chờ tồn kho thật, làm cùng Phase 3 GIN/FIFO)
 
-> ⚠️ FR-WM-03/04/05/06 cần dữ liệu tồn kho (qty_on_hand...) mà app `inventory` (mục 1f) chưa tồn tại — CRUD kho + vị trí (FR-WM-01/02) đã đủ để Phase 1 DoD "tạo được Warehouse + Location qua UI" hoàn thành; 4 FR còn lại nối lại khi Inventory có mặt (1f/Phase 3).
+> ⚠️ FR-WM-03/04/05 đã triển khai ở dashboard `inventory` app (mục 3a, Phase 3) — cảnh báo Min/Max chỉ hiển thị on-the-fly, CHƯA auto-tạo PO draft (dời Phase 5 khi có Celery).
+> ✅ FR-WM-06 đã lên UI: `inventory` app có `transfer_create`/`transfer_list` (`inventory.services.transfer_stock`) — điều chuyển batch cùng kho (chỉ đổi vị trí, Inventory không đổi) hoặc khác kho (trừ/cộng `Inventory` 2 đầu qua `StockMovement` TRANSFER_OUT/TRANSFER_IN); batch bất biến vị trí, luôn tách batch mới ACTIVE tại đích (cùng cách `qc_partial_pass` tách batch), batch nguồn CLOSED/PARTIAL_USED tuỳ còn dư hay hết (BR-GIN-006 style). Ghi `AuditLog` qua `log_action`.
 
 #### Business Rules
-- [ ] BR-WM-001: `qty_on_hand >= 0` (không cho âm) — thuộc model Inventory, chưa tồn tại (mục 1f)
-- [ ] BR-WM-002: `qty_available = qty_on_hand - qty_reserved` (auto calculate) — thuộc model Inventory, chưa tồn tại (mục 1f)
+- [x] BR-WM-001: `qty_on_hand >= 0` (không cho âm) — thuộc model Inventory, chưa tồn tại (mục 1f)
+- [x] BR-WM-002: `qty_available = qty_on_hand - qty_reserved` (auto calculate) — thuộc model Inventory, chưa tồn tại (mục 1f)
 - [ ] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm — thuộc Phase 3 (GIN)
 - [ ] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng — thuộc Phase 2 (GRN)
 - [x] BR-WM-005: Tạo warehouse → min 10 vị trí (tự sinh 10 vị trí mặc định A-01..A-10 khi tạo kho)
@@ -242,8 +243,8 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 ### 3a. Inventory Management (hoàn thiện logic) — `inventory` app
 
 #### Functional Requirements (5 FR)
-- [ ] **FR-INV-01** `MUST` — Tạo & quản lý lô hàng (batch) với: Mã lô/NSX/HSD/Nhà cung cấp; Qty received/used/available; Status: ACTIVE, PARTIAL_USED, CLOSED, EXPIRED, QUARANTINE
-- [ ] **FR-INV-02** `MUST` — Cảnh báo lô sắp hết hạn (< 30 ngày)
+- [x] **FR-INV-01** `MUST` — Tạo & quản lý lô hàng (batch) với: Mã lô/NSX/HSD/Nhà cung cấp; Qty received/used/available; Status: ACTIVE, PARTIAL_USED, CLOSED, EXPIRED, QUARANTINE
+- [x] **FR-INV-02** `MUST` — Cảnh báo lô sắp hết hạn (< 30 ngày)
 - [ ] **FR-INV-03** `MUST` — Theo dõi lịch sử chuyển động tồn kho (audit trail)
 - [ ] **FR-INV-04** `MUST` — Hỗ trợ FIFO/LIFO logic khi xuất hàng
 - [ ] **FR-INV-05** `SHOULD` — Tính toán EOQ (Economic Order Quantity)
@@ -252,63 +253,63 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] `Inventory.qty_on_hand` phản ánh tổng batch vật lý còn trong kho (kể cả EXPIRED — hàng vẫn nằm đó); nhưng FIFO/GIN chỉ được chọn batch `status = ACTIVE`
 - [ ] Batch `QUARANTINE` tính riêng vào `qty_quarantine`, KHÔNG cộng vào `qty_available`
 
-> ⏸️ FR-INV-02 (cảnh báo hết hạn): tính on-the-fly mỗi lần load dashboard (`WHERE exp_date < today + 30`), chưa cần Celery/cron.
+> ✅ FR-INV-01/02 đã lên UI: `inventory` app có `batch_list`/`batch_detail` (danh sách + chi tiết lô, kèm lịch sử `StockMovement`) và banner cảnh báo lô `ACTIVE` sắp hết hạn (`expiring_soon_batches()`, tính on-the-fly mỗi lần load trang — ⏸️ chưa cần Celery/cron).
 > ⏸️ FR-INV-05 (EOQ): SHOULD, có thể defer sang Phase 6 (cùng Reporting) nếu thời gian gấp.
 
 ### 3b. Phiếu Xuất (GIN) — `shipping` app
 
 #### Functional Requirements (7 FR)
-- [ ] **FR-GIN-01** `MUST` — Tạo GIN từ yêu cầu xuất hàng (Ref PO, Sản xuất, Bán hàng)
-- [ ] **FR-GIN-02** `MUST` — Tự động gợi ý lô FIFO (sắp hết hạn nhất)
-- [ ] **FR-GIN-03** `MUST` — Allow overwrite batch selection nếu cần
-- [ ] **FR-GIN-04** `MUST` — Khi GIN issued, tự động cập nhật inventory & batch quantity
-- [ ] **FR-GIN-05** `MUST` — Ghi lại Qty thực tế xuất vs Qty yêu cầu (có thể khác)
-- [ ] **FR-GIN-06** `MUST` — In phiếu xuất & barcode để kiểm soát
+- [x] **FR-GIN-01** `MUST` — Tạo GIN từ yêu cầu xuất hàng (Ref PO, Sản xuất, Bán hàng)
+- [x] **FR-GIN-02** `MUST` — Tự động gợi ý lô FIFO (sắp hết hạn nhất)
+- [x] **FR-GIN-03** `MUST` — Allow overwrite batch selection nếu cần
+- [x] **FR-GIN-04** `MUST` — Khi GIN issued, tự động cập nhật inventory & batch quantity
+- [x] **FR-GIN-05** `MUST` — Ghi lại Qty thực tế xuất vs Qty yêu cầu (có thể khác)
+- [x] **FR-GIN-06** `MUST` — In phiếu xuất & barcode để kiểm soát
 - [ ] **FR-GIN-07** `SHOULD` — Gợi ý kho/vị trí có hàng dựa trên logic
 
 #### Workflow States
-- [ ] State `DRAFT`: chọn SKU/Qty, hệ thống suggest lô FIFO
-- [ ] State `PICKING`: quét barcode batch để confirm, cho phép đổi batch (ghi lý do)
-- [ ] State `ISSUED`: cập nhật `qty_on_hand -= qty_issued`, `batch.qty_used += qty_issued`, khóa edit
-- [ ] State `CLOSED`: archive
+- [x] State `DRAFT`: chọn SKU/Qty, hệ thống suggest lô FIFO
+- [x] State `PICKING`: quét barcode batch để confirm, cho phép đổi batch (ghi lý do)
+- [x] State `ISSUED`: cập nhật `qty_on_hand -= qty_issued`, `batch.qty_used += qty_issued`, khóa edit
+- [x] State `CLOSED`: archive
 
 #### FIFO Algorithm — ⚠️ phần dễ sai nhất, BẮT BUỘC có unit test riêng
-- [ ] Query: `SELECT * FROM batch WHERE product_id=? AND qty_available>0 AND status='ACTIVE' ORDER BY exp_date ASC, created_at ASC`
-- [ ] Duyệt batch, lấy đủ `qty_needed` (có thể lấy từ nhiều batch nếu 1 batch không đủ)
-- [ ] Trả về list `{batch_id, qty_to_issue, exp_date, location}`
-- [ ] Edge case: không đủ hàng ở mọi batch cộng lại → error rõ ràng, không cho issue
-- [ ] BR-GIN-001: `qty_issued <= qty_available`
-- [ ] BR-GIN-006: khi `qty_on_hand` = 0 → `batch.status = CLOSED`
-- [ ] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE
+- [x] Query: `SELECT * FROM batch WHERE product_id=? AND qty_available>0 AND status='ACTIVE' ORDER BY exp_date ASC, created_at ASC`
+- [x] Duyệt batch, lấy đủ `qty_needed` (có thể lấy từ nhiều batch nếu 1 batch không đủ)
+- [x] Trả về list `{batch_id, qty_to_issue, exp_date, location}`
+- [x] Edge case: không đủ hàng ở mọi batch cộng lại → error rõ ràng, không cho issue
+- [x] BR-GIN-001: `qty_issued <= qty_available`
+- [x] BR-GIN-006: khi `qty_on_hand` = 0 → `batch.status = CLOSED`
+- [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE
 
 ### ✅ Definition of Done — Phase 3
-- [ ] Unit test FIFO: nhiều batch cùng SKU, hạn khác nhau → lấy đúng thứ tự hạn gần nhất trước
-- [ ] Unit test edge case: 1 batch không đủ → tự động lấy tiếp batch kế, tổng đúng `qty_needed`
-- [ ] Unit test: không đủ hàng toàn bộ batch → trả lỗi rõ ràng, không cho issue âm
-- [ ] GIN không thể chọn batch QUARANTINE/EXPIRED (test riêng)
+- [x] Unit test FIFO: nhiều batch cùng SKU, hạn khác nhau → lấy đúng thứ tự hạn gần nhất trước
+- [x] Unit test edge case: 1 batch không đủ → tự động lấy tiếp batch kế, tổng đúng `qty_needed`
+- [x] Unit test: không đủ hàng toàn bộ batch → trả lỗi rõ ràng, không cho issue âm
+- [x] GIN không thể chọn batch QUARANTINE/EXPIRED (test riêng)
 
 ---
 
 ## PHASE 4 — Kiểm Kê (Stock Opname) (Tuần 11-13)
 
 ### Functional Requirements (7 FR)
-- [ ] **FR-SO-01** `MUST` — Tạo phiếu kiểm kê, chọn kho/vị trí, lập danh sách SKU
-- [ ] **FR-SO-02** `MUST` — Web form để nhân viên kho quét barcode SKU & nhập Qty thực tế
-- [ ] **FR-SO-03** `MUST` — Tự động so sánh Qty hệ thống vs Qty kiểm kê, tính chênh lệch
-- [ ] **FR-SO-04** `MUST` — Ghi chú lý do chênh lệch: Loss, Damage, Theft, Counting Error, Expired
-- [ ] **FR-SO-05** `MUST` — Tự động tạo Adjustment phiếu nếu chênh lệch > 0
-- [ ] **FR-SO-06** `MUST` — Báo cáo chi tiết phiếu kiểm kê (theo dõi từng dòng)
-- [ ] **FR-SO-07** `SHOULD` — Hỗ trợ kiểm kê từng vị trí hoặc toàn kho
+- [x] **FR-SO-01** `MUST` — Tạo phiếu kiểm kê, chọn kho/vị trí, lập danh sách SKU
+- [x] **FR-SO-02** `MUST` — Web form để nhân viên kho quét barcode SKU & nhập Qty thực tế
+- [x] **FR-SO-03** `MUST` — Tự động so sánh Qty hệ thống vs Qty kiểm kê, tính chênh lệch
+- [x] **FR-SO-04** `MUST` — Ghi chú lý do chênh lệch: Loss, Damage, Theft, Counting Error, Expired
+- [x] **FR-SO-05** `MUST` — Tự động tạo Adjustment phiếu nếu chênh lệch > 0
+- [x] **FR-SO-06** `MUST` — Báo cáo chi tiết phiếu kiểm kê (theo dõi từng dòng)
+- [x] **FR-SO-07** `SHOULD` — Hỗ trợ kiểm kê từng vị trí hoặc toàn kho
 
 ### Workflow Phases
-- [ ] Phase `PLANNING`: chọn kho/vị trí cần kiểm, status = DRAFT
-- [ ] Phase `EXECUTION`: form quét barcode, nhập Qty thực tế, hiện Qty hệ thống vs Qty quét
-- [ ] Phase `RECONCILIATION`: so sánh `qty_system` vs `qty_actual`, tính variance
-- [ ] Phase `ADJUSTMENT`: auto tạo Adjustment phiếu, cập nhật inventory
-- [ ] UI color highlight: xanh (match) / vàng (variance ≤5) / đỏ (variance >5)
+- [x] Phase `PLANNING`: chọn kho/vị trí cần kiểm, status = DRAFT
+- [x] Phase `EXECUTION`: form quét barcode, nhập Qty thực tế, hiện Qty hệ thống vs Qty quét
+- [x] Phase `RECONCILIATION`: so sánh `qty_system` vs `qty_actual`, tính variance
+- [x] Phase `ADJUSTMENT`: auto tạo Adjustment phiếu, cập nhật inventory
+- [x] UI color highlight: xanh (match) / vàng (variance ≤5) / đỏ (variance >5)
 
 ### ✅ Definition of Done — Phase 4
-- [ ] Test: chênh lệch dương/âm đều tạo đúng Adjustment, Inventory cập nhật đúng chiều
+- [x] Test: chênh lệch dương/âm đều tạo đúng Adjustment, Inventory cập nhật đúng chiều
 
 ---
 

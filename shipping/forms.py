@@ -1,0 +1,71 @@
+"""Form app shipping: GIN (mục 3b) — tạo GIN (state DRAFT) và đổi batch ở state
+PICKING (FR-GIN-03). Transaction thật (FIFO suggest, trừ Inventory/Batch) nằm ở
+``shipping.services`` — form ở đây chỉ thu thập input.
+"""
+from django import forms
+from django.forms import inlineformset_factory
+
+from inventory.models import Batch
+
+from .models import Gin, GinItem
+
+
+def _bootstrapify(fields):
+    """Gắn class Bootstrap phù hợp từng loại widget (dùng chung cho form CRUD)."""
+    for field in fields.values():
+        widget = field.widget
+        if isinstance(widget, forms.CheckboxInput):
+            widget.attrs.setdefault('class', 'form-check-input')
+        elif isinstance(widget, forms.Select):
+            widget.attrs.setdefault('class', 'form-select')
+        else:
+            widget.attrs.setdefault('class', 'form-control')
+
+
+class GinForm(forms.ModelForm):
+    class Meta:
+        model = Gin
+        fields = ['warehouse', 'reference_type', 'reference_no', 'notes']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+
+class GinItemForm(forms.ModelForm):
+    class Meta:
+        model = GinItem
+        fields = ['product', 'qty_requested']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+
+GinItemFormSet = inlineformset_factory(
+    Gin, GinItem, form=GinItemForm,
+    extra=3, min_num=1, validate_min=True, can_delete=True,
+)
+
+
+class GinAllocationOverrideForm(forms.Form):
+    """FR-GIN-03: đổi batch khác gợi ý FIFO cho 1 dòng allocation (state PICKING).
+
+    Queryset của ``batch`` giới hạn theo đúng sản phẩm + kho của dòng hàng và
+    ``status=ACTIVE`` (BR-GIN-007) — validate lại lần nữa (product/qty) ở
+    ``shipping.services.override_allocation`` vì view có thể bị submit ngoài ý
+    (curl trực tiếp), không dựa hoàn toàn vào queryset đã lọc.
+    """
+
+    batch = forms.ModelChoiceField(queryset=Batch.objects.none(), label='Batch mới')
+    reason = forms.CharField(
+        label='Lý do đổi batch', widget=forms.Textarea(attrs={'rows': 1}),
+    )
+
+    def __init__(self, *args, product=None, warehouse=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if product is not None and warehouse is not None:
+            self.fields['batch'].queryset = Batch.objects.filter(
+                product=product, location__warehouse=warehouse, status=Batch.Status.ACTIVE,
+            ).order_by('exp_date', 'created_at')
+        _bootstrapify(self.fields)

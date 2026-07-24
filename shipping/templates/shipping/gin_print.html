@@ -1,0 +1,64 @@
+{% load static %}
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>In GIN {{ gin.gin_no }} — NVL/WMS</title>
+  <script src="{% static 'vendor/jsbarcode/JsBarcode.all.min.js' %}"></script>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 1.5rem; color: #212529; }
+    .toolbar { margin-bottom: 1.5rem; }
+    .toolbar button, .toolbar a { font-size: 0.95rem; padding: 0.4rem 0.9rem; margin-right: 0.5rem; }
+    h1 { font-size: 1.3rem; margin-bottom: 0.25rem; }
+    .gin-meta { font-size: 0.9rem; color: #495057; margin-bottom: 1.5rem; }
+    .labels { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .label { border: 1px solid #333; border-radius: 4px; padding: 0.75rem 1rem; width: 260px; page-break-inside: avoid; }
+    .label h2 { font-size: 0.95rem; margin: 0 0 0.4rem; }
+    .label .meta { font-size: 0.8rem; color: #333; margin-bottom: 0.5rem; line-height: 1.4; }
+    .label svg { width: 100%; }
+    .label .code-text { font-size: 0.75rem; text-align: center; margin-top: -6px; word-break: break-all; }
+    @media print {
+      .toolbar { display: none; }
+      body { padding: 0.5rem; }
+      .label { border: 1px solid #000; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button type="button" onclick="window.print()">In phiếu</button>
+    <a href="{% url 'shipping:gin_detail' gin.pk %}">← Quay lại GIN</a>
+  </div>
+
+  <h1>Phiếu xuất kho {{ gin.gin_no }}</h1>
+  <div class="gin-meta">
+    Kho: {{ gin.warehouse }} · {{ gin.get_reference_type_display }} {{ gin.reference_no }} · Ngày xuất: {{ gin.issued_at|date:'d/m/Y H:i'|default:"—" }}
+  </div>
+
+  <div class="labels">
+    {% for item in gin.items.all %}
+      {% for alloc in item.allocations.all %}
+      <div class="label">
+        <h2>{{ item.product.product_code }} — {{ item.product.name }}</h2>
+        <div class="meta">
+          GIN: {{ gin.gin_no }}<br>
+          Qty xuất: {{ alloc.qty_allocated }}
+          {% if alloc.batch.exp_date %}<br>HSD: {{ alloc.batch.exp_date }}{% endif %}
+        </div>
+        <svg class="barcode" data-code="{{ alloc.batch.batch_code }}"></svg>
+        <div class="code-text">{{ alloc.batch.batch_code }}</div>
+      </div>
+      {% endfor %}
+    {% empty %}
+    <p>Chưa có dòng hàng.</p>
+    {% endfor %}
+  </div>
+
+  <script>
+    document.querySelectorAll('.barcode').forEach(function (el) {
+      JsBarcode(el, el.dataset.code, { format: 'CODE128', displayValue: false, height: 50, margin: 4 });
+    });
+  </script>
+</body>
+</html>
