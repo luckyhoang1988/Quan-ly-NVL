@@ -3,10 +3,18 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h3 mb-0">Purchase Order</h1>
-  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'PURCHASING' or user.role == 'ADMIN' %}
-    <a href="{% url 'purchasing:po_create' %}" class="btn btn-primary">+ Tạo PO</a>
-  {% endif %}
+  <div class="d-flex gap-2">
+    <a href="{% url 'purchasing:po_price_comparison' %}" class="btn btn-outline-secondary btn-sm">So sánh giá NCC</a>
+    <a href="{% url 'purchasing:po_supplier_performance' %}" class="btn btn-outline-secondary btn-sm">Hiệu suất NCC</a>
+    {% if can_create %}
+      <a href="{% url 'purchasing:po_create' %}" class="btn btn-primary">+ Tạo PO</a>
+    {% endif %}
+  </div>
 </div>
+
+{% if overdue_count %}
+  <div class="alert alert-danger py-2">⚠ {{ overdue_count }} PO đang trễ hạn giao hàng.</div>
+{% endif %}
 
 <div class="table-responsive">
   <table class="table table-striped align-middle">
@@ -15,6 +23,7 @@
         <th>Mã PO</th>
         <th>NCC</th>
         <th>Trạng thái</th>
+        <th>Giao hàng</th>
         <th>Số dòng</th>
         <th>Ngày tạo</th>
         <th></th>
@@ -22,20 +31,30 @@
     </thead>
     <tbody>
       {% for po in orders %}
+      {% with delivery=po.delivery_status %}
       <tr>
-        <td>{{ po.po_no }}</td>
+        <td><a href="{% url 'purchasing:po_detail' po.pk %}">{{ po.po_no }}</a></td>
         <td>{{ po.supplier.name }}</td>
         <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
+        <td>
+          {% if delivery %}
+            <span class="badge bg-{{ delivery.css }}{% if delivery.css == 'warning' %} text-dark{% endif %}">{{ delivery.label }}</span>
+          {% else %}
+            —
+          {% endif %}
+        </td>
         <td>{{ po.items.count }}</td>
         <td>{{ po.created_at|date:'d/m/Y H:i' }}</td>
         <td>
-          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'PURCHASING' or user.role == 'ADMIN' %}
+          <a href="{% url 'purchasing:po_detail' po.pk %}" class="btn btn-sm btn-outline-secondary">Chi tiết</a>
+          {% if can_update and po.status == 'DRAFT' %}
             <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
           {% endif %}
         </td>
       </tr>
+      {% endwith %}
       {% empty %}
-      <tr><td colspan="6" class="text-center text-muted">Chưa có PO nào.</td></tr>
+      <tr><td colspan="7" class="text-center text-muted">Chưa có PO nào.</td></tr>
       {% endfor %}
     </tbody>
   </table>

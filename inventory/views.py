@@ -49,7 +49,16 @@ def inventory_list(request):
         above_max = max_level is not None and inv.qty_on_hand > max_level
         below_min_count += int(below_min)
         above_max_count += int(above_max)
-        rows.append({'inventory': inv, 'below_min': below_min, 'above_max': above_max})
+        suggested_po_qty = None
+        if below_min:
+            # FR-PO-02: gợi ý Qty đặt = đầy Max Level nếu có cấu hình, else về
+            # lại Min Level — chỉ tính khi thực sự dưới Min (below_min).
+            target_level = max_level if max_level is not None else min_level
+            suggested_po_qty = target_level - inv.qty_on_hand
+        rows.append({
+            'inventory': inv, 'below_min': below_min, 'above_max': above_max,
+            'suggested_po_qty': suggested_po_qty,
+        })
 
     return render(request, 'inventory/inventory_list.html', {
         'rows': rows,

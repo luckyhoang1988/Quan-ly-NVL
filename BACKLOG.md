@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 39 / 60 FR
+**Tổng tiến độ:** 47 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -245,8 +245,8 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 #### Functional Requirements (5 FR)
 - [x] **FR-INV-01** `MUST` — Tạo & quản lý lô hàng (batch) với: Mã lô/NSX/HSD/Nhà cung cấp; Qty received/used/available; Status: ACTIVE, PARTIAL_USED, CLOSED, EXPIRED, QUARANTINE
 - [x] **FR-INV-02** `MUST` — Cảnh báo lô sắp hết hạn (< 30 ngày)
-- [ ] **FR-INV-03** `MUST` — Theo dõi lịch sử chuyển động tồn kho (audit trail)
-- [ ] **FR-INV-04** `MUST` — Hỗ trợ FIFO/LIFO logic khi xuất hàng
+- [x] **FR-INV-03** `MUST` — Theo dõi lịch sử chuyển động tồn kho (audit trail) — `inventory/services.py::record_movement` + model `StockMovement`, gọi từ QC pass/partial-pass, GIN issue, Stock Opname adjustment, và stock transfer; test `StockMovementServiceTest` (`inventory/tests.py`)
+- [x] **FR-INV-04** `MUST` — Hỗ trợ FIFO/LIFO logic khi xuất hàng — `inventory/services.py::suggest_fifo_batches` (dùng bởi `shipping.services.start_picking`); test `FifoSuggestionServiceTest` (`inventory/tests.py`)
 - [ ] **FR-INV-05** `SHOULD` — Tính toán EOQ (Economic Order Quantity)
 
 #### Batch → Inventory Link
@@ -318,33 +318,33 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 *(Nâng cấp PO stub đã tạo ở Phase 1 thành workflow đầy đủ)*
 
 ### Functional Requirements (6 FR)
-- [ ] **FR-PO-01** `MUST` — Workflow PO: DRAFT → APPROVED → SENT → PARTIAL_RECEIVED → RECEIVED → CLOSED
-- [ ] **FR-PO-02** `MUST` — Khi tồn < Min Level, gợi ý tạo PO tự động
-- [ ] **FR-PO-03** `MUST` — So sánh giá từ nhiều NCC để chọn optimal
-- [ ] **FR-PO-04** `MUST` — GRN phải tham chiếu PO để đối soát qty
-- [ ] **FR-PO-05** `MUST` — Theo dõi lead-time từng NCC
-- [ ] **FR-PO-06** `MUST` — Tracking delivery status: On time, Delayed, Partial
+- [x] **FR-PO-01** `MUST` — Workflow PO: DRAFT → APPROVED → SENT → PARTIAL_RECEIVED → RECEIVED → CLOSED — `purchasing/services.py::approve_po/send_po/close_po` + `sync_po_status` (tự động PARTIAL_RECEIVED/RECEIVED); không có auto-approve theo ngưỡng tiền, mọi PO đều cần Manager/Admin duyệt thủ công (quyết định chốt với user)
+- [x] **FR-PO-02** `MUST` — Khi tồn < Min Level, gợi ý tạo PO tự động — MVP không Celery: nút "Tạo PO" ở dòng dưới Min Level trên `inventory_list.html`, prefill sản phẩm + Qty gợi ý (`?product=&qty=`) vào `po_create`
+- [x] **FR-PO-03** `MUST` — So sánh giá từ nhiều NCC để chọn optimal — `purchasing/services.py::supplier_price_history` + view/trang `po_price_comparison`
+- [x] **FR-PO-04** `MUST` — GRN phải tham chiếu PO để đối soát qty — đã có từ Phase 1e/2 (`sync_po_status`, `GrnForm.po` giới hạn PO status SENT/PARTIAL_RECEIVED), chỉ bổ sung hiển thị Qty đã nhận/còn lại ở `po_detail`
+- [x] **FR-PO-05** `MUST` — Theo dõi lead-time từng NCC — `purchasing/services.py::supplier_lead_time_stats` (so sánh `Supplier.lead_time_days` cấu hình với lead-time thực tế tính từ `created_at`→`received_at`), trang `po_supplier_performance`
+- [x] **FR-PO-06** `MUST` — Tracking delivery status: On time, Delayed, Partial — `PurchaseOrder.delivery_status()`, hiển thị badge ở `po_list`/`po_detail`
 
 ### Workflow States
-- [ ] State `DRAFT`: nhập Supplier, SKU items, qty, price, delivery date
-- [ ] State `APPROVED`: Manager duyệt (auto-approve nếu <$10,000)
-- [ ] State `SENT`: gửi PO tới NCC, khóa edit
-- [ ] State `PARTIAL_RECEIVED` / `RECEIVED`: nhập Qty received từ GRN
-- [ ] State `CLOSED`: archive
+- [x] State `DRAFT`: nhập Supplier, SKU items, qty, price, delivery date (`expected_delivery_date`)
+- [x] State `APPROVED`: Manager duyệt (`approve_po`, quyền `approve` — không có nhánh auto-approve theo ngưỡng tiền)
+- [x] State `SENT`: gửi PO tới NCC (`send_po`), khóa edit (`po_update` chặn khi status != DRAFT)
+- [x] State `PARTIAL_RECEIVED` / `RECEIVED`: nhập Qty received từ GRN (tự động qua `sync_po_status`, đã có từ Phase 2)
+- [x] State `CLOSED`: archive (`close_po`, từ SENT/PARTIAL_RECEIVED/RECEIVED)
 
 ### PO ↔ GRN Reconciliation
-- [ ] PO line item: `qty_ordered`, `qty_grn_received`, `qty_remaining` (= ordered - received)
-- [ ] GRN nhận partial → auto-update `qty_received`/`qty_remaining`, PO state chuyển PARTIAL_RECEIVED/RECEIVED tương ứng
-- [ ] Alert nếu `sum(Qty GRN) > Qty PO`
-- [ ] Overdue tracking: alert nếu `expected_delivery < today` & PO vẫn SENT/PARTIAL_RECEIVED (⏸️ tính on-the-fly khi load PO list, chưa cần Celery)
+- [x] PO line item: `qty_ordered`, `qty_grn_received`, `qty_remaining` (= ordered - received) — tính on-the-fly ở `po_detail` (không lưu cột riêng, cùng convention `qty_available`)
+- [x] GRN nhận partial → auto-update `qty_received`/`qty_remaining`, PO state chuyển PARTIAL_RECEIVED/RECEIVED tương ứng — `sync_po_status` (đã có từ Phase 2)
+- [x] Alert nếu `sum(Qty GRN) > Qty PO` — đã làm ở Phase 2 (FR-GRN-07: `BaseGrnItemFormSet` chặn cứng + `tolerance_alerts` cảnh báo mềm), không làm lại
+- [x] Overdue tracking: alert nếu `expected_delivery < today` & PO vẫn SENT/PARTIAL_RECEIVED (⏸️ tính on-the-fly khi load PO list, chưa cần Celery) — banner "N PO trễ hạn" ở `po_list`, badge `delivery_status` mã `DELAYED`
 
 ### Auto-PO Suggestion — ⏸️ HOÃN (cần Celery), làm bản rút gọn trước
-- [ ] **MVP không Celery**: hiển thị danh sách "SKU dưới Min Level" trên dashboard (Phase 1 đã có), nút "Tạo PO draft" bấm thủ công từ đó
+- [x] **MVP không Celery**: hiển thị danh sách "SKU dưới Min Level" trên dashboard (Phase 1 đã có), nút "Tạo PO draft" bấm thủ công từ đó
 - [ ] **Bản đầy đủ (khi có Celery)**: job chạy hourly tự tạo PO DRAFT (supplier chính, qty = max_level - qty_on_hand, giá lần cuối, delivery = today + lead_time), Purchasing vẫn phải duyệt trước khi SEND
 
 ### ✅ Definition of Done — Phase 5
-- [ ] Test: tạo PO → gửi → nhận GRN partial 2 lần → PO tự chuyển RECEIVED khi đủ qty
-- [ ] Test: GRN reject không làm giảm `qty_remaining` của PO
+- [x] Test: tạo PO → gửi → nhận GRN partial 2 lần → PO tự chuyển RECEIVED khi đủ qty — `SyncPoStatusTest` (`purchasing/tests.py`, đã có từ Phase 2, verify lại không đổi)
+- [x] Test: GRN reject không làm giảm `qty_remaining` của PO — `test_TC_PUR_SYNC_004_rejected_item_excluded_from_total` (`purchasing/tests.py`)
 
 ---
 

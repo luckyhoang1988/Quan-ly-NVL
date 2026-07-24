@@ -1,8 +1,10 @@
 """Form app receiving: GRN (mục 2a) — state DRAFT (tạo/sửa) và PENDING_QC (nhập Qty thực nhận)."""
 from django import forms
 from django.contrib.auth import get_user_model
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.forms import inlineformset_factory
+
+from purchasing.models import PurchaseOrder
 
 from .models import Grn, GrnItem
 
@@ -33,6 +35,15 @@ class GrnForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _bootstrapify(self.fields)
+        # GRN chỉ hợp lệ tham chiếu PO đã gửi NCC (Phase 5: PO có state DRAFT/
+        # APPROVED/CLOSED thật, không phải mọi PO như PO stub cũ). Cộng thêm PO
+        # hiện tại của instance (khi sửa) để không vỡ GRN cũ nếu PO đã tiến sang
+        # RECEIVED/CLOSED sau đó.
+        valid_statuses = [PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED]
+        queryset = Q(status__in=valid_statuses)
+        if self.instance.pk and self.instance.po_id:
+            queryset |= Q(pk=self.instance.po_id)
+        self.fields['po'].queryset = PurchaseOrder.objects.filter(queryset).distinct()
 
 
 class GrnItemForm(forms.ModelForm):

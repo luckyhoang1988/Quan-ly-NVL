@@ -54,6 +54,10 @@
         <td>
           {% if row.below_min %}
             <span class="badge bg-danger">Dưới Min</span>
+            {% if row.suggested_po_qty > 0 %}
+              <a class="btn btn-sm btn-outline-danger ms-1"
+                 href="{% url 'purchasing:po_create' %}?product={{ row.inventory.product_id }}&qty={{ row.suggested_po_qty }}">Tạo PO</a>
+            {% endif %}
           {% elif row.above_max %}
             <span class="badge bg-warning text-dark">Trên Max</span>
           {% else %}

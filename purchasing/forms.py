@@ -20,7 +20,10 @@ def _bootstrapify(fields):
 class PurchaseOrderForm(forms.ModelForm):
     class Meta:
         model = PurchaseOrder
-        fields = ['po_no', 'supplier', 'status']
+        fields = ['po_no', 'supplier', 'expected_delivery_date']
+        widgets = {
+            'expected_delivery_date': forms.DateInput(attrs={'type': 'date'}),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

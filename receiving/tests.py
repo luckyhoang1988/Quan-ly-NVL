@@ -27,7 +27,8 @@ class GrnModelTest(TestCase):
             username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         self.other_supplier = Supplier.objects.create(supplier_code='NCC-0002', name='Công ty XYZ')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
 
     def _create_grn(self, **overrides):
@@ -71,7 +72,8 @@ class GrnItemModelTest(TestCase):
         self.creator = User.objects.create_user(
             username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.creator)
 
@@ -132,7 +134,8 @@ class GrnReturnModelTest(TestCase):
         self.creator = User.objects.create_user(
             username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.creator)
 
     def test_TC_GRN_RET_001_001_default_status_pending_and_reason_qc_fail(self):
@@ -148,7 +151,8 @@ class GrnCloseServiceTest(TestCase):
         self.manager = User.objects.create_user(
             username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
 
     def _grn(self, status):
         return Grn.objects.create(
@@ -201,7 +205,8 @@ class GrnReturnWorkflowServiceTest(TestCase):
         self.manager = User.objects.create_user(
             username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.grn = Grn.objects.create(
             po=self.po, supplier=self.supplier, created_by=self.manager, status=Grn.Status.REJECTED)
 
@@ -259,7 +264,8 @@ class GrnCloseAndReturnViewTest(TestCase):
         self.manager = User.objects.create_user(
             username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
 
     def _grn(self, status, created_by=None):
         return Grn.objects.create(
@@ -337,7 +343,8 @@ class GrnViewTest(TestCase):
         self.qc_user = User.objects.create_user(
             username='qc1', password='qc-pass-123', role=User.Role.QC)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         PurchaseOrderItem.objects.create(
             purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
@@ -479,7 +486,8 @@ class GrnPoQtyValidationTest(TestCase):
         self.staff = User.objects.create_user(
             username='kho1', password='kho-pass-123', role=User.Role.STAFF)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         PurchaseOrderItem.objects.create(
             purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
@@ -554,7 +562,8 @@ class GrnPrintViewTest(TestCase):
         self.staff = User.objects.create_user(
             username='kho1', password='kho-pass-123', role=User.Role.STAFF)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
-        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         self.grn = Grn.objects.create(
             po=self.po, supplier=self.supplier, created_by=self.staff, status=Grn.Status.RECEIVED)

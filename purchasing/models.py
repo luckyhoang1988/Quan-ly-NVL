@@ -1,13 +1,14 @@
-"""Model app purchasing: PO stub (mục 1e — bổ sung, giải quyết circular dependency
-GRN <-> PO: GRN ở Phase 2 cần po_id FK hợp lệ, nhưng PO đầy đủ (FR-PO-*, workflow
-duyệt, so sánh giá NCC) chỉ làm ở Phase 5.
+"""Model app purchasing: Purchase Order đầy đủ (Phase 5, FR-PO-01..06) — nâng cấp
+từ PO stub Phase 1 (mục 1e, giải quyết circular dependency GRN <-> PO: GRN ở
+Phase 2 cần po_id FK hợp lệ trước khi PO workflow đầy đủ tồn tại).
 
-``Status`` dùng chung enum với PO đầy đủ để nâng cấp tại chỗ, không đổi giá trị cũ
-(BACKLOG dòng 309: "Nâng cấp PO stub đã tạo ở Phase 1 thành workflow đầy đủ"); ở
-Phase 1 chỉ mặc định SENT, chưa có nút chuyển trạng thái.
+Workflow: DRAFT -> APPROVED (Manager/Admin duyệt) -> SENT (gửi NCC, khoá sửa) ->
+PARTIAL_RECEIVED/RECEIVED (tự động theo Qty GRN thực nhận, xem
+``services.sync_po_status``) -> CLOSED (archive).
 """
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 
 class PurchaseOrder(models.Model):
@@ -22,7 +23,12 @@ class PurchaseOrder(models.Model):
     po_no = models.CharField(max_length=30, unique=True, help_text='Mã PO, vd PO-0001.')
     supplier = models.ForeignKey(
         'partners.Supplier', on_delete=models.PROTECT, related_name='purchase_orders')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SENT)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    expected_delivery_date = models.DateField(
+        null=True, blank=True, help_text='Ngày giao hàng dự kiến — dùng để theo dõi On time/Delayed (FR-PO-06).')
+    received_at = models.DateField(
+        null=True, blank=True,
+        help_text='Ngày PO chuyển sang RECEIVED (set tự động 1 lần, dùng tính lead-time thực tế FR-PO-05).')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -30,6 +36,29 @@ class PurchaseOrder(models.Model):
 
     def __str__(self):
         return self.po_no
+
+    def delivery_status(self):
+        """FR-PO-06: phân loại giao hàng On time/Delayed/Partial, tính on-the-fly
+        (không lưu cột riêng) từ ``status``/``expected_delivery_date``/``received_at``.
+        Trả ``None`` khi chưa đủ dữ liệu để đánh giá (chưa gửi NCC, hoặc chưa có
+        ngày giao dự kiến).
+        """
+        if not self.expected_delivery_date:
+            return None
+        if self.status in (self.Status.DRAFT, self.Status.APPROVED):
+            return None
+        if self.status == self.Status.PARTIAL_RECEIVED:
+            return {'code': 'PARTIAL', 'label': 'Nhận một phần', 'css': 'warning'}
+        if self.status == self.Status.SENT:
+            if timezone.localdate() > self.expected_delivery_date:
+                return {'code': 'DELAYED', 'label': 'Trễ hạn (chưa nhận)', 'css': 'danger'}
+            return None
+        if self.status in (self.Status.RECEIVED, self.Status.CLOSED):
+            if self.received_at and self.received_at > self.expected_delivery_date:
+                return {'code': 'DELAYED', 'label': 'Trễ hạn', 'css': 'danger'}
+            if self.received_at:
+                return {'code': 'ON_TIME', 'label': 'Đúng hạn', 'css': 'success'}
+        return None
 
 
 class PurchaseOrderItem(models.Model):
