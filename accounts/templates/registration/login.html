@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Đăng nhập — NVL/WMS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-sm-8 col-md-5 col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+        <h1 class="h4 mb-4 text-center">Đăng nhập</h1>
+
+        {% if form.errors %}
+          <div class="alert alert-danger py-2">Tên đăng nhập hoặc mật khẩu không đúng.</div>
+        {% endif %}
+
+        <form method="post">
+          {% csrf_token %}
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.username.id_for_label }}">Tên đăng nhập</label>
+            {{ form.username }}
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.password.id_for_label }}">Mật khẩu</label>
+            {{ form.password }}
+          </div>
+          <button type="submit" class="btn btn-primary w-100">Đăng nhập</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

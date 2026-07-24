@@ -1,3 +1,80 @@
-from django.shortcuts import render
+"""View app catalog: CRUD Product/SKU (mục 1c — bổ sung, không có mã FR).
 
-# Create your views here.
+Phân quyền: giống warehouse (mục 1b) — không có cột "Catalog"/"Product" trong
+Permission Matrix (BACKLOG mục 1a), nên quyền tạo/sửa gán cho role MANAGER hoặc
+ADMIN; mọi user đã đăng nhập đều XEM được (GRN/PO/Inventory ở Phase sau cần
+tham chiếu Product qua dropdown).
+"""
+from functools import wraps
+
+from django.contrib import messages
+from django.contrib.auth import get_user_model
+from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
+from django.shortcuts import get_object_or_404, redirect, render
+
+from accounts.audit import client_ip, log_action
+from accounts.models import AuditLog
+
+from .forms import ProductForm
+from .models import Product
+
+User = get_user_model()
+
+
+def can_manage_catalog(user):
+    """MANAGER hoặc ADMIN (role) hoặc Django superuser được tạo/sửa Product."""
+    return user.is_superuser or user.role in (User.Role.MANAGER, User.Role.ADMIN)
+
+
+def catalog_manager_required(view):
+    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không đủ quyền -> 403."""
+
+    @wraps(view)
+    @login_required
+    def wrapper(request, *args, **kwargs):
+        if not can_manage_catalog(request.user):
+            raise PermissionDenied('Chỉ Quản lý (Manager) hoặc Admin được quản lý Product/SKU.')
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
+@login_required
+def product_list(request):
+    """READ — danh sách Product (mọi user đã đăng nhập đều xem được)."""
+    products = Product.objects.all()
+    return render(request, 'catalog/product_list.html', {'products': products})
+
+
+@catalog_manager_required
+def product_create(request):
+    """CREATE — tạo Product mới."""
+    form = ProductForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save()
+        log_action(
+            request.user, AuditLog.Action.CREATE, target=obj,
+            description=f'Tạo Product {obj.product_code}',
+            ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã tạo Product "{obj.product_code}".')
+        return redirect('catalog:product_list')
+    return render(request, 'catalog/product_form.html', {'form': form, 'mode': 'create'})
+
+
+@catalog_manager_required
+def product_update(request, pk):
+    """UPDATE — sửa Product (kể cả is_active, không tách khoá/mở riêng như Warehouse)."""
+    obj = get_object_or_404(Product, pk=pk)
+    form = ProductForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save()
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=obj,
+            description=f'Cập nhật Product {obj.product_code}',
+            ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã cập nhật Product "{obj.product_code}".')
+        return redirect('catalog:product_list')
+    return render(request, 'catalog/product_form.html', {'form': form, 'mode': 'update', 'obj': obj})

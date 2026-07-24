@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}Trang chủ — NVL/WMS{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Xin chào, {{ user.username }}</h1>
+<p class="text-muted">Vai trò: {{ user.get_role_display|default:"chưa gán role" }}</p>
+{% endblock %}

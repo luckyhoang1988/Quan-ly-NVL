@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+{% block title %}Người dùng — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Người dùng</h1>
+  <a href="{% url 'user_create' %}" class="btn btn-primary">+ Tạo user</a>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Tên đăng nhập</th>
+        <th>Họ tên</th>
+        <th>Email</th>
+        <th>Vai trò</th>
+        <th>Trạng thái</th>
+        <th class="text-end"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr class="{% if u.is_deleted %}table-secondary text-muted{% endif %}">
+        <td><a href="{% url 'user_detail' u.pk %}">{{ u.username }}</a></td>
+        <td>{{ u.get_full_name|default:"—" }}</td>
+        <td>{{ u.email|default:"—" }}</td>
+        <td>{{ u.get_role_display|default:"—" }}</td>
+        <td>
+          {% if u.is_deleted %}
+            <span class="badge bg-secondary">Đã xoá</span>
+          {% elif u.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          <a href="{% url 'user_update' u.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-center text-muted">Chưa có user nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

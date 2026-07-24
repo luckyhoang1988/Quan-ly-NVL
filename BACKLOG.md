@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 0 / 60 FR
+**Tổng tiến độ:** 7 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -65,11 +65,11 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 ### 1a. User & Permission Management — `accounts` app
 
 #### Functional Requirements (5 FR)
-- [ ] **FR-USER-01** `MUST` — CRUD user account (Create, Read, Update, Delete)
-- [ ] **FR-USER-02** `MUST` — Role-based access control (RBAC): Warehouse Manager, Staff, QC, Purchasing, Accountant, Admin
-- [ ] **FR-USER-03** `MUST` — Login & authentication (username/password)
-- [ ] **FR-USER-04** `MUST` — Permission matrix: từng role có quyền hạn rõ ràng (Create, Read, Update, Delete, Approve)
-- [ ] **FR-USER-05** `MUST` — Ghi lại user action (who, what, when) cho audit
+- [x] **FR-USER-01** `MUST` — CRUD user account (Create, Read, Update, Delete)
+- [x] **FR-USER-02** `MUST` — Role-based access control (RBAC): Warehouse Manager, Staff, QC, Purchasing, Accountant, Admin
+- [x] **FR-USER-03** `MUST` — Login & authentication (username/password)
+- [x] **FR-USER-04** `MUST` — Permission matrix: từng role có quyền hạn rõ ràng (Create, Read, Update, Delete, Approve)
+- [x] **FR-USER-05** `MUST` — Ghi lại user action (who, what, when) cho audit
 
 #### Permission Matrix (từ FSD)
 | Role | GRN | GIN | Opname | QC | PO | Reports |
@@ -82,30 +82,32 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 | Admin | CRUD | CRUD | CRUD | CRUD | CRUD | CRUD |
 
 #### CRUD Operations
-- [ ] CREATE: admin tạo user → email temporary password
-- [ ] READ: xem danh sách, chi tiết, quyền hạn
-- [ ] UPDATE: đổi role, gán warehouse, deactivate
-- [ ] DELETE: soft delete (giữ audit trail)
+- [x] CREATE: admin tạo user → email temporary password
+- [x] READ: xem danh sách, chi tiết, quyền hạn
+- [x] UPDATE: đổi role, ~~gán warehouse~~ (hoãn tới mục 1b), deactivate
+- [x] DELETE: soft delete (giữ audit trail)
 
 > ⚠️ Làm module này xong **trước** khi đụng vào GRN/QC — mọi bảng audit log ở Phase 2 cần FK tới `User`.
 
 ### 1b. Warehouse Management — `warehouse` app
 
 #### Functional Requirements (6 FR)
-- [ ] **FR-WM-01** `MUST` — Tạo & quản lý kho vật lý (CRUD) — Tên kho, địa chỉ, dung tích, hoạt động
-- [ ] **FR-WM-02** `MUST` — Tạo & quản lý vị trí lưu trữ trong kho — Mã vị trí (Giá-A-01), dung tích
-- [ ] **FR-WM-03** `MUST` — Hiển thị real-time inventory theo kho, vị trí — Qty on-hand, available, reserved, quarantine
-- [ ] **FR-WM-04** `MUST` — Cảnh báo tồn < Min Level — Gợi ý tạo PO tự động
-- [ ] **FR-WM-05** `MUST` — Cảnh báo tồn > Max Level — Để lại ghi chú cho quản lý
-- [ ] **FR-WM-06** `SHOULD` — Hỗ trợ multi-warehouse chuyển vị trí — Stock transfer, intra-warehouse
+- [x] **FR-WM-01** `MUST` — Tạo & quản lý kho vật lý (CRUD) — Tên kho, địa chỉ, dung tích, hoạt động
+- [x] **FR-WM-02** `MUST` — Tạo & quản lý vị trí lưu trữ trong kho — Mã vị trí (Giá-A-01), dung tích
+- [ ] **FR-WM-03** `MUST` — Hiển thị real-time inventory theo kho, vị trí — Qty on-hand, available, reserved, quarantine (chờ model `Inventory`, mục 1f)
+- [ ] **FR-WM-04** `MUST` — Cảnh báo tồn < Min Level — Gợi ý tạo PO tự động (chờ model `Inventory`, mục 1f)
+- [ ] **FR-WM-05** `MUST` — Cảnh báo tồn > Max Level — Để lại ghi chú cho quản lý (chờ model `Inventory`, mục 1f)
+- [ ] **FR-WM-06** `SHOULD` — Hỗ trợ multi-warehouse chuyển vị trí — Stock transfer, intra-warehouse (chờ tồn kho thật, làm cùng Phase 3 GIN/FIFO)
+
+> ⚠️ FR-WM-03/04/05/06 cần dữ liệu tồn kho (qty_on_hand...) mà app `inventory` (mục 1f) chưa tồn tại — CRUD kho + vị trí (FR-WM-01/02) đã đủ để Phase 1 DoD "tạo được Warehouse + Location qua UI" hoàn thành; 4 FR còn lại nối lại khi Inventory có mặt (1f/Phase 3).
 
 #### Business Rules
-- [ ] BR-WM-001: `qty_on_hand >= 0` (không cho âm)
-- [ ] BR-WM-002: `qty_available = qty_on_hand - qty_reserved` (auto calculate)
-- [ ] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm
-- [ ] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng
-- [ ] BR-WM-005: Tạo warehouse → min 10 vị trí
-- [ ] BR-WM-006: Không thể xóa warehouse nếu `qty_on_hand > 0`
+- [ ] BR-WM-001: `qty_on_hand >= 0` (không cho âm) — thuộc model Inventory, chưa tồn tại (mục 1f)
+- [ ] BR-WM-002: `qty_available = qty_on_hand - qty_reserved` (auto calculate) — thuộc model Inventory, chưa tồn tại (mục 1f)
+- [ ] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm — thuộc Phase 3 (GIN)
+- [ ] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng — thuộc Phase 2 (GRN)
+- [x] BR-WM-005: Tạo warehouse → min 10 vị trí (tự sinh 10 vị trí mặc định A-01..A-10 khi tạo kho)
+- [ ] BR-WM-006: Không thể xóa warehouse nếu `qty_on_hand > 0` — "xoá" hiện là khoá hoạt động (soft); kiểm tra `qty_on_hand` thực tế cần model Inventory (mục 1f), đã đánh dấu TODO trong code (`warehouse/views.py::warehouse_deactivate`)
 
 > ⏸️ **FR-WM-04 phần "gợi ý tạo PO tự động"**: chỉ cần hiển thị cảnh báo trên dashboard ở Phase 1 (tính on-the-fly khi load trang). Auto-tạo PO draft thật sự (cần job chạy nền) dời qua Phase 5 khi có Celery.
 
@@ -113,34 +115,34 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 *(Không có mã FR riêng trong SRS gốc — nhưng bắt buộc phải có trước khi làm GRN/PO/Inventory)*
 
-- [ ] Product model tối thiểu: `product_code`, `name`, `category`, `uom` (đơn vị tính), `min_level`, `max_level`
-- [ ] CRUD cơ bản (list, create, edit) — chưa cần UI đẹp, đủ dùng để nhập data test
+- [x] Product model tối thiểu: `product_code`, `name`, `category`, `uom` (đơn vị tính), `min_level`, `max_level`
+- [x] CRUD cơ bản (list, create, edit) — role MANAGER/ADMIN tạo/sửa, mọi user đã đăng nhập xem được (đồng nhất với warehouse); `is_active` sửa trực tiếp trên form (không tách khoá/mở riêng vì không có business rule như BR-WM-006)
 
 ### 1d. [Bổ sung] Supplier Master Data — `partners` app
 
 *(Không có mã FR riêng trong SRS gốc — cần cho GRN, PO, Reporting supplier performance)*
 
-- [ ] Supplier model tối thiểu: `supplier_code`, `name`, `contact`, `lead_time_days` (cần cho FR-PO-05 sau này)
-- [ ] CRUD cơ bản
+- [x] Supplier model tối thiểu: `supplier_code`, `name`, `contact`, `lead_time_days` (cần cho FR-PO-05 sau này)
+- [x] CRUD cơ bản — role MANAGER/ADMIN tạo/sửa, mọi user đã đăng nhập xem được (đồng nhất với catalog); `is_active` sửa trực tiếp trên form
 
 ### 1e. [Bổ sung] PO Stub — `purchasing` app (tối thiểu, để GRN tham chiếu)
 
 *(Giải quyết circular dependency: GRN cần `po_id` FK hợp lệ, nhưng PO đầy đủ chỉ làm ở Phase 5)*
 
-- [ ] PO model tối thiểu: `po_no`, `supplier_id` (FK), `status` (mặc định `SENT` để test được), `items` (`product_id`, `qty_ordered`, `unit_price`)
-- [ ] **Chưa làm ở đây:** workflow DRAFT→APPROVED, so sánh giá NCC, auto-suggestion, lead-time tracking — tất cả dời qua Phase 5
+- [x] PO model tối thiểu: `po_no`, `supplier_id` (FK), `status` (mặc định `SENT` để test được), `items` (`product_id`, `qty_ordered`, `unit_price`) — CRUD qua inline formset; phân quyền dùng RBAC thật (`user.can(action, 'po')`) vì 'po' có trong Permission Matrix: MANAGER/PURCHASING/ADMIN Create+Update, STAFF/QC/ACCOUNTANT chỉ Read
+- [x] **Chưa làm ở đây:** workflow DRAFT→APPROVED, so sánh giá NCC, auto-suggestion, lead-time tracking — tất cả dời qua Phase 5
 
 ### 1f. [Bổ sung] Inventory & Batch — `inventory` app (chỉ tạo schema, chưa làm logic)
 
 *(GRN ở Phase 2 cần model này tồn tại để ghi `qty_on_hand`/tạo Batch — logic FIFO/EOQ/alert đầy đủ làm ở Phase 3)*
 
-- [ ] Inventory model: `product_id` (FK), `warehouse_id` (FK), `qty_on_hand`, `qty_reserved`, `qty_available` (computed), `qty_quarantine`
-- [ ] Batch model: `product_id` (FK), `batch_code`, `mfg_date`, `exp_date`, `qty_received`, `qty_used`, `qty_available` (computed), `status` (enum: ACTIVE/PARTIAL_USED/QUARANTINE/EXPIRED/CLOSED), `supplier_id` (FK), `location_id` (FK)
+- [x] Inventory model: `product_id` (FK), `warehouse_id` (FK), `qty_on_hand`, `qty_reserved`, `qty_available` (computed), `qty_quarantine` — unique per (product, warehouse); `qty_available` là property, không lưu cột riêng
+- [x] Batch model: `product_id` (FK), `batch_code`, `mfg_date`, `exp_date`, `qty_received`, `qty_used`, `qty_available` (computed), `status` (enum: ACTIVE/PARTIAL_USED/QUARANTINE/EXPIRED/CLOSED, mặc định ACTIVE), `supplier_id` (FK), `location_id` (FK) — chưa có view/form CRUD, chưa có transition logic (dời Phase 2/3), chỉ model + admin
 
 ### ✅ Definition of Done — Phase 1
 - [ ] Login được, phân quyền theo 6 role hoạt động đúng permission matrix
 - [ ] Tạo được Warehouse + Location + Product + Supplier + 1 PO stub qua UI/admin
-- [ ] `qty_available = qty_on_hand - qty_reserved` tính đúng (unit test)
+- [x] `qty_available = qty_on_hand - qty_reserved` tính đúng (unit test) — `TC-INV-001-001` (Inventory), `TC-INV-002-001` (Batch: qty_received - qty_used)
 
 ---
 

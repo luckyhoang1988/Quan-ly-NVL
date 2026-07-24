@@ -1,0 +1,98 @@
+"""RBAC — nguồn dữ liệu DUY NHẤT của ma trận phân quyền (FR-USER-02, FR-USER-04).
+
+Toàn bộ ma trận khai báo tập trung ở đây để:
+- ``models.py`` sinh danh sách custom Permission (``User.Meta.permissions``).
+- ``rbac.sync_roles()`` tạo 6 Group và gán quyền theo đúng ma trận.
+- View/template kiểm tra quyền qua ``perms.accounts.<codename>`` hoặc ``user.can(...)``.
+
+Quyền KHÔNG gắn với model nghiệp vụ (GRN/GIN/... chưa tồn tại ở Phase 1) mà là
+"quyền hành động cấp module", neo vào content type của ``accounts.User`` — tạo một
+vocabulary phân quyền ổn định, độc lập với CRUD model của từng app ở các Phase sau.
+
+Codename quy ước: ``can_<action>_<module>`` (vd ``can_approve_grn``).
+"""
+
+# Module nghiệp vụ (khớp các cột trong bảng Permission Matrix ở BACKLOG mục 1a).
+MODULES = {
+    'grn': 'GRN (phiếu nhập)',
+    'gin': 'GIN (phiếu xuất)',
+    'opname': 'Stock Opname (kiểm kê)',
+    'qc': 'Quality Control',
+    'po': 'Purchase Order',
+    'reports': 'Reports',
+}
+
+# Hành động (FR-USER-04: Create / Read / Update / Delete / Approve).
+ACTIONS = {
+    'create': 'Create',
+    'read': 'Read',
+    'update': 'Update',
+    'delete': 'Delete',
+    'approve': 'Approve',
+}
+
+# Ma trận: role -> module -> set(action).
+# - Phần C/R/U/D: chép nguyên bảng Permission Matrix ở BACKLOG mục 1a.
+# - Cột Approve: theo phương án "Theo nghiệp vụ" (user chốt ở bước A2):
+#     GRN/GIN/Opname/PO/Reports -> Manager + Admin;  QC -> QC Inspector + Manager + Admin.
+ROLE_PERMISSIONS = {
+    'MANAGER': {
+        'grn': {'create', 'read', 'update', 'delete', 'approve'},   # CRUD + approve
+        'gin': {'create', 'read', 'update', 'delete', 'approve'},    # CRUD + approve
+        'opname': {'create', 'read', 'update', 'delete', 'approve'}, # CRUD + approve
+        'qc': {'read', 'approve'},                                   # R + approve
+        'po': {'create', 'read', 'update', 'delete', 'approve'},     # CRUD + approve
+        'reports': {'read', 'approve'},                              # R + approve
+    },
+    'STAFF': {
+        'grn': {'create', 'read'},                 # CR
+        'gin': {'create', 'read'},                 # CR
+        'opname': {'create', 'read', 'update'},    # CRU
+        'qc': set(),                               # –
+        'po': {'read'},                            # R
+        'reports': {'read'},                       # R
+    },
+    'QC': {
+        'grn': {'read'},                                    # R
+        'gin': {'read'},                                    # R
+        'opname': set(),                                    # –
+        'qc': {'create', 'read', 'update', 'approve'},      # CRU + approve
+        'po': {'read'},                                     # R
+        'reports': {'read'},                                # R
+    },
+    'PURCHASING': {
+        'grn': {'read'},                                    # R
+        'gin': {'read'},                                    # R
+        'opname': set(),                                    # –
+        'qc': {'read'},                                     # R
+        'po': {'create', 'read', 'update', 'delete'},       # CRUD (approve -> Manager/Admin)
+        'reports': {'read'},                                # R
+    },
+    'ACCOUNTANT': {
+        'grn': {'read'},                                    # R
+        'gin': {'read'},                                    # R
+        'opname': set(),                                    # –
+        'qc': {'read'},                                     # R
+        'po': {'read'},                                     # R
+        'reports': {'create', 'read', 'update', 'delete'},  # CRUD (approve -> Manager/Admin)
+    },
+    'ADMIN': {
+        # Full mọi quyền trên mọi module.
+        module: set(ACTIONS) for module in MODULES
+    },
+}
+
+
+def all_permission_codenames():
+    """Toàn bộ codename có thể có = MODULES × ACTIONS (dùng khi sinh Meta.permissions)."""
+    return [f'can_{action}_{module}' for module in MODULES for action in ACTIONS]
+
+
+def codenames_for_role(role):
+    """Tập codename mà một role được cấp (theo ROLE_PERMISSIONS)."""
+    module_actions = ROLE_PERMISSIONS.get(role, {})
+    return [
+        f'can_{action}_{module}'
+        for module, actions in module_actions.items()
+        for action in actions
+    ]

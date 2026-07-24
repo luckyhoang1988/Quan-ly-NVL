@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block title %}Kho hàng — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Kho hàng</h1>
+  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <a href="{% url 'warehouse:warehouse_create' %}" class="btn btn-primary">+ Tạo kho</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã kho</th>
+        <th>Tên kho</th>
+        <th>Địa chỉ</th>
+        <th>Dung tích</th>
+        <th>Số vị trí</th>
+        <th>Trạng thái</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in warehouses %}
+      <tr class="{% if not w.is_active %}table-secondary text-muted{% endif %}">
+        <td><a href="{% url 'warehouse:warehouse_detail' w.pk %}">{{ w.code }}</a></td>
+        <td>{{ w.name }}</td>
+        <td>{{ w.address|default:"—" }}</td>
+        <td>{{ w.capacity|default:"—" }}</td>
+        <td>{{ w.locations.count }}</td>
+        <td>
+          {% if w.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-center text-muted">Chưa có kho nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

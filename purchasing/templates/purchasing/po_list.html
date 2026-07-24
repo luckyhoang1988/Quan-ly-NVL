@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Purchase Order — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Purchase Order</h1>
+  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'PURCHASING' or user.role == 'ADMIN' %}
+    <a href="{% url 'purchasing:po_create' %}" class="btn btn-primary">+ Tạo PO</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã PO</th>
+        <th>NCC</th>
+        <th>Trạng thái</th>
+        <th>Số dòng</th>
+        <th>Ngày tạo</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for po in orders %}
+      <tr>
+        <td>{{ po.po_no }}</td>
+        <td>{{ po.supplier.name }}</td>
+        <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
+        <td>{{ po.items.count }}</td>
+        <td>{{ po.created_at|date:'d/m/Y H:i' }}</td>
+        <td>
+          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'PURCHASING' or user.role == 'ADMIN' %}
+            <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-center text-muted">Chưa có PO nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

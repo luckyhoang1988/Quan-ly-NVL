@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+{% block title %}{{ obj.code }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ obj.code }} — {{ obj.name }}</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'warehouse:warehouse_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
+    {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+      <a href="{% url 'warehouse:warehouse_update' obj.pk %}" class="btn btn-outline-primary">Sửa</a>
+      {% if obj.is_active %}
+        <a href="{% url 'warehouse:warehouse_deactivate' obj.pk %}" class="btn btn-outline-danger">Khoá</a>
+      {% else %}
+        <form method="post" action="{% url 'warehouse:warehouse_activate' obj.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-success">Mở lại</button>
+        </form>
+      {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+<dl class="row">
+  <dt class="col-sm-3">Địa chỉ</dt>
+  <dd class="col-sm-9">{{ obj.address|default:"—" }}</dd>
+  <dt class="col-sm-3">Dung tích</dt>
+  <dd class="col-sm-9">{{ obj.capacity|default:"—" }}</dd>
+  <dt class="col-sm-3">Trạng thái</dt>
+  <dd class="col-sm-9">
+    {% if obj.is_active %}
+      <span class="badge bg-success">Hoạt động</span>
+    {% else %}
+      <span class="badge bg-warning text-dark">Khoá</span>
+    {% endif %}
+  </dd>
+</dl>
+
+<h2 class="h5 mt-4">Vị trí lưu trữ ({{ locations|length }})</h2>
+<div class="table-responsive">
+  <table class="table table-sm table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã vị trí</th>
+        <th>Dung tích</th>
+        <th>Trạng thái</th>
+        {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}<th class="text-end"></th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for loc in locations %}
+      <tr class="{% if not loc.is_active %}table-secondary text-muted{% endif %}">
+        <td>{{ loc.code }}</td>
+        <td>{{ loc.capacity|default:"—" }}</td>
+        <td>
+          {% if loc.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+        {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+        <td class="text-end">
+          <a href="{% url 'warehouse:location_update' obj.pk loc.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+          <form method="post" action="{% url 'warehouse:location_toggle_active' obj.pk loc.pk %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-outline-warning">
+              {% if loc.is_active %}Khoá{% else %}Mở lại{% endif %}
+            </button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% empty %}
+      <tr><td colspan="4" class="text-center text-muted">Chưa có vị trí nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+<h2 class="h5 mt-4">Thêm vị trí mới</h2>
+<form method="post" action="{% url 'warehouse:location_create' obj.pk %}" class="row g-2 align-items-end">
+  {% csrf_token %}
+  <div class="col-auto">
+    <label class="form-label small" for="{{ location_form.code.id_for_label }}">{{ location_form.code.label }}</label>
+    {{ location_form.code }}
+  </div>
+  <div class="col-auto">
+    <label class="form-label small" for="{{ location_form.capacity.id_for_label }}">{{ location_form.capacity.label }}</label>
+    {{ location_form.capacity }}
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary">Thêm</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

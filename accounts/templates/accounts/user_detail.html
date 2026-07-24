@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block title %}{{ obj.username }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ obj.username }}</h1>
+  <div class="d-flex gap-2">
+    <a href="{% url 'user_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
+    <a href="{% url 'user_update' obj.pk %}" class="btn btn-outline-primary">Sửa</a>
+    {% if not obj.is_deleted and obj.pk != user.pk %}
+      <a href="{% url 'user_delete' obj.pk %}" class="btn btn-outline-danger">Xoá</a>
+    {% endif %}
+  </div>
+</div>
+
+<dl class="row">
+  <dt class="col-sm-3">Họ tên</dt>
+  <dd class="col-sm-9">{{ obj.get_full_name|default:"—" }}</dd>
+  <dt class="col-sm-3">Email</dt>
+  <dd class="col-sm-9">{{ obj.email|default:"—" }}</dd>
+  <dt class="col-sm-3">Vai trò</dt>
+  <dd class="col-sm-9">{{ obj.get_role_display|default:"chưa gán role" }}</dd>
+  <dt class="col-sm-3">Trạng thái</dt>
+  <dd class="col-sm-9">
+    {% if obj.is_deleted %}
+      <span class="badge bg-secondary">Đã xoá</span> (từ {{ obj.deleted_at }})
+    {% elif obj.is_active %}
+      <span class="badge bg-success">Hoạt động</span>
+    {% else %}
+      <span class="badge bg-warning text-dark">Khoá</span>
+    {% endif %}
+  </dd>
+</dl>
+
+<h2 class="h5 mt-4">Quyền hạn theo vai trò</h2>
+<div class="table-responsive">
+  <table class="table table-sm table-bordered">
+    <thead>
+      <tr>
+        <th>Module</th>
+        {% for label in action_labels %}<th class="text-center">{{ label }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in perm_rows %}
+      <tr>
+        <td>{{ row.module }}</td>
+        {% for ok in row.cells %}
+          <td class="text-center">
+            {% if ok %}<span class="text-success">✔</span>{% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

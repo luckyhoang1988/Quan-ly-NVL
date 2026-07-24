@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}Nhà cung cấp — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Nhà cung cấp</h1>
+  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <a href="{% url 'partners:supplier_create' %}" class="btn btn-primary">+ Tạo Supplier</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã NCC</th>
+        <th>Tên nhà cung cấp</th>
+        <th>Liên hệ</th>
+        <th>Lead time (ngày)</th>
+        <th>Trạng thái</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in suppliers %}
+      <tr class="{% if not s.is_active %}table-secondary text-muted{% endif %}">
+        <td>{{ s.supplier_code }}</td>
+        <td>{{ s.name }}</td>
+        <td>{{ s.contact|default:"—" }}</td>
+        <td>{{ s.lead_time_days|default:"—" }}</td>
+        <td>
+          {% if s.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+            <a href="{% url 'partners:supplier_update' s.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="text-center text-muted">Chưa có Supplier nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

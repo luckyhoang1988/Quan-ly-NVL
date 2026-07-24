@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block title %}Sản phẩm (SKU) — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Sản phẩm (SKU)</h1>
+  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <a href="{% url 'catalog:product_create' %}" class="btn btn-primary">+ Tạo Product</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã SKU</th>
+        <th>Tên sản phẩm</th>
+        <th>Nhóm</th>
+        <th>ĐVT</th>
+        <th>Min level</th>
+        <th>Max level</th>
+        <th>Trạng thái</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr class="{% if not p.is_active %}table-secondary text-muted{% endif %}">
+        <td>{{ p.product_code }}</td>
+        <td>{{ p.name }}</td>
+        <td>{{ p.category|default:"—" }}</td>
+        <td>{{ p.uom }}</td>
+        <td>{{ p.min_level|default:"—" }}</td>
+        <td>{{ p.max_level|default:"—" }}</td>
+        <td>
+          {% if p.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+            <a href="{% url 'catalog:product_update' p.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="8" class="text-center text-muted">Chưa có Product nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

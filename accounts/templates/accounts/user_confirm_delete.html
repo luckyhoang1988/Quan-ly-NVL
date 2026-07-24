@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}Xoá user — NVL/WMS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <h1 class="h3 mb-3">Xoá user</h1>
+    <p>
+      Bạn có chắc muốn xoá (mềm) user <strong>{{ obj.username }}</strong>?
+      Bản ghi vẫn được giữ lại phục vụ audit, nhưng user sẽ bị khoá đăng nhập.
+    </p>
+    <form method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger">Xoá</button>
+      <a href="{% url 'user_detail' obj.pk %}" class="btn btn-link">Huỷ</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -53,6 +53,22 @@ INSTALLED_APPS = [
     'inventory',    # Tồn kho / Batch (schema ở Phase 1)
 ]
 
+# Custom user model (NVL/WMS): thêm role RBAC + soft delete.
+# BẮT BUỘC khai báo trước lần migrate đầu tiên — đổi về sau rất khó.
+AUTH_USER_MODEL = 'accounts.User'
+
+# Điều hướng đăng nhập/đăng xuất (FR-USER-03).
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'dashboard'
+LOGOUT_REDIRECT_URL = 'login'
+
+# Email (FR-USER-01: gửi mật khẩu tạm khi tạo user).
+# Dev mặc định in ra console (xem terminal runserver); production cấu hình SMTP
+# qua .env sau. Khi chạy test, Django tự override sang backend locmem (mail.outbox).
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@nvl-wms.local')
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
