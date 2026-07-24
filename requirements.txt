@@ -6,9 +6,13 @@ Django==5.2.16            # LTS
 psycopg[binary]==3.3.4    # PostgreSQL adapter (psycopg 3)
 python-dotenv==1.2.2      # đọc cấu hình từ file .env
 Pillow==12.3.0             # xử lý ImageField (FR-QC-06: upload ảnh evidence QC)
+openpyxl==3.1.5           # export Excel (FR-RPT-05)
+reportlab==5.0.0          # export PDF (FR-RPT-05)
 
 # --- Transitive dependencies (pinned for reproducibility) ---
 asgiref==3.12.1
 sqlparse==0.5.5
 typing_extensions==4.16.0
 tzdata==2026.3
+et-xmlfile==2.0.0
+charset-normalizer==3.4.9

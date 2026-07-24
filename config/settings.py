@@ -61,6 +61,9 @@ INSTALLED_APPS = [
 
     # --- NVL/WMS apps (Phase 4) ---
     'stocktake',    # Kiểm kê (Stock Opname)
+
+    # --- NVL/WMS apps (Phase 6) ---
+    'reports',      # Reporting & Analytics
 ]
 
 # Custom user model (NVL/WMS): thêm role RBAC + soft delete.

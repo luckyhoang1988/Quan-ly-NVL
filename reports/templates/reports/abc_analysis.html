@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+{% block title %}ABC Analysis — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Báo Cáo ABC Analysis</h1>
+  <div class="d-flex gap-2">
+    <a href="?export=excel" class="btn btn-outline-secondary btn-sm">Export Excel</a>
+    <a href="?export=pdf" class="btn btn-outline-secondary btn-sm">Export PDF</a>
+    <a href="{% url 'reports:dashboard' %}" class="btn btn-outline-secondary btn-sm">« Dashboard</a>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Tên sản phẩm</th>
+        <th>Tồn kho</th>
+        <th>Đơn giá</th>
+        <th>Giá trị</th>
+        <th>% Tích luỹ</th>
+        <th>Loại</th>
+        <th>Đề xuất</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.product.product_code }}</td>
+        <td>{{ row.product.name }}</td>
+        <td>{{ row.total_qty }}</td>
+        <td>{{ row.unit_price|floatformat:2 }}</td>
+        <td>{{ row.value|floatformat:0 }}</td>
+        <td>{{ row.cumulative_pct|floatformat:1 }}%</td>
+        <td>
+          <span class="badge {% if row.class == 'A' %}bg-danger{% elif row.class == 'B' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">{{ row.class }}</span>
+        </td>
+        <td>{{ row.recommendation }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="8" class="text-center text-muted">Chưa có dữ liệu để phân tích.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if unpriced %}
+<h2 class="h6 mt-4">SKU chưa có lịch sử giá (chưa xếp loại)</h2>
+<div class="table-responsive">
+  <table class="table table-sm">
+    <thead><tr><th>SKU</th><th>Tên sản phẩm</th><th>Tồn kho</th></tr></thead>
+    <tbody>
+      {% for row in unpriced %}
+      <tr>
+        <td>{{ row.product.product_code }}</td>
+        <td>{{ row.product.name }}</td>
+        <td>{{ row.total_qty }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

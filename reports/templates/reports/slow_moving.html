@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Tồn Lỏng — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Báo Cáo Tồn Lỏng (Slow-moving, &gt; {{ days }} ngày)</h1>
+  <div class="d-flex gap-2">
+    <a href="?export=excel" class="btn btn-outline-secondary btn-sm">Export Excel</a>
+    <a href="?export=pdf" class="btn btn-outline-secondary btn-sm">Export PDF</a>
+    <a href="{% url 'reports:dashboard' %}" class="btn btn-outline-secondary btn-sm">« Dashboard</a>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Tên sản phẩm</th>
+        <th>Tồn kho</th>
+        <th>Giá trị</th>
+        <th>Số ngày chưa xuất</th>
+        <th>Lần xuất gần nhất</th>
+        <th>Đề xuất</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.product.product_code }}</td>
+        <td>{{ row.product.name }}</td>
+        <td>{{ row.total_qty }}</td>
+        <td>{{ row.value|floatformat:0|default:"—" }}</td>
+        <td>{{ row.days_idle }}</td>
+        <td>{{ row.last_issue_date|default:"Chưa từng xuất" }}</td>
+        <td>{{ row.recommendation }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Không có SKU nào tồn lỏng.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

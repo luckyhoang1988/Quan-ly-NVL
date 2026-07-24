@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Hiệu Suất NCC — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Báo Cáo Hiệu Suất Nhà Cung Cấp</h1>
+  <div class="d-flex gap-2">
+    <a href="?export=excel" class="btn btn-outline-secondary btn-sm">Export Excel</a>
+    <a href="?export=pdf" class="btn btn-outline-secondary btn-sm">Export PDF</a>
+    <a href="{% url 'reports:dashboard' %}" class="btn btn-outline-secondary btn-sm">« Dashboard</a>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>NCC</th>
+        <th>Số PO đã nhận</th>
+        <th>% Đúng hạn</th>
+        <th>% QC Pass</th>
+        <th>Đơn giá bình quân</th>
+        <th>Lead-time cấu hình (ngày)</th>
+        <th>Lead-time thực tế (ngày)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.supplier.supplier_code }} - {{ row.supplier.name }}</td>
+        <td>{{ row.received_po_count }}</td>
+        <td>{{ row.on_time_pct|floatformat:1|default:"—" }}{% if row.on_time_pct is not None %}%{% endif %}</td>
+        <td>{{ row.qc_pass_pct|floatformat:1|default:"—" }}{% if row.qc_pass_pct is not None %}%{% endif %}</td>
+        <td>{{ row.avg_price|floatformat:2|default:"—" }}</td>
+        <td>{{ row.configured_lead_time_days|default:"—" }}</td>
+        <td>{{ row.avg_actual_lead_time_days|floatformat:1|default:"—" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Chưa có NCC nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

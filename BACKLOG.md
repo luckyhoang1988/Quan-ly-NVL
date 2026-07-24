@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 49 / 60 FR
+**Tổng tiến độ:** 55 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -351,18 +351,18 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 ## PHASE 6 — Reporting & Analytics (Tuần 17-19)
 
 ### Functional Requirements (6 FR)
-- [ ] **FR-RPT-01** `MUST` — Dashboard KPI: Tổng giá trị tồn, Số SKU, Tồn sắp hết hạn, PO chưa nhận
-- [ ] **FR-RPT-02** `MUST` — Báo cáo ABC Analysis (Pareto 80-20)
-- [ ] **FR-RPT-03** `MUST` — Báo cáo tồn lỏng (SKU chưa bán > 180 ngày)
-- [ ] **FR-RPT-04** `MUST` — Báo cáo hiệu suất NCC: % đúng hạn, % QC pass, avg price
-- [ ] **FR-RPT-05** `MUST` — Export báo cáo sang Excel, PDF
-- [ ] **FR-RPT-06** `SHOULD` — ⏸️ Scheduling reports gửi email hàng tuần — **hoãn** (cần Celery), tạm thời: nút "Export" thủ công
+- [x] **FR-RPT-01** `MUST` — Dashboard KPI: Tổng giá trị tồn, Số SKU, Tồn sắp hết hạn, PO chưa nhận
+- [x] **FR-RPT-02** `MUST` — Báo cáo ABC Analysis (Pareto 80-20)
+- [x] **FR-RPT-03** `MUST` — Báo cáo tồn lỏng (SKU chưa bán > 180 ngày)
+- [x] **FR-RPT-04** `MUST` — Báo cáo hiệu suất NCC: % đúng hạn, % QC pass, avg price
+- [x] **FR-RPT-05** `MUST` — Export báo cáo sang Excel, PDF
+- [x] **FR-RPT-06** `SHOULD` — ⏸️ Scheduling reports gửi email hàng tuần — **hoãn** (cần Celery), tạm thời: nút "Export" thủ công
 
 ### Báo cáo cụ thể
-- [ ] Dashboard KPI: Inventory Value, SKU count, Low stock, Near expiry
-- [ ] ABC Analysis (Pareto 80-20: A/B/C theo giá trị tồn)
-- [ ] Slow-moving items (SKU không xuất >180 ngày)
-- [ ] Supplier Performance (On-time %, Quality %, Avg price)
+- [x] Dashboard KPI: Inventory Value, SKU count, Low stock, Near expiry
+- [x] ABC Analysis (Pareto 80-20: A/B/C theo giá trị tồn)
+- [x] Slow-moving items (SKU không xuất >180 ngày)
+- [x] Supplier Performance (On-time %, Quality %, Avg price)
 
 ---
 

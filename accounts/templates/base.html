@@ -75,6 +75,11 @@
           </a>
         </li>
         {% endif %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}" href="{% url 'reports:dashboard' %}">
+            <i class="bi bi-graph-up"></i> Báo cáo
+          </a>
+        </li>
         {% if user.is_superuser or user.role == 'ADMIN' %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">

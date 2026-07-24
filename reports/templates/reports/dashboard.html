@@ -1,0 +1,91 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Dashboard KPI</h1>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">Tổng giá trị tồn</div>
+        <div class="h4 mb-0">{{ kpis.total_inventory_value|floatformat:0 }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">Số SKU</div>
+        <div class="h4 mb-0">{{ kpis.sku_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100 {% if kpis.low_stock_count %}border-danger{% endif %}">
+      <div class="card-body">
+        <div class="text-muted small">Tồn dưới Min</div>
+        <div class="h4 mb-0">{{ kpis.low_stock_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100 {% if kpis.near_expiry_count %}border-warning{% endif %}">
+      <div class="card-body">
+        <div class="text-muted small">Sắp hết hạn (30 ngày)</div>
+        <div class="h4 mb-0">{{ kpis.near_expiry_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">PO chưa nhận đủ</div>
+        <div class="h4 mb-0">{{ kpis.pending_po_count }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">GRN chờ QC</div>
+        <div class="h4 mb-0">{{ kpis.pending_grn_count }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-4">
+    <a href="{% url 'reports:abc_analysis' %}" class="text-decoration-none">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6"><i class="bi bi-bar-chart"></i> ABC Analysis</h2>
+          <p class="text-muted small mb-0">Phân loại SKU theo giá trị tồn kho (Pareto 80-20).</p>
+        </div>
+      </div>
+    </a>
+  </div>
+  <div class="col-md-4">
+    <a href="{% url 'reports:slow_moving' %}" class="text-decoration-none">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6"><i class="bi bi-hourglass-split"></i> Tồn Lỏng (Slow-moving)</h2>
+          <p class="text-muted small mb-0">SKU chưa xuất kho quá 180 ngày.</p>
+        </div>
+      </div>
+    </a>
+  </div>
+  <div class="col-md-4">
+    <a href="{% url 'reports:supplier_performance' %}" class="text-decoration-none">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6"><i class="bi bi-truck"></i> Hiệu Suất NCC</h2>
+          <p class="text-muted small mb-0">% Đúng hạn, % QC Pass, đơn giá bình quân.</p>
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
+{% endblock %}
