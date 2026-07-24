@@ -30,3 +30,22 @@ def submit_to_pending_qc(grn, actor=None, ip_address=None):
         ip_address=ip_address,
     )
     return grn
+
+
+def tolerance_alerts(grn):
+    """FR-GRN-07: cảnh báo (không chặn) từng item có |qty_received - qty_ordered|
+    vượt ``Supplier.qty_tolerance_percent`` — gọi sau khi Qty thực nhận đã lưu
+    (state PENDING_QC), trả về danh sách message để view hiển thị.
+    """
+    tolerance = grn.supplier.qty_tolerance_percent
+    alerts = []
+    for item in grn.items.all():
+        if not item.qty_ordered:
+            continue
+        diff_percent = abs(item.qty_received - item.qty_ordered) / item.qty_ordered * 100
+        if diff_percent > tolerance:
+            alerts.append(
+                f'{item.product}: nhận {item.qty_received}/{item.qty_ordered} '
+                f'(chênh {diff_percent:.1f}%, vượt ngưỡng {tolerance}% của NCC "{grn.supplier}").'
+            )
+    return alerts

@@ -7,9 +7,7 @@ category sản phẩm) — không FK cứng từ ``QcInspectionItem`` vì FSD gh
 ``GrnItem.qty_ordered`` snapshot từ PO), tránh vỡ lịch sử khi criteria đổi sau.
 
 Transaction QC PASS/FAIL/PARTIAL_PASS (đổi status GRN, tạo Batch/GrnReturn, cập
-nhật Inventory) là logic nghiệp vụ — CHƯA cài ở đây, chỉ model. Ảnh evidence
-(FR-QC-06, SHOULD) hoãn tới khi cần Pillow + MEDIA config, không thêm dependency
-sớm.
+nhật Inventory) là logic nghiệp vụ — CHƯA cài ở đây, chỉ model.
 """
 from django.db import models, transaction
 from django.utils import timezone
@@ -22,6 +20,10 @@ class QcCriteria(models.Model):
     name = models.CharField(max_length=100, help_text='Vd: Ngoại hình, Trọng lượng, Seal integrity.')
     pass_rule = models.CharField(max_length=255, blank=True)
     fail_rule = models.CharField(max_length=255, blank=True)
+    reference_image = models.ImageField(
+        upload_to='qc_criteria_ref/%Y/%m/', blank=True, null=True,
+        help_text='Ảnh mẫu minh hoạ tiêu chuẩn (vd: màu sắc đạt, seal integrity đạt).',
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -89,6 +91,10 @@ class QcInspectionItem(models.Model):
     actual_value = models.CharField(max_length=100, blank=True)
     result = models.CharField(max_length=10, choices=Result.choices)
     notes = models.TextField(blank=True)
+    image = models.ImageField(
+        upload_to='qc_evidence/%Y/%m/', blank=True, null=True,
+        help_text='Ảnh evidence thực tế lúc kiểm (FR-QC-06).',
+    )
 
     def __str__(self):
         return f'{self.inspection.qc_no} - {self.criteria_name}: {self.result}'

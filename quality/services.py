@@ -32,8 +32,7 @@ from .models import QcInspection
 
 
 def _batch_code(grn_item, suffix=''):
-    base = (grn_item.batch_code or '').strip() or f'{grn_item.grn.grn_no}-{grn_item.product.product_code}'
-    return f'{base}{suffix}'
+    return f'{grn_item.label_code}{suffix}'
 
 
 def _credit_inventory(product, warehouse, qty):

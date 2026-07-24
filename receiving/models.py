@@ -89,6 +89,15 @@ class GrnItem(models.Model):
     def __str__(self):
         return f'{self.grn.grn_no} - {self.product.product_code} x{self.qty_received}/{self.qty_ordered}'
 
+    @property
+    def label_code(self):
+        """Nội dung barcode in nhãn dán hàng lúc nhận (FR-GRN-06). Cùng công thức
+        fallback với ``Batch.batch_code`` khi QC PASS (xem
+        ``quality.services._batch_code``) để nhãn dán lúc nhận khớp với batch_code
+        thật sau khi QC tạo batch.
+        """
+        return (self.batch_code or '').strip() or f'{self.grn.grn_no}-{self.product.product_code}'
+
     def clean(self):
         # BR-GRN-001/BR-GRN-002: qty_received không được vượt qty_ordered.
         if self.qty_received > self.qty_ordered:

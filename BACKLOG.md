@@ -3,7 +3,7 @@
 > **Nguồn:** `SRS` (52 FR gốc theo Section 3) + `FSD` (workflow/data model/API/UI từng module — hiện đầy đủ nhất cho GRN & GIN) + điều chỉnh theo `Ke_Hoach_Trien_Khai_NVL_Solo.pdf` (kế hoạch solo dev + Claude Code).
 > Tick `[x]` khi hoàn thành. **Chỉ các dòng có mã in đậm `FR-XX-##` được tính vào bộ đếm 60 FR** — các dòng còn lại (Business Rules, Workflow States, Algorithm, Transaction...) là ghi chú kỹ thuật hỗ trợ Claude Code, tick tự do, không ảnh hưởng % tiến độ.
 
-**Tổng tiến độ:** 7 / 60 FR
+**Tổng tiến độ:** 16 / 60 FR
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
@@ -163,10 +163,10 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] **FR-GRN-01** `MUST` — Tạo GRN với đầy đủ thông tin (Mã tự động, Ngày, NCC, PO, Chi tiết SKU)
 - [ ] **FR-GRN-02** `MUST` — Workflow GRN: DRAFT → PENDING_QC → RECEIVED → CLOSED
 - [ ] **FR-GRN-03** `MUST` — Khi GRN RECEIVED (QC pass), tự động tạo batch & cập nhật inventory tăng
-- [ ] **FR-GRN-04** `MUST` — Support partial GRN (nhận 1 phần, chờ phần còn lại)
+- [x] **FR-GRN-04** `MUST` — Support partial GRN (nhận 1 phần, chờ phần còn lại)
 - [ ] **FR-GRN-05** `MUST` — Ghi lại ký nhận từ: Mua hàng, QC, Kho (audit trail)
-- [ ] **FR-GRN-06** `MUST` — In phiếu GRN với barcode để dán trên hàng
-- [ ] **FR-GRN-07** `SHOULD` — So sánh Qty GRN vs Qty PO để alert nếu vượt
+- [x] **FR-GRN-06** `MUST` — In phiếu GRN với barcode để dán trên hàng
+- [x] **FR-GRN-07** `SHOULD` — So sánh Qty GRN vs Qty PO để alert nếu vượt
 
 #### Workflow States
 - [ ] State `DRAFT`: form tạo GRN, nút Save/Submit/Cancel
@@ -185,23 +185,23 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] BR-GRN-001: `qty_received <= qty_ordered`
 - [ ] BR-GRN-006: `exp_date > mfg_date` (luôn đúng)
 - [ ] BR-GRN-007: `qty_received = 0` → status = RECEIVED nhưng qty không tăng
-- [ ] **Qty tolerance check**: Alert nếu chênh lệch > tolerance % (config per supplier)
-- [ ] **Qty validation**: `qty_grn <= qty_po` (không cho nhập vượt quá PO)
+- [x] **Qty tolerance check**: Alert nếu chênh lệch > tolerance % (config per supplier)
+- [x] **Qty validation**: `qty_grn <= qty_po` (không cho nhập vượt quá PO)
 
 ### 2b. Quality Control (QC) — `quality` app
 
 #### Functional Requirements (6 FR)
-- [ ] **FR-QC-01** `MUST` — Tạo quy trình QC: PENDING_QC → PASS/FAIL/PARTIAL_PASS
-- [ ] **FR-QC-02** `MUST` — Định nghĩa tiêu chuẩn QC (Ngoại hình, Trọng lượng, Màu sắc, Seal integrity)
-- [ ] **FR-QC-03** `MUST` — Nhập kết quả từng tiêu chuẩn: PASS / FAIL
-- [ ] **FR-QC-04** `MUST` — Kết quả FAIL → Ghi chú lý do & tạo GRN trả lại
-- [ ] **FR-QC-05** `MUST` — Kết quả PASS → GRN được approve, tạo batch & cập nhật inventory
-- [ ] **FR-QC-06** `SHOULD` — Hỗ trợ upload hình ảnh evidence
+- [x] **FR-QC-01** `MUST` — Tạo quy trình QC: PENDING_QC → PASS/FAIL/PARTIAL_PASS
+- [x] **FR-QC-02** `MUST` — Định nghĩa tiêu chuẩn QC (Ngoại hình, Trọng lượng, Màu sắc, Seal integrity)
+- [x] **FR-QC-03** `MUST` — Nhập kết quả từng tiêu chuẩn: PASS / FAIL
+- [x] **FR-QC-04** `MUST` — Kết quả FAIL → Ghi chú lý do & tạo GRN trả lại
+- [x] **FR-QC-05** `MUST` — Kết quả PASS → GRN được approve, tạo batch & cập nhật inventory
+- [x] **FR-QC-06** `SHOULD` — Hỗ trợ upload hình ảnh evidence
 
 #### QC Criteria & Sampling
 - [ ] **Sampling method**: % based (default 10%) hoặc fixed qty (config per SKU)
-- [ ] **QC Criteria master data**: per category (Bột mỳ, Đường...), mỗi criteria có name/pass_rule/fail_rule, cho phép upload ảnh reference
-- [ ] **Result tracking**: mỗi item trong sample ghi PASS/FAIL từng criteria, không chỉ overall result
+- [x] **QC Criteria master data**: per category (Bột mỳ, Đường...), mỗi criteria có name/pass_rule/fail_rule, cho phép upload ảnh reference
+- [x] **Result tracking**: mỗi item trong sample ghi PASS/FAIL từng criteria, không chỉ overall result
 - [ ] **QC duration tracking**: log start/end time, alert nếu > SLA (24h) — ⏸️ tính on-the-fly khi load trang QC dashboard, chưa cần Celery
 - [ ] **QC approval override**: Supervisor có thể override kết quả (ghi chú lý do)
 

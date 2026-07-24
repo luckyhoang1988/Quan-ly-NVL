@@ -8,6 +8,8 @@ from django.forms import inlineformset_factory
 from receiving.models import Grn, GrnItem
 from warehouse.models import Location
 
+from .models import QcCriteria, QcInspection, QcInspectionItem
+
 
 def _bootstrapify(fields):
     """Gắn class Bootstrap phù hợp từng loại widget (dùng chung cho form CRUD)."""
@@ -65,3 +67,40 @@ QcItemResultFormSet = inlineformset_factory(
     Grn, GrnItem, form=QcItemResultForm,
     extra=0, can_delete=False,
 )
+
+
+class QcInspectionItemForm(forms.ModelForm):
+    """Kết quả PASS/FAIL của 1 tiêu chuẩn QC trên 1 GrnItem (FR-QC-03).
+
+    ``criteria_name``/``expected_value`` là text tự do (snapshot, không FK tới
+    ``QcCriteria`` — xem docstring ``quality.models``), inspector tự đối chiếu
+    với bảng tiêu chuẩn tham khảo hiển thị cùng trang.
+    """
+
+    class Meta:
+        model = QcInspectionItem
+        fields = ['grn_item', 'criteria_name', 'expected_value', 'actual_value', 'result', 'notes', 'image']
+
+    def __init__(self, *args, grn=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+        if grn is not None:
+            self.fields['grn_item'].queryset = grn.items.all()
+
+
+QcInspectionItemFormSet = inlineformset_factory(
+    QcInspection, QcInspectionItem, form=QcInspectionItemForm,
+    extra=3, can_delete=True,
+)
+
+
+class QcCriteriaForm(forms.ModelForm):
+    """Tạo/sửa tiêu chuẩn QC master data (FR-QC-02)."""
+
+    class Meta:
+        model = QcCriteria
+        fields = ['category', 'name', 'pass_rule', 'fail_rule', 'reference_image', 'is_active']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)

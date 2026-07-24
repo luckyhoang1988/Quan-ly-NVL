@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>In GRN {{ grn.grn_no }} — NVL/WMS</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 1.5rem; color: #212529; }
+    .toolbar { margin-bottom: 1.5rem; }
+    .toolbar button, .toolbar a { font-size: 0.95rem; padding: 0.4rem 0.9rem; margin-right: 0.5rem; }
+    h1 { font-size: 1.3rem; margin-bottom: 0.25rem; }
+    .grn-meta { font-size: 0.9rem; color: #495057; margin-bottom: 1.5rem; }
+    .labels { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .label { border: 1px solid #333; border-radius: 4px; padding: 0.75rem 1rem; width: 260px; page-break-inside: avoid; }
+    .label h2 { font-size: 0.95rem; margin: 0 0 0.4rem; }
+    .label .meta { font-size: 0.8rem; color: #333; margin-bottom: 0.5rem; line-height: 1.4; }
+    .label svg { width: 100%; }
+    .label .code-text { font-size: 0.75rem; text-align: center; margin-top: -6px; word-break: break-all; }
+    @media print {
+      .toolbar { display: none; }
+      body { padding: 0.5rem; }
+      .label { border: 1px solid #000; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button type="button" onclick="window.print()">In phiếu</button>
+    <a href="{% url 'receiving:grn_detail' grn.pk %}">← Quay lại GRN</a>
+  </div>
+
+  <h1>Phiếu GRN {{ grn.grn_no }}</h1>
+  <div class="grn-meta">
+    NCC: {{ grn.supplier.name }} · PO: {{ grn.po.po_no }} · Ngày GRN: {{ grn.grn_date }}
+  </div>
+
+  <div class="labels">
+    {% for item in grn.items.all %}
+    <div class="label">
+      <h2>{{ item.product.product_code }} — {{ item.product.name }}</h2>
+      <div class="meta">
+        GRN: {{ grn.grn_no }}<br>
+        Qty nhận: {{ item.qty_received }}
+        {% if item.mfg_date %}<br>NSX: {{ item.mfg_date }}{% endif %}
+        {% if item.exp_date %}<br>HSD: {{ item.exp_date }}{% endif %}
+      </div>
+      <svg class="barcode" data-code="{{ item.label_code }}"></svg>
+      <div class="code-text">{{ item.label_code }}</div>
+    </div>
+    {% empty %}
+    <p>Chưa có dòng hàng.</p>
+    {% endfor %}
+  </div>
+
+  <script>
+    document.querySelectorAll('.barcode').forEach(function (el) {
+      JsBarcode(el, el.dataset.code, { format: 'CODE128', displayValue: false, height: 50, margin: 4 });
+    });
+  </script>
+</body>
+</html>

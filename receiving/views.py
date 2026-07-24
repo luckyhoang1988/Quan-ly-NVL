@@ -17,11 +17,12 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from purchasing.services import sync_po_status
 from quality.services import start_qc
 
 from .forms import GrnForm, GrnItemFormSet, ReceiveQtyFormSet, SubmitToQcForm
 from .models import Grn
-from .services import submit_to_pending_qc
+from .services import submit_to_pending_qc, tolerance_alerts
 
 
 def grn_permission_required(action):
@@ -63,6 +64,18 @@ def grn_detail(request, pk):
     })
 
 
+@grn_permission_required('read')
+def grn_print(request, pk):
+    """READ — trang in phiếu GRN kèm barcode để dán lên hàng (FR-GRN-06).
+
+    Barcode encode ``item.label_code`` — thuần UI/print, không đụng QC/Batch/
+    Inventory (barcode ở đây là mã dự kiến dán lên hàng lúc nhận, không phải
+    truy vấn lại Batch đã tạo sau QC — xem GrnItem.label_code).
+    """
+    grn = get_object_or_404(Grn.objects.select_related('supplier', 'po').prefetch_related('items__product'), pk=pk)
+    return render(request, 'receiving/grn_print.html', {'grn': grn})
+
+
 @grn_permission_required('create')
 def grn_create(request):
     """CREATE — tạo GRN (state DRAFT) kèm chi tiết hàng (formset).
@@ -72,7 +85,12 @@ def grn_create(request):
     """
     form = GrnForm(request.POST or None)
     formset = GrnItemFormSet(request.POST or None, instance=Grn(), prefix='items')
-    if request.method == 'POST' and form.is_valid() and formset.is_valid():
+    form_valid = request.method == 'POST' and form.is_valid()
+    if form_valid:
+        # BR mục 2a "Qty validation" (FR-GRN-07/FR-GRN-04) cần biết PO trước khi
+        # validate formset — GRN chưa save nên phải gán tạm vào instance rỗng.
+        formset.instance.po = form.cleaned_data['po']
+    if form_valid and formset.is_valid():
         with transaction.atomic():
             obj = form.save(commit=False)
             obj.created_by = request.user
@@ -151,10 +169,13 @@ def grn_receive_qty(request, pk):
     if request.method == 'POST' and formset.is_valid() and submit_form.is_valid():
         with transaction.atomic():
             formset.save()
+            sync_po_status(obj.po)
             inspection = start_qc(
                 obj, submit_form.cleaned_data['inspector'],
                 actor=request.user, ip_address=client_ip(request),
             )
+        for alert in tolerance_alerts(obj):
+            messages.warning(request, alert)
         messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang QC ({inspection.qc_no}).')
         return redirect('receiving:grn_detail', pk=obj.pk)
     return render(request, 'receiving/grn_receive_qty.html', {

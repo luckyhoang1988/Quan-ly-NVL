@@ -7,8 +7,10 @@ from django.urls import reverse
 from accounts.models import AuditLog
 from catalog.models import Product
 from partners.models import Supplier
+from receiving.models import Grn, GrnItem
 
 from .models import PurchaseOrder, PurchaseOrderItem
+from .services import sync_po_status
 
 User = get_user_model()
 
@@ -117,3 +119,50 @@ class PurchaseOrderCrudTest(TestCase):
         self.assertEqual(item.qty_ordered, 20)
         self.assertTrue(AuditLog.objects.filter(
             action=AuditLog.Action.UPDATE, target_id=str(po.pk)).exists())
+
+
+class SyncPoStatusTest(TestCase):
+    """FR-GRN-04: PO.status đồng bộ theo Qty đã nhận lũy kế từ mọi GRN tham
+    chiếu tới PO (hỗ trợ nhận nhiều đợt). ``TC-PUR-SYNC-<seq>``.
+    """
+
+    def setUp(self):
+        self.creator = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
+
+    def _grn_with_item(self, qty_received, status=GrnItem.Status.PENDING):
+        grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.creator)
+        GrnItem.objects.create(
+            grn=grn, product=self.product, qty_ordered=qty_received or 1, qty_received=qty_received,
+            unit_price=Decimal('15000.00'), status=status,
+        )
+        return grn
+
+    def test_TC_PUR_SYNC_001_no_receipt_status_unchanged(self):
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_SYNC_002_partial_receipt_sets_partial_received(self):
+        self._grn_with_item(4)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.PARTIAL_RECEIVED)
+
+    def test_TC_PUR_SYNC_003_full_receipt_across_two_grns_sets_received(self):
+        self._grn_with_item(6)
+        self._grn_with_item(4)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.RECEIVED)
+
+    def test_TC_PUR_SYNC_004_rejected_item_excluded_from_total(self):
+        self._grn_with_item(10, status=GrnItem.Status.REJECTED)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)

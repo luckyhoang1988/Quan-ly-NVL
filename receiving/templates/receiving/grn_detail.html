@@ -18,6 +18,9 @@
     {% if can_qc and grn.status == 'QC_IN_PROGRESS' %}
       <a href="{% url 'quality:qc_result' grn.pk %}" class="btn btn-primary">Nhập kết quả QC</a>
     {% endif %}
+    {% if grn.status == 'RECEIVED' %}
+      <a href="{% url 'receiving:grn_print' grn.pk %}" class="btn btn-outline-primary" target="_blank">In phiếu GRN</a>
+    {% endif %}
   </div>
 </div>
 

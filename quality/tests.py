@@ -1,10 +1,13 @@
 import datetime
+import shutil
+import tempfile
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from catalog.models import Product
@@ -18,6 +21,12 @@ from .models import QcCriteria, QcInspection, QcInspectionItem
 from .services import qc_fail, qc_partial_pass, qc_pass, start_qc
 
 User = get_user_model()
+
+# GIF 1x1px hợp lệ nhỏ nhất — đủ để Pillow/ImageField validate mà không cần file ảnh thật.
+SMALL_GIF = (
+    b'GIF87a\x01\x00\x01\x00\x80\x01\x00\x00\x00\x00ccc,\x00'
+    b'\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;'
+)
 
 
 class QcInspectionModelTest(TestCase):
@@ -269,3 +278,240 @@ class QcResultViewTest(QcServiceTestBase):
         response = self.client.post(self._url(), self._payload(action='pass'))
         self.grn.refresh_from_db()
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
+
+
+class QcInspectionItemResultViewTest(QcServiceTestBase):
+    """Form "Lưu kết quả từng tiêu chuẩn" trên trang ``qc_result`` (FR-QC-03,
+    Task 3) -- POST không có field ``action`` -> lưu ``QcInspectionItemFormSet``,
+    tách biệt khỏi quyết định Pass/Fail/Partial. ``TC-QC-VIEW-ITEM-<seq>``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.inspection = self._start_qc()
+        self.client.force_login(self.qc_user)
+
+    def _url(self):
+        return reverse('quality:qc_result', args=[self.grn.pk])
+
+    def _items_payload(self, **overrides):
+        payload = {
+            'qcitems-TOTAL_FORMS': '3', 'qcitems-INITIAL_FORMS': '0',
+            'qcitems-MIN_NUM_FORMS': '0', 'qcitems-MAX_NUM_FORMS': '1000',
+            'qcitems-0-id': '', 'qcitems-0-grn_item': self.grn_item.pk,
+            'qcitems-0-criteria_name': 'Trọng lượng', 'qcitems-0-expected_value': '1000g ± 10g',
+            'qcitems-0-actual_value': '1005g', 'qcitems-0-result': 'PASS', 'qcitems-0-notes': '',
+            'qcitems-1-id': '', 'qcitems-1-grn_item': '', 'qcitems-1-criteria_name': '',
+            'qcitems-1-expected_value': '', 'qcitems-1-actual_value': '', 'qcitems-1-result': '', 'qcitems-1-notes': '',
+            'qcitems-2-id': '', 'qcitems-2-grn_item': '', 'qcitems-2-criteria_name': '',
+            'qcitems-2-expected_value': '', 'qcitems-2-actual_value': '', 'qcitems-2-result': '', 'qcitems-2-notes': '',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_TC_QC_VIEW_ITEM_001_qc_user_can_save_item_result(self):
+        response = self.client.post(self._url(), self._items_payload())
+        self.assertRedirects(response, self._url())
+        item = QcInspectionItem.objects.get(inspection=self.inspection)
+        self.assertEqual(item.grn_item, self.grn_item)
+        self.assertEqual(item.criteria_name, 'Trọng lượng')
+        self.assertEqual(item.result, QcInspectionItem.Result.PASS)
+
+    def test_TC_QC_VIEW_ITEM_002_grn_item_restricted_to_this_grn(self):
+        other_po = PurchaseOrder.objects.create(po_no='PO-0002', supplier=self.supplier)
+        other_grn = Grn.objects.create(po=other_po, supplier=self.supplier, created_by=self.purchasing_user)
+        other_item = GrnItem.objects.create(
+            grn=other_grn, product=self.product, qty_ordered=5, qty_received=5,
+            unit_price=Decimal('15000.00'),
+        )
+        response = self.client.post(self._url(), self._items_payload(**{'qcitems-0-grn_item': other_item.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(QcInspectionItem.objects.exists())
+
+    def test_TC_QC_VIEW_ITEM_003_missing_result_not_saved(self):
+        response = self.client.post(self._url(), self._items_payload(**{'qcitems-0-result': ''}))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(QcInspectionItem.objects.exists())
+
+    def test_TC_QC_VIEW_ITEM_004_does_not_change_grn_or_inspection_status(self):
+        self.client.post(self._url(), self._items_payload())
+        self.grn.refresh_from_db()
+        self.inspection.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertEqual(self.inspection.status, QcInspection.Result.PENDING_QC)
+
+    def test_TC_QC_VIEW_ITEM_005_delete_existing_item(self):
+        item = QcInspectionItem.objects.create(
+            inspection=self.inspection, grn_item=self.grn_item,
+            criteria_name='Ngoại hình', actual_value='Đạt', result=QcInspectionItem.Result.PASS,
+        )
+        payload = self._items_payload(**{
+            'qcitems-INITIAL_FORMS': '1',
+            'qcitems-0-id': item.pk, 'qcitems-0-grn_item': self.grn_item.pk,
+            'qcitems-0-criteria_name': 'Ngoại hình', 'qcitems-0-actual_value': 'Đạt',
+            'qcitems-0-result': 'PASS', 'qcitems-0-DELETE': 'on',
+        })
+        response = self.client.post(self._url(), payload)
+        self.assertRedirects(response, self._url())
+        self.assertFalse(QcInspectionItem.objects.filter(pk=item.pk).exists())
+
+    def test_TC_QC_VIEW_ITEM_006_read_only_role_forbidden(self):
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(self._url(), self._items_payload())
+        self.assertEqual(response.status_code, 403)
+
+
+class QcImageUploadTest(QcServiceTestBase):
+    """FR-QC-06: upload ảnh evidence trên ``QcInspectionItem`` + ảnh reference
+    trên ``QcCriteria`` master data. Ghi vào ``MEDIA_ROOT`` tạm (xoá sau khi
+    chạy xong) để không để lại file thật trong repo. ``TC-QC-IMG-<seq>``.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._media_root = tempfile.mkdtemp(prefix='nvlwms_test_media_')
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._media_override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._media_override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        super().setUp()
+        self.inspection = self._start_qc()
+        self.client.force_login(self.qc_user)
+
+    def _result_url(self):
+        return reverse('quality:qc_result', args=[self.grn.pk])
+
+    def test_TC_QC_IMG_001_evidence_image_saved_on_inspection_item(self):
+        image = SimpleUploadedFile('evidence.gif', SMALL_GIF, content_type='image/gif')
+        payload = {
+            'qcitems-TOTAL_FORMS': '1', 'qcitems-INITIAL_FORMS': '0',
+            'qcitems-MIN_NUM_FORMS': '0', 'qcitems-MAX_NUM_FORMS': '1000',
+            'qcitems-0-id': '', 'qcitems-0-grn_item': self.grn_item.pk,
+            'qcitems-0-criteria_name': 'Màu sắc', 'qcitems-0-expected_value': 'Trắng đều',
+            'qcitems-0-actual_value': 'Trắng đều', 'qcitems-0-result': 'PASS', 'qcitems-0-notes': '',
+            'qcitems-0-image': image,
+        }
+        response = self.client.post(self._result_url(), payload)
+        self.assertRedirects(response, self._result_url())
+        item = QcInspectionItem.objects.get(inspection=self.inspection)
+        self.assertTrue(item.image.name)
+
+    def test_TC_QC_IMG_002_reference_image_saved_on_criteria(self):
+        image = SimpleUploadedFile('ref.gif', SMALL_GIF, content_type='image/gif')
+        response = self.client.post(reverse('quality:qc_criteria_create'), {
+            'category': 'Đường', 'name': 'Màu sắc', 'pass_rule': 'Trắng',
+            'fail_rule': 'Vàng/xám', 'is_active': 'on', 'reference_image': image,
+        })
+        self.assertRedirects(response, reverse('quality:qc_criteria_list'))
+        criteria = QcCriteria.objects.get(category='Đường', name='Màu sắc')
+        self.assertTrue(criteria.reference_image.name)
+
+    def test_TC_QC_IMG_003_image_optional_not_required(self):
+        payload = {
+            'qcitems-TOTAL_FORMS': '1', 'qcitems-INITIAL_FORMS': '0',
+            'qcitems-MIN_NUM_FORMS': '0', 'qcitems-MAX_NUM_FORMS': '1000',
+            'qcitems-0-id': '', 'qcitems-0-grn_item': self.grn_item.pk,
+            'qcitems-0-criteria_name': 'Seal integrity', 'qcitems-0-expected_value': 'Nguyên vẹn',
+            'qcitems-0-actual_value': 'Nguyên vẹn', 'qcitems-0-result': 'PASS', 'qcitems-0-notes': '',
+        }
+        response = self.client.post(self._result_url(), payload)
+        self.assertRedirects(response, self._result_url())
+        item = QcInspectionItem.objects.get(inspection=self.inspection)
+        self.assertFalse(item.image)
+
+
+class QcCriteriaCrudTest(TestCase):
+    """FR-QC-02: UI CRUD cho QcCriteria (list/create/update/toggle active) —
+    RBAC theo Permission Matrix mục 1a: role QC và ADMIN có Create/Update trên
+    module 'qc'; MANAGER/PURCHASING/ACCOUNTANT chỉ Read; STAFF không có quyền
+    gì trên 'qc' (kể cả Read). ``TC-QC-CRIT-<seq>``.
+    """
+
+    def setUp(self):
+        self.qc_user = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.admin = User.objects.create_user(
+            username='admin', password='admin-pass-123', role=User.Role.ADMIN)
+        self.criteria = QcCriteria.objects.create(
+            category='Bột mì', name='Ngoại hình', pass_rule='Không mốc, không vón cục')
+        self.client.force_login(self.qc_user)
+
+    def _payload(self, **overrides):
+        payload = {
+            'category': 'Bột mì', 'name': 'Trọng lượng',
+            'pass_rule': '25kg ± 0.5kg', 'fail_rule': 'Lệch quá 0.5kg', 'is_active': 'on',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_TC_QC_CRIT_001_qc_role_can_create(self):
+        response = self.client.post(reverse('quality:qc_criteria_create'), self._payload())
+        self.assertRedirects(response, reverse('quality:qc_criteria_list'))
+        self.assertTrue(QcCriteria.objects.filter(category='Bột mì', name='Trọng lượng').exists())
+
+    def test_TC_QC_CRIT_002_admin_can_create(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse('quality:qc_criteria_create'), self._payload())
+        self.assertRedirects(response, reverse('quality:qc_criteria_list'))
+
+    def test_TC_QC_CRIT_003_manager_forbidden_to_create(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('quality:qc_criteria_create'), self._payload())
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_CRIT_004_manager_can_view_list(self):
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('quality:qc_criteria_list'))
+        self.assertEqual(response.status_code, 200)
+
+    def test_TC_QC_CRIT_005_staff_forbidden_even_read(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('quality:qc_criteria_list'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_CRIT_006_anonymous_redirected_to_login(self):
+        self.client.logout()
+        response = self.client.get(reverse('quality:qc_criteria_list'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('login'), response.url)
+
+    def test_TC_QC_CRIT_007_duplicate_category_name_rejected(self):
+        response = self.client.post(
+            reverse('quality:qc_criteria_create'), self._payload(name='Ngoại hình'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(QcCriteria.objects.filter(category='Bột mì', name='Ngoại hình').count(), 1)
+
+    def test_TC_QC_CRIT_008_update_criteria(self):
+        response = self.client.post(
+            reverse('quality:qc_criteria_update', args=[self.criteria.pk]),
+            self._payload(name='Ngoại hình', pass_rule='Không mốc, không vón, không lẫn tạp chất'),
+        )
+        self.criteria.refresh_from_db()
+        self.assertRedirects(response, reverse('quality:qc_criteria_list'))
+        self.assertEqual(self.criteria.pass_rule, 'Không mốc, không vón, không lẫn tạp chất')
+
+    def test_TC_QC_CRIT_009_toggle_active_deactivates_then_reactivates(self):
+        url = reverse('quality:qc_criteria_toggle_active', args=[self.criteria.pk])
+        self.client.post(url)
+        self.criteria.refresh_from_db()
+        self.assertFalse(self.criteria.is_active)
+
+        self.client.post(url)
+        self.criteria.refresh_from_db()
+        self.assertTrue(self.criteria.is_active)
+
+    def test_TC_QC_CRIT_010_manager_forbidden_to_toggle(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('quality:qc_criteria_toggle_active', args=[self.criteria.pk]))
+        self.assertEqual(response.status_code, 403)

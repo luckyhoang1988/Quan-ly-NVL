@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block title %}Tiêu chuẩn QC — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Tiêu chuẩn QC</h1>
+  {% if can_manage %}
+    <a href="{% url 'quality:qc_criteria_create' %}" class="btn btn-primary">+ Tạo tiêu chuẩn</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Tiêu chuẩn</th>
+        <th>Pass rule</th>
+        <th>Fail rule</th>
+        <th>Ảnh mẫu</th>
+        <th>Trạng thái</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in criteria %}
+      <tr class="{% if not c.is_active %}table-secondary text-muted{% endif %}">
+        <td>{{ c.category }}</td>
+        <td>{{ c.name }}</td>
+        <td>{{ c.pass_rule|default:"—" }}</td>
+        <td>{{ c.fail_rule|default:"—" }}</td>
+        <td>
+          {% if c.reference_image %}
+          <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:32px;"></a>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if c.is_active %}
+            <span class="badge bg-success">Hoạt động</span>
+          {% else %}
+            <span class="badge bg-warning text-dark">Khoá</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if can_manage %}
+            <a href="{% url 'quality:qc_criteria_update' c.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
+            <form method="post" action="{% url 'quality:qc_criteria_toggle_active' c.pk %}" class="d-inline">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-{% if c.is_active %}warning{% else %}success{% endif %}">
+                {% if c.is_active %}Khoá{% else %}Mở lại{% endif %}
+              </button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Chưa có tiêu chuẩn QC nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
