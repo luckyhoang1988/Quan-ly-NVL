@@ -592,3 +592,47 @@ class GrnPrintViewTest(TestCase):
         self.assertNotContains(response, reverse('receiving:grn_print', args=[draft_grn.pk]))
         response = self.client.get(reverse('receiving:grn_detail', args=[self.grn.pk]))
         self.assertContains(response, reverse('receiving:grn_print', args=[self.grn.pk]))
+
+
+class GrnListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/supplier/tìm kiếm) trên grn_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        self.supplier_a = Supplier.objects.create(supplier_code='NCC-A', name='NCC A')
+        self.supplier_b = Supplier.objects.create(supplier_code='NCC-B', name='NCC B')
+        po = PurchaseOrder.objects.create(po_no='PO-TEST-0001', supplier=self.supplier_a)
+        Grn.objects.bulk_create([
+            Grn(
+                grn_no=f'GRN-TEST-{i:04d}', po=po,
+                supplier=self.supplier_a if i % 2 == 0 else self.supplier_b,
+                status=Grn.Status.DRAFT if i % 2 == 0 else Grn.Status.PENDING_QC,
+                created_by=self.staff,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('receiving:grn_list'))
+        self.assertEqual(len(response.context['grns']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('receiving:grn_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['grns']), 35)
+
+    def test_filter_status(self):
+        response = self.client.get(
+            reverse('receiving:grn_list'), {'status': Grn.Status.PENDING_QC, 'page_size': 50})
+        self.assertTrue(all(g.status == Grn.Status.PENDING_QC for g in response.context['grns']))
+
+    def test_filter_supplier(self):
+        response = self.client.get(
+            reverse('receiving:grn_list'), {'supplier': self.supplier_a.pk, 'page_size': 50})
+        self.assertTrue(all(g.supplier_id == self.supplier_a.pk for g in response.context['grns']))
+
+    def test_filter_search_by_grn_no(self):
+        response = self.client.get(reverse('receiving:grn_list'), {'q': 'GRN-TEST-0001'})
+        grn_nos = [g.grn_no for g in response.context['grns']]
+        self.assertEqual(grn_nos, ['GRN-TEST-0001'])

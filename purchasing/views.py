@@ -17,7 +17,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
 from catalog.models import Product
+from partners.models import Supplier
 from receiving.models import GrnItem
 
 from .forms import PurchaseOrderForm, PurchaseOrderItemFormSet
@@ -47,13 +49,36 @@ def po_permission_required(action):
 def po_list(request):
     """READ — danh sách PO, kèm cờ giao hàng trễ hạn (FR-PO-06, tính on-the-fly)."""
     orders = PurchaseOrder.objects.select_related('supplier').all()
+    selected_status = request.GET.get('status', '')
+    if selected_status:
+        orders = orders.filter(status=selected_status)
+    selected_supplier = None
+    supplier_id = request.GET.get('supplier')
+    if supplier_id:
+        try:
+            selected_supplier = int(supplier_id)
+        except (TypeError, ValueError):
+            selected_supplier = None
+    if selected_supplier:
+        orders = orders.filter(supplier_id=selected_supplier)
+    q = request.GET.get('q', '').strip()
+    if q:
+        orders = orders.filter(po_no__icontains=q)
     overdue_count = sum(
         1 for po in orders if (po.delivery_status() or {}).get('code') == 'DELAYED')
+    page_obj, page_size = paginate_queryset(request, orders)
     return render(request, 'purchasing/po_list.html', {
-        'orders': orders,
+        'orders': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
         'overdue_count': overdue_count,
         'can_create': request.user.can('create', 'po'),
         'can_update': request.user.can('update', 'po'),
+        'statuses': PurchaseOrder.Status.choices,
+        'suppliers': Supplier.objects.filter(is_active=True),
+        'selected_status': selected_status,
+        'selected_supplier': selected_supplier,
+        'q': q,
     })
 
 

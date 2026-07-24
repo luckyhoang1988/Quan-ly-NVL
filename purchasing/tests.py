@@ -408,3 +408,45 @@ class PoCreatePrefillTest(TestCase):
         response = self.client.get(reverse('purchasing:po_create'))
         formset = response.context['formset']
         self.assertNotIn('product', formset.forms[0].initial)
+
+
+class PoListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/supplier/tìm kiếm) trên po_list."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.client.force_login(self.user)
+        self.supplier_a = Supplier.objects.create(supplier_code='NCC-A', name='NCC A')
+        self.supplier_b = Supplier.objects.create(supplier_code='NCC-B', name='NCC B')
+        PurchaseOrder.objects.bulk_create([
+            PurchaseOrder(
+                po_no=f'PO-TEST-{i:04d}',
+                supplier=self.supplier_a if i % 2 == 0 else self.supplier_b,
+                status=PurchaseOrder.Status.DRAFT if i % 2 == 0 else PurchaseOrder.Status.SENT,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('purchasing:po_list'))
+        self.assertEqual(len(response.context['orders']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['orders']), 35)
+
+    def test_filter_status(self):
+        response = self.client.get(
+            reverse('purchasing:po_list'), {'status': PurchaseOrder.Status.SENT, 'page_size': 50})
+        self.assertTrue(all(po.status == PurchaseOrder.Status.SENT for po in response.context['orders']))
+
+    def test_filter_supplier(self):
+        response = self.client.get(
+            reverse('purchasing:po_list'), {'supplier': self.supplier_a.pk, 'page_size': 50})
+        self.assertTrue(all(po.supplier_id == self.supplier_a.pk for po in response.context['orders']))
+
+    def test_filter_search_by_po_no(self):
+        response = self.client.get(reverse('purchasing:po_list'), {'q': 'PO-TEST-0001'})
+        po_nos = [po.po_no for po in response.context['orders']]
+        self.assertEqual(po_nos, ['PO-TEST-0001'])

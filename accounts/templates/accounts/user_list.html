@@ -6,6 +6,33 @@
   <a href="{% url 'user_create' %}" class="btn btn-primary">+ Tạo user</a>
 </div>
 
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-auto">
+    <label class="form-label" for="role">Vai trò</label>
+    <select name="role" id="role" class="form-select" onchange="this.form.submit()">
+      <option value="">-- Tất cả vai trò --</option>
+      {% for value, label in roles %}
+        <option value="{{ value }}" {% if selected_role == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="status">Trạng thái</label>
+    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+      <option value="">-- Tất cả trạng thái --</option>
+      <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
+      <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="q">Tìm kiếm</label>
+    <input type="text" name="q" id="q" class="form-control" placeholder="Tên đăng nhập, email..." value="{{ q }}">
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary">Lọc</button>
+  </div>
+</form>
+
 <div class="table-responsive">
   <table class="table table-striped align-middle">
     <thead>
@@ -44,4 +71,5 @@
     </tbody>
   </table>
 </div>
+{% include 'partials/pagination.html' %}
 {% endblock %}

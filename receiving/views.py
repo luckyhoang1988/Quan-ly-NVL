@@ -17,6 +17,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
+from partners.models import Supplier
 from purchasing.services import sync_po_status
 from quality.services import start_qc
 
@@ -54,8 +56,32 @@ def grn_permission_required(action):
 def grn_list(request):
     """READ — danh sách GRN."""
     grns = Grn.objects.select_related('supplier', 'po').all()
+    selected_status = request.GET.get('status', '')
+    if selected_status:
+        grns = grns.filter(status=selected_status)
+    selected_supplier = None
+    supplier_id = request.GET.get('supplier')
+    if supplier_id:
+        try:
+            selected_supplier = int(supplier_id)
+        except (TypeError, ValueError):
+            selected_supplier = None
+    if selected_supplier:
+        grns = grns.filter(supplier_id=selected_supplier)
+    q = request.GET.get('q', '').strip()
+    if q:
+        grns = grns.filter(grn_no__icontains=q)
+    page_obj, page_size = paginate_queryset(request, grns)
     return render(request, 'receiving/grn_list.html', {
-        'grns': grns, 'can_create': request.user.can('create', 'grn'),
+        'grns': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
+        'can_create': request.user.can('create', 'grn'),
+        'statuses': Grn.Status.choices,
+        'suppliers': Supplier.objects.filter(is_active=True),
+        'selected_status': selected_status,
+        'selected_supplier': selected_supplier,
+        'q': q,
     })
 
 

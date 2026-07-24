@@ -598,3 +598,47 @@ class GinPrintViewTest(TestCase):
         close_gin(self.gin, actor=self.manager)
         response = self.client.get(reverse('shipping:gin_detail', args=[self.gin.pk]))
         self.assertContains(response, reverse('shipping:gin_print', args=[self.gin.pk]))
+
+
+class GinListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/warehouse/tìm kiếm) trên gin_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        self.wh_a = Warehouse.objects.create(code='KHO-A', name='Kho A')
+        self.wh_b = Warehouse.objects.create(code='KHO-B', name='Kho B')
+        Gin.objects.bulk_create([
+            Gin(
+                gin_no=f'GIN-TEST-{i:04d}',
+                warehouse=self.wh_a if i % 2 == 0 else self.wh_b,
+                reference_type=Gin.ReferenceType.SALES,
+                status=Gin.Status.DRAFT if i % 2 == 0 else Gin.Status.PICKING,
+                requested_by=self.staff,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('shipping:gin_list'))
+        self.assertEqual(len(response.context['gins']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('shipping:gin_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['gins']), 35)
+
+    def test_filter_status(self):
+        response = self.client.get(
+            reverse('shipping:gin_list'), {'status': Gin.Status.PICKING, 'page_size': 50})
+        self.assertTrue(all(g.status == Gin.Status.PICKING for g in response.context['gins']))
+
+    def test_filter_warehouse(self):
+        response = self.client.get(
+            reverse('shipping:gin_list'), {'warehouse': self.wh_a.pk, 'page_size': 50})
+        self.assertTrue(all(g.warehouse_id == self.wh_a.pk for g in response.context['gins']))
+
+    def test_filter_search_by_gin_no(self):
+        response = self.client.get(reverse('shipping:gin_list'), {'q': 'GIN-TEST-0001'})
+        gin_nos = [g.gin_no for g in response.context['gins']]
+        self.assertEqual(gin_nos, ['GIN-TEST-0001'])

@@ -125,3 +125,34 @@ class LocationCrudTest(TestCase):
         response = self.client.post(
             reverse('warehouse:location_create', args=[self.warehouse.pk]), {'code': 'B-01'})
         self.assertEqual(response.status_code, 403)
+
+
+class WarehouseListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/tìm kiếm) trên warehouse_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        Warehouse.objects.bulk_create([
+            Warehouse(code=f'KHO-{i:03d}', name=f'Kho {i}', is_active=(i % 2 == 0))
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('warehouse:warehouse_list'))
+        self.assertEqual(len(response.context['warehouses']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('warehouse:warehouse_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['warehouses']), 35)
+
+    def test_filter_status_active(self):
+        response = self.client.get(
+            reverse('warehouse:warehouse_list'), {'status': 'active', 'page_size': 50})
+        self.assertTrue(all(w.is_active for w in response.context['warehouses']))
+
+    def test_filter_search_by_code(self):
+        response = self.client.get(reverse('warehouse:warehouse_list'), {'q': 'KHO-001'})
+        codes = [w.code for w in response.context['warehouses']]
+        self.assertEqual(codes, ['KHO-001'])

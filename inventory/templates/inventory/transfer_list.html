@@ -9,6 +9,25 @@
   </div>
 </div>
 
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-auto">
+    <label class="form-label" for="warehouse">Kho</label>
+    <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
+      <option value="">-- Tất cả kho --</option>
+      {% for wh in warehouses %}
+        <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="q">Tìm kiếm</label>
+    <input type="text" name="q" id="q" class="form-control" placeholder="Mã phiếu, mã SKU..." value="{{ q }}">
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary">Lọc</button>
+  </div>
+</form>
+
 <div class="table-responsive">
   <table class="table table-striped align-middle">
     <thead>
@@ -47,4 +66,5 @@
     </tbody>
   </table>
 </div>
+{% include 'partials/pagination.html' %}
 {% endblock %}

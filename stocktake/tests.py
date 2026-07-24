@@ -441,3 +441,47 @@ class StocktakeDetailTemplateTest(TestCase):
         content = response.content.decode()
         row_start = content.index('NVL-0003')
         self.assertIn('table-danger', content[max(0, row_start - 400):row_start])
+
+
+class SoListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/warehouse/tìm kiếm) trên so_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        self.wh_a = Warehouse.objects.create(code='KHO-A', name='Kho A')
+        self.wh_b = Warehouse.objects.create(code='KHO-B', name='Kho B')
+        StocktakeSession.objects.bulk_create([
+            StocktakeSession(
+                so_no=f'SO-TEST-{i:04d}',
+                warehouse=self.wh_a if i % 2 == 0 else self.wh_b,
+                status=StocktakeSession.Status.PLANNING if i % 2 == 0 else StocktakeSession.Status.EXECUTION,
+                created_by=self.staff,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('stocktake:so_list'))
+        self.assertEqual(len(response.context['sessions']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('stocktake:so_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['sessions']), 35)
+
+    def test_filter_status(self):
+        response = self.client.get(
+            reverse('stocktake:so_list'), {'status': StocktakeSession.Status.EXECUTION, 'page_size': 50})
+        self.assertTrue(
+            all(s.status == StocktakeSession.Status.EXECUTION for s in response.context['sessions']))
+
+    def test_filter_warehouse(self):
+        response = self.client.get(
+            reverse('stocktake:so_list'), {'warehouse': self.wh_a.pk, 'page_size': 50})
+        self.assertTrue(all(s.warehouse_id == self.wh_a.pk for s in response.context['sessions']))
+
+    def test_filter_search_by_so_no(self):
+        response = self.client.get(reverse('stocktake:so_list'), {'q': 'SO-TEST-0001'})
+        so_nos = [s.so_no for s in response.context['sessions']]
+        self.assertEqual(so_nos, ['SO-TEST-0001'])

@@ -11,10 +11,12 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
 
 from .forms import SupplierForm
 from .models import Supplier
@@ -44,7 +46,19 @@ def partners_manager_required(view):
 def supplier_list(request):
     """READ — danh sách Supplier (mọi user đã đăng nhập đều xem được)."""
     suppliers = Supplier.objects.all()
-    return render(request, 'partners/supplier_list.html', {'suppliers': suppliers})
+    status = request.GET.get('status', '')
+    if status == 'active':
+        suppliers = suppliers.filter(is_active=True)
+    elif status == 'inactive':
+        suppliers = suppliers.filter(is_active=False)
+    q = request.GET.get('q', '').strip()
+    if q:
+        suppliers = suppliers.filter(Q(supplier_code__icontains=q) | Q(name__icontains=q))
+    page_obj, page_size = paginate_queryset(request, suppliers)
+    return render(request, 'partners/supplier_list.html', {
+        'suppliers': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'selected_status': status, 'q': q,
+    })
 
 
 @partners_manager_required

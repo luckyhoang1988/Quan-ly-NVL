@@ -15,12 +15,14 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.crypto import get_random_string
 
 from .audit import client_ip, log_action
 from .forms import UserCreateForm, UserUpdateForm
 from .models import AuditLog
+from .pagination import paginate_queryset
 from .permissions import ACTIONS, MODULES
 
 User = get_user_model()
@@ -86,7 +88,23 @@ def _send_temp_password(user, temp_password):
 def user_list(request):
     """READ — danh sách user (kể cả đã soft-delete, có badge phân biệt)."""
     users = User.objects.order_by('username')
-    return render(request, 'accounts/user_list.html', {'users': users})
+    role = request.GET.get('role', '')
+    if role:
+        users = users.filter(role=role)
+    status = request.GET.get('status', '')
+    if status == 'active':
+        users = users.filter(is_active=True)
+    elif status == 'inactive':
+        users = users.filter(is_active=False)
+    q = request.GET.get('q', '').strip()
+    if q:
+        users = users.filter(Q(username__icontains=q) | Q(email__icontains=q))
+    page_obj, page_size = paginate_queryset(request, users)
+    return render(request, 'accounts/user_list.html', {
+        'users': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'roles': User.Role.choices, 'selected_role': role,
+        'selected_status': status, 'q': q,
+    })
 
 
 @user_admin_required

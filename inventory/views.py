@@ -10,9 +10,11 @@ trong Permission Matrix).
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip
+from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from warehouse.models import Warehouse
 
@@ -39,6 +41,10 @@ def inventory_list(request):
     inventories = Inventory.objects.select_related('product', 'warehouse')
     if selected_warehouse:
         inventories = inventories.filter(warehouse_id=selected_warehouse)
+    q = request.GET.get('q', '').strip()
+    if q:
+        inventories = inventories.filter(
+            Q(product__product_code__icontains=q) | Q(product__name__icontains=q))
 
     rows = []
     below_min_count = 0
@@ -61,12 +67,16 @@ def inventory_list(request):
             'suggested_po_qty': suggested_po_qty,
         })
 
+    page_obj, page_size = paginate_queryset(request, rows)
     return render(request, 'inventory/inventory_list.html', {
-        'rows': rows,
+        'rows': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
         'warehouses': Warehouse.objects.filter(is_active=True),
         'selected_warehouse': selected_warehouse,
         'below_min_count': below_min_count,
         'above_max_count': above_max_count,
+        'q': q,
     })
 
 
@@ -88,23 +98,30 @@ def batch_list(request):
             selected_warehouse = None
 
     selected_status = request.GET.get('status') or ''
+    q = request.GET.get('q', '').strip()
 
     batches = Batch.objects.select_related('product', 'supplier', 'location__warehouse')
     if selected_warehouse:
         batches = batches.filter(location__warehouse_id=selected_warehouse)
     if selected_status:
         batches = batches.filter(status=selected_status)
+    if q:
+        batches = batches.filter(Q(batch_code__icontains=q) | Q(product__product_code__icontains=q))
 
     expiring_ids = set(expiring_soon_batches().values_list('pk', flat=True))
 
+    page_obj, page_size = paginate_queryset(request, batches)
     return render(request, 'inventory/batch_list.html', {
-        'batches': batches,
+        'batches': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
         'expiring_ids': expiring_ids,
         'expiring_count': len(expiring_ids),
         'statuses': Batch.Status.choices,
         'warehouses': Warehouse.objects.filter(is_active=True),
         'selected_warehouse': selected_warehouse,
         'selected_status': selected_status,
+        'q': q,
     })
 
 
@@ -160,7 +177,29 @@ def transfer_list(request):
         'batch__product', 'new_batch', 'from_location__warehouse',
         'to_location__warehouse', 'created_by',
     )
-    return render(request, 'inventory/transfer_list.html', {'transfers': transfers})
+    selected_warehouse = None
+    warehouse_id = request.GET.get('warehouse')
+    if warehouse_id:
+        try:
+            selected_warehouse = int(warehouse_id)
+        except ValueError:
+            selected_warehouse = None
+    if selected_warehouse:
+        transfers = transfers.filter(from_location__warehouse_id=selected_warehouse)
+    q = request.GET.get('q', '').strip()
+    if q:
+        transfers = transfers.filter(
+            Q(transfer_no__icontains=q) | Q(batch__product__product_code__icontains=q))
+
+    page_obj, page_size = paginate_queryset(request, transfers)
+    return render(request, 'inventory/transfer_list.html', {
+        'transfers': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
+        'warehouses': Warehouse.objects.filter(is_active=True),
+        'selected_warehouse': selected_warehouse,
+        'q': q,
+    })
 
 
 @login_required

@@ -10,11 +10,12 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
 from django.core import mail
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
+from accounts.pagination import DEFAULT_PAGE_SIZE, paginate_queryset
 from accounts.permissions import ACTIONS, MODULES
 from accounts.rbac import sync_roles
 
@@ -367,3 +368,92 @@ class UserCrudTest(TestCase):
         self.assertFalse(
             AuditLog.objects.filter(
                 action='DELETE', target_id=str(self.admin.pk)).exists())
+
+
+class UserListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (role/status/tìm kiếm) trên user_list."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='boss', password='admin-pass-123', role='ADMIN')
+        self.client.force_login(self.admin)
+        User.objects.bulk_create([
+            User(
+                username=f'user{i:04d}', email=f'user{i:04d}@example.com',
+                role=User.Role.STAFF if i % 2 == 0 else User.Role.MANAGER,
+                is_active=(i % 2 == 0),
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('user_list'))
+        self.assertEqual(len(response.context['users']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('user_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['users']), 36)  # 35 seed + self.admin
+
+    def test_filter_role(self):
+        response = self.client.get(
+            reverse('user_list'), {'role': User.Role.MANAGER, 'page_size': 50})
+        self.assertTrue(all(u.role == User.Role.MANAGER for u in response.context['users']))
+
+    def test_filter_status_inactive(self):
+        response = self.client.get(
+            reverse('user_list'), {'status': 'inactive', 'page_size': 50})
+        self.assertTrue(all(not u.is_active for u in response.context['users']))
+
+    def test_filter_search_by_username(self):
+        response = self.client.get(reverse('user_list'), {'q': 'user0001'})
+        usernames = [u.username for u in response.context['users']]
+        self.assertEqual(usernames, ['user0001'])
+
+
+class PaginationHelperTest(TestCase):
+    """``paginate_queryset`` (hạ tầng phân trang dùng chung, áp dụng mọi list view)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        # 45 user (STAFF) đủ cho page_size 30 tách thành 2 trang.
+        User.objects.bulk_create([
+            User(username=f'pgtest{i:03d}', role='STAFF') for i in range(45)
+        ])
+        self.queryset = User.objects.filter(username__startswith='pgtest').order_by('username')
+
+    def test_default_page_size_when_missing(self):
+        request = self.factory.get('/')
+        page_obj, page_size = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_size, DEFAULT_PAGE_SIZE)
+        self.assertEqual(len(page_obj.object_list), 30)
+
+    def test_invalid_page_size_falls_back_to_default(self):
+        request = self.factory.get('/', {'page_size': 'abc'})
+        page_obj, page_size = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_size, DEFAULT_PAGE_SIZE)
+
+    def test_page_size_outside_allowed_options_falls_back_to_default(self):
+        request = self.factory.get('/', {'page_size': '999'})
+        page_obj, page_size = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_size, DEFAULT_PAGE_SIZE)
+
+    def test_allowed_page_size_is_respected(self):
+        request = self.factory.get('/', {'page_size': '40'})
+        page_obj, page_size = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_size, 40)
+        self.assertEqual(len(page_obj.object_list), 40)
+
+    def test_page_beyond_range_returns_last_page(self):
+        request = self.factory.get('/', {'page_size': '30', 'page': '999'})
+        page_obj, _ = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_obj.number, page_obj.paginator.num_pages)
+
+    def test_non_numeric_page_returns_first_page(self):
+        request = self.factory.get('/', {'page': 'abc'})
+        page_obj, _ = paginate_queryset(request, self.queryset)
+        self.assertEqual(page_obj.number, 1)
+
+    def test_elided_page_range_attached_to_page_obj(self):
+        request = self.factory.get('/', {'page_size': '30'})
+        page_obj, _ = paginate_queryset(request, self.queryset)
+        self.assertEqual(list(page_obj.elided_page_range), list(page_obj.paginator.get_elided_page_range(1)))

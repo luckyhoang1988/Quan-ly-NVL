@@ -11,10 +11,12 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
 
 from .forms import ProductForm
 from .models import Product
@@ -44,7 +46,21 @@ def catalog_manager_required(view):
 def product_list(request):
     """READ — danh sách Product (mọi user đã đăng nhập đều xem được)."""
     products = Product.objects.all()
-    return render(request, 'catalog/product_list.html', {'products': products})
+    category = request.GET.get('category', '')
+    if category:
+        products = products.filter(category=category)
+    q = request.GET.get('q', '').strip()
+    if q:
+        products = products.filter(Q(product_code__icontains=q) | Q(name__icontains=q))
+    categories = (
+        Product.objects.exclude(category='').values_list('category', flat=True)
+        .distinct().order_by('category')
+    )
+    page_obj, page_size = paginate_queryset(request, products)
+    return render(request, 'catalog/product_list.html', {
+        'products': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'categories': categories, 'selected_category': category, 'q': q,
+    })
 
 
 @catalog_manager_required

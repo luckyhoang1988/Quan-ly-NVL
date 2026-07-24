@@ -538,6 +538,112 @@ class StockTransferViewTest(TestCase):
         self.assertContains(response, self.location2.code)
 
 
+class InventoryListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (warehouse/tìm kiếm) trên inventory_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.client.force_login(self.staff)
+        Inventory.objects.bulk_create([
+            Inventory(
+                product=Product.objects.create(product_code=f'NVL-{i:04d}', name=f'SP {i}', uom='kg'),
+                warehouse=self.warehouse, qty_on_hand=10,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertEqual(len(response.context['rows']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('inventory:inventory_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['rows']), 35)
+
+    def test_filter_search_by_product_code(self):
+        response = self.client.get(reverse('inventory:inventory_list'), {'q': 'NVL-0001'})
+        codes = [r['inventory'].product.product_code for r in response.context['rows']]
+        self.assertEqual(codes, ['NVL-0001'])
+
+
+class BatchListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (tìm kiếm) trên batch_list — dropdown warehouse/status đã có test riêng."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.client.force_login(self.staff)
+        Batch.objects.bulk_create([
+            Batch(
+                product=self.product, batch_code=f'LOT-{i:04d}', supplier=self.supplier,
+                location=self.location, qty_received=10,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('inventory:batch_list'))
+        self.assertEqual(len(response.context['batches']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('inventory:batch_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['batches']), 35)
+
+    def test_filter_search_by_batch_code(self):
+        response = self.client.get(reverse('inventory:batch_list'), {'q': 'LOT-0001'})
+        codes = [b.batch_code for b in response.context['batches']]
+        self.assertEqual(codes, ['LOT-0001'])
+
+
+class TransferListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (warehouse/tìm kiếm) trên transfer_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.other_warehouse = Warehouse.objects.create(code='KHO-SG', name='Kho Sài Gòn')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        self.other_location = Location.objects.create(warehouse=self.other_warehouse, code='B-01')
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier,
+            location=self.location, qty_received=1000,
+        )
+        self.client.force_login(self.staff)
+        StockTransfer.objects.bulk_create([
+            StockTransfer(
+                transfer_no=f'TRF-TEST-{i:04d}', batch=self.batch,
+                from_location=self.location if i % 2 == 0 else self.other_location,
+                to_location=self.location2, qty=1, created_by=self.staff,
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('inventory:transfer_list'))
+        self.assertEqual(len(response.context['transfers']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('inventory:transfer_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['transfers']), 35)
+
+    def test_filter_warehouse(self):
+        response = self.client.get(
+            reverse('inventory:transfer_list'), {'warehouse': self.warehouse.pk, 'page_size': 50})
+        self.assertTrue(all(t.from_location_id == self.location.pk for t in response.context['transfers']))
+
+    def test_filter_search_by_transfer_no(self):
+        response = self.client.get(reverse('inventory:transfer_list'), {'q': 'TRF-TEST-0001'})
+        transfer_nos = [t.transfer_no for t in response.context['transfers']]
+        self.assertEqual(transfer_nos, ['TRF-TEST-0001'])
+
+
 class EoqServiceTest(TestCase):
     """``calculate_eoq`` (FR-INV-05). ``TC-INV-EOQ-<seq>``."""
 

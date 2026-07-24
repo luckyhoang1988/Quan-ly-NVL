@@ -1,0 +1,55 @@
+{% comment %}
+Partial phân trang dùng chung — include ở mọi list view sau khối bảng:
+  {% include 'partials/pagination.html' %}
+Context bắt buộc: page_obj (Page), page_size (int, 30/40/50) — xem
+accounts/pagination.py::paginate_queryset(). Dùng {% querystring %} (Django
+5.1+) để giữ nguyên mọi filter query-param khác khi đổi page/page_size.
+{% endcomment %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">
+  <div class="text-muted small">
+    {% if page_obj.paginator.count %}
+      Hiển thị {{ page_obj.start_index }}–{{ page_obj.end_index }} / {{ page_obj.paginator.count }} dòng
+    {% else %}
+      Không có dòng nào
+    {% endif %}
+  </div>
+
+  {% if page_obj.paginator.num_pages > 1 %}
+  <nav aria-label="Phân trang">
+    <ul class="pagination pagination-sm mb-0">
+      <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+        {% if page_obj.has_previous %}
+          <a class="page-link" href="{% querystring page=page_obj.previous_page_number %}">‹ Trước</a>
+        {% else %}
+          <span class="page-link">‹ Trước</span>
+        {% endif %}
+      </li>
+      {% for num in page_obj.elided_page_range %}
+        {% if num == page_obj.paginator.ELLIPSIS %}
+          <li class="page-item disabled"><span class="page-link">{{ num }}</span></li>
+        {% elif num == page_obj.number %}
+          <li class="page-item active"><span class="page-link">{{ num }}</span></li>
+        {% else %}
+          <li class="page-item"><a class="page-link" href="{% querystring page=num %}">{{ num }}</a></li>
+        {% endif %}
+      {% endfor %}
+      <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+        {% if page_obj.has_next %}
+          <a class="page-link" href="{% querystring page=page_obj.next_page_number %}">Sau ›</a>
+        {% else %}
+          <span class="page-link">Sau ›</span>
+        {% endif %}
+      </li>
+    </ul>
+  </nav>
+  {% endif %}
+
+  <div class="d-flex align-items-center gap-2">
+    <label class="form-label mb-0 small" for="page_size_select">Số dòng/trang</label>
+    <select id="page_size_select" class="form-select form-select-sm w-auto" onchange="location.href=this.value">
+      <option value="{% querystring page_size=30 page=1 %}" {% if page_size == 30 %}selected{% endif %}>30</option>
+      <option value="{% querystring page_size=40 page=1 %}" {% if page_size == 40 %}selected{% endif %}>40</option>
+      <option value="{% querystring page_size=50 page=1 %}" {% if page_size == 50 %}selected{% endif %}>50</option>
+    </select>
+  </div>
+</div>

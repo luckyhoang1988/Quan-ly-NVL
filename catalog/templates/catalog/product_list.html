@@ -8,6 +8,25 @@
   {% endif %}
 </div>
 
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-auto">
+    <label class="form-label" for="category">Nhóm</label>
+    <select name="category" id="category" class="form-select" onchange="this.form.submit()">
+      <option value="">-- Tất cả nhóm --</option>
+      {% for cat in categories %}
+        <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-auto">
+    <label class="form-label" for="q">Tìm kiếm</label>
+    <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary">Lọc</button>
+  </div>
+</form>
+
 <div class="table-responsive">
   <table class="table table-striped align-middle">
     <thead>
@@ -50,4 +69,5 @@
     </tbody>
   </table>
 </div>
+{% include 'partials/pagination.html' %}
 {% endblock %}

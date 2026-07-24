@@ -82,3 +82,37 @@ class ProductCrudTest(TestCase):
         self.assertFalse(product.is_active)
         self.assertTrue(AuditLog.objects.filter(
             action=AuditLog.Action.UPDATE, target_id=str(product.pk)).exists())
+
+
+class ProductListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (category/tìm kiếm) trên product_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        Product.objects.bulk_create([
+            Product(
+                product_code=f'NVL-{i:04d}', name=f'Sản phẩm {i}', uom='kg',
+                category='Bột' if i % 2 == 0 else 'Đường',
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('catalog:product_list'))
+        self.assertEqual(len(response.context['products']), 30)
+
+    def test_page_size_40(self):
+        response = self.client.get(reverse('catalog:product_list'), {'page_size': 40})
+        self.assertEqual(len(response.context['products']), 35)
+
+    def test_filter_category(self):
+        response = self.client.get(
+            reverse('catalog:product_list'), {'category': 'Đường', 'page_size': 50})
+        self.assertTrue(all(p.category == 'Đường' for p in response.context['products']))
+
+    def test_filter_search_by_product_code(self):
+        response = self.client.get(reverse('catalog:product_list'), {'q': 'NVL-0001'})
+        codes = [p.product_code for p in response.context['products']]
+        self.assertEqual(codes, ['NVL-0001'])

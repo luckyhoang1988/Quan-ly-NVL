@@ -23,6 +23,13 @@
       {% endfor %}
     </select>
   </div>
+  <div class="col-auto">
+    <label class="form-label" for="q">Tìm kiếm</label>
+    <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
+  </div>
+  <div class="col-auto">
+    <button type="submit" class="btn btn-outline-primary">Lọc</button>
+  </div>
 </form>
 
 <div class="table-responsive">
@@ -75,4 +82,5 @@
     </tbody>
   </table>
 </div>
+{% include 'partials/pagination.html' %}
 {% endblock %}

@@ -14,10 +14,12 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
 from receiving.models import Grn
 
 from .forms import QcCriteriaForm, QcInspectionItemFormSet, QcItemResultFormSet, QcResultForm
@@ -123,8 +125,27 @@ def qc_result(request, grn_pk):
 def qc_criteria_list(request):
     """READ — danh sách tiêu chuẩn QC master data (FR-QC-02)."""
     criteria = QcCriteria.objects.all()
+    category = request.GET.get('category', '')
+    if category:
+        criteria = criteria.filter(category=category)
+    status = request.GET.get('status', '')
+    if status == 'active':
+        criteria = criteria.filter(is_active=True)
+    elif status == 'inactive':
+        criteria = criteria.filter(is_active=False)
+    q = request.GET.get('q', '').strip()
+    if q:
+        criteria = criteria.filter(Q(name__icontains=q))
+    categories = (
+        QcCriteria.objects.exclude(category='').values_list('category', flat=True)
+        .distinct().order_by('category')
+    )
+    page_obj, page_size = paginate_queryset(request, criteria)
     return render(request, 'quality/qc_criteria_list.html', {
-        'criteria': criteria, 'can_manage': request.user.can('create', 'qc'),
+        'criteria': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'can_manage': request.user.can('create', 'qc'),
+        'categories': categories, 'selected_category': category,
+        'selected_status': status, 'q': q,
     })
 
 

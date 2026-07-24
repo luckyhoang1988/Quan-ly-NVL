@@ -18,6 +18,8 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip
+from accounts.pagination import paginate_queryset
+from warehouse.models import Warehouse
 
 from .forms import StocktakeCountForm, StocktakeSessionForm
 from .models import StocktakeSession
@@ -46,8 +48,32 @@ def stocktake_permission_required(action):
 def so_list(request):
     """READ — danh sách phiếu kiểm kê."""
     sessions = StocktakeSession.objects.select_related('warehouse', 'location', 'created_by').all()
+    selected_status = request.GET.get('status', '')
+    if selected_status:
+        sessions = sessions.filter(status=selected_status)
+    selected_warehouse = None
+    warehouse_id = request.GET.get('warehouse')
+    if warehouse_id:
+        try:
+            selected_warehouse = int(warehouse_id)
+        except (TypeError, ValueError):
+            selected_warehouse = None
+    if selected_warehouse:
+        sessions = sessions.filter(warehouse_id=selected_warehouse)
+    q = request.GET.get('q', '').strip()
+    if q:
+        sessions = sessions.filter(so_no__icontains=q)
+    page_obj, page_size = paginate_queryset(request, sessions)
     return render(request, 'stocktake/so_list.html', {
-        'sessions': sessions, 'can_create': request.user.can('create', 'opname'),
+        'sessions': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
+        'can_create': request.user.can('create', 'opname'),
+        'statuses': StocktakeSession.Status.choices,
+        'warehouses': Warehouse.objects.filter(is_active=True),
+        'selected_status': selected_status,
+        'selected_warehouse': selected_warehouse,
+        'q': q,
     })
 
 

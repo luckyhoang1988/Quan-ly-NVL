@@ -18,6 +18,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
+from warehouse.models import Warehouse
 
 from .forms import GinAllocationOverrideForm, GinForm, GinItemFormSet
 from .models import Gin, GinBatchAllocation
@@ -46,8 +48,32 @@ def gin_permission_required(action):
 def gin_list(request):
     """READ — danh sách GIN."""
     gins = Gin.objects.select_related('warehouse', 'requested_by').all()
+    selected_status = request.GET.get('status', '')
+    if selected_status:
+        gins = gins.filter(status=selected_status)
+    selected_warehouse = None
+    warehouse_id = request.GET.get('warehouse')
+    if warehouse_id:
+        try:
+            selected_warehouse = int(warehouse_id)
+        except (TypeError, ValueError):
+            selected_warehouse = None
+    if selected_warehouse:
+        gins = gins.filter(warehouse_id=selected_warehouse)
+    q = request.GET.get('q', '').strip()
+    if q:
+        gins = gins.filter(gin_no__icontains=q)
+    page_obj, page_size = paginate_queryset(request, gins)
     return render(request, 'shipping/gin_list.html', {
-        'gins': gins, 'can_create': request.user.can('create', 'gin'),
+        'gins': page_obj,
+        'page_obj': page_obj,
+        'page_size': page_size,
+        'can_create': request.user.can('create', 'gin'),
+        'statuses': Gin.Status.choices,
+        'warehouses': Warehouse.objects.filter(is_active=True),
+        'selected_status': selected_status,
+        'selected_warehouse': selected_warehouse,
+        'q': q,
     })
 
 

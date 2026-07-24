@@ -515,3 +515,38 @@ class QcCriteriaCrudTest(TestCase):
         self.client.force_login(self.manager)
         response = self.client.post(reverse('quality:qc_criteria_toggle_active', args=[self.criteria.pk]))
         self.assertEqual(response.status_code, 403)
+
+
+class QcCriteriaListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (category/status/tìm kiếm) trên qc_criteria_list."""
+
+    def setUp(self):
+        self.qc_user = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.client.force_login(self.qc_user)
+        QcCriteria.objects.bulk_create([
+            QcCriteria(
+                category='Bột mì' if i % 2 == 0 else 'Đường',
+                name=f'Tiêu chuẩn {i}', pass_rule='OK', is_active=(i % 2 == 0),
+            )
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('quality:qc_criteria_list'))
+        self.assertEqual(len(response.context['criteria']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('quality:qc_criteria_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['criteria']), 35)
+
+    def test_filter_category(self):
+        response = self.client.get(
+            reverse('quality:qc_criteria_list'), {'category': 'Đường', 'page_size': 50})
+        self.assertTrue(all(c.category == 'Đường' for c in response.context['criteria']))
+
+    def test_filter_search_by_name(self):
+        response = self.client.get(reverse('quality:qc_criteria_list'), {'q': 'Tiêu chuẩn 1'})
+        names = [c.name for c in response.context['criteria']]
+        self.assertIn('Tiêu chuẩn 1', names)
+        self.assertTrue(all('Tiêu chuẩn 1' in n for n in names))

@@ -14,10 +14,12 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
+from accounts.pagination import paginate_queryset
 
 from .forms import LocationForm, WarehouseForm
 from .models import MIN_LOCATIONS_PER_WAREHOUSE, Location, Warehouse
@@ -47,7 +49,19 @@ def warehouse_manager_required(view):
 def warehouse_list(request):
     """READ — danh sách kho (mọi user đã đăng nhập đều xem được)."""
     warehouses = Warehouse.objects.all()
-    return render(request, 'warehouse/warehouse_list.html', {'warehouses': warehouses})
+    status = request.GET.get('status', '')
+    if status == 'active':
+        warehouses = warehouses.filter(is_active=True)
+    elif status == 'inactive':
+        warehouses = warehouses.filter(is_active=False)
+    q = request.GET.get('q', '').strip()
+    if q:
+        warehouses = warehouses.filter(Q(code__icontains=q) | Q(name__icontains=q))
+    page_obj, page_size = paginate_queryset(request, warehouses)
+    return render(request, 'warehouse/warehouse_list.html', {
+        'warehouses': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'selected_status': status, 'q': q,
+    })
 
 
 @login_required

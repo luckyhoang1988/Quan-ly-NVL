@@ -74,3 +74,34 @@ class SupplierCrudTest(TestCase):
         self.assertFalse(supplier.is_active)
         self.assertTrue(AuditLog.objects.filter(
             action=AuditLog.Action.UPDATE, target_id=str(supplier.pk)).exists())
+
+
+class SupplierListPaginationFilterTest(TestCase):
+    """Phân trang + bộ lọc (status/tìm kiếm) trên supplier_list."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+        Supplier.objects.bulk_create([
+            Supplier(supplier_code=f'NCC-{i:04d}', name=f'NCC {i}', is_active=(i % 2 == 0))
+            for i in range(1, 36)
+        ])
+
+    def test_default_page_size_30(self):
+        response = self.client.get(reverse('partners:supplier_list'))
+        self.assertEqual(len(response.context['suppliers']), 30)
+
+    def test_page_size_50_shows_all(self):
+        response = self.client.get(reverse('partners:supplier_list'), {'page_size': 50})
+        self.assertEqual(len(response.context['suppliers']), 35)
+
+    def test_filter_status_inactive(self):
+        response = self.client.get(
+            reverse('partners:supplier_list'), {'status': 'inactive', 'page_size': 50})
+        self.assertTrue(all(not s.is_active for s in response.context['suppliers']))
+
+    def test_filter_search_by_code(self):
+        response = self.client.get(reverse('partners:supplier_list'), {'q': 'NCC-0001'})
+        codes = [s.supplier_code for s in response.context['suppliers']]
+        self.assertEqual(codes, ['NCC-0001'])
