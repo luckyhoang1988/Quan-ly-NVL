@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block title %}{% if mode == 'create' %}Tạo GRN{% else %}Sửa GRN{% endif %} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-10">
+    <h1 class="h3 mb-3">
+      {% if mode == 'create' %}Tạo GRN mới{% else %}Sửa GRN: {{ obj.grn_no }}{% endif %}
+    </h1>
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      {% for field in form %}
+        <div class="mb-3">
+          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+          {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+
+      <h2 class="h5 mt-4 mb-2">Chi tiết hàng</h2>
+      {{ formset.management_form }}
+      {% if formset.non_form_errors %}
+        <div class="alert alert-danger py-2">{{ formset.non_form_errors }}</div>
+      {% endif %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Sản phẩm</th>
+              <th>Qty đặt</th>
+              <th>Đơn giá</th>
+              <th>NSX</th>
+              <th>HSD</th>
+              <th>Mã lô NCC</th>
+              {% if formset.can_delete %}<th>Xoá</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for item_form in formset %}
+            <tr>
+              {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+              <td>
+                {{ item_form.product }}
+                {% for error in item_form.product.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ item_form.qty_ordered }}
+                {% for error in item_form.qty_ordered.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ item_form.unit_price }}
+                {% for error in item_form.unit_price.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ item_form.mfg_date }}
+                {% for error in item_form.mfg_date.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ item_form.exp_date }}
+                {% for error in item_form.exp_date.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ item_form.batch_code }}
+                {% for error in item_form.batch_code.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+              {% if formset.can_delete %}<td>{{ item_form.DELETE }}</td>{% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        {% if mode == 'create' %}
+          <button type="submit" name="action" value="save" class="btn btn-outline-primary">Lưu nháp</button>
+          <button type="submit" name="action" value="submit" class="btn btn-primary">Lưu &amp; Submit</button>
+        {% else %}
+          <button type="submit" class="btn btn-primary">Lưu</button>
+        {% endif %}
+        <a class="btn btn-link" href="{% if mode == 'create' %}{% url 'receiving:grn_list' %}{% else %}{% url 'receiving:grn_detail' obj.pk %}{% endif %}">Huỷ</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -45,7 +45,7 @@ ROLE_PERMISSIONS = {
         'reports': {'read', 'approve'},                              # R + approve
     },
     'STAFF': {
-        'grn': {'create', 'read'},                 # CR
+        'grn': {'create', 'read', 'update'},        # CRU (nhập Qty thực nhận + Submit to QC ở PENDING_QC)
         'gin': {'create', 'read'},                 # CR
         'opname': {'create', 'read', 'update'},    # CRU
         'qc': set(),                               # –

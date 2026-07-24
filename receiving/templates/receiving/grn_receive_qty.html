@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+{% block title %}Nhập Qty — {{ grn.grn_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <h1 class="h3 mb-3">Nhập Qty thực nhận — {{ grn.grn_no }}</h1>
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {{ formset.management_form }}
+      {% if formset.non_form_errors %}
+        <div class="alert alert-danger py-2">{{ formset.non_form_errors }}</div>
+      {% endif %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Sản phẩm</th>
+              <th>Qty đặt</th>
+              <th>Qty thực nhận</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item_form in formset %}
+            <tr>
+              {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+              <td>{{ item_form.instance.product.product_code }} — {{ item_form.instance.product.name }}</td>
+              <td>{{ item_form.instance.qty_ordered }}</td>
+              <td>
+                {{ item_form.qty_received }}
+                {% for error in item_form.qty_received.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="h5 mt-4 mb-2">Submit to QC</h2>
+      {% if submit_form.non_field_errors %}
+        <div class="alert alert-danger py-2">{{ submit_form.non_field_errors }}</div>
+      {% endif %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ submit_form.inspector.id_for_label }}">{{ submit_form.inspector.label }}</label>
+        {{ submit_form.inspector }}
+        {% for error in submit_form.inspector.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">Submit to QC</button>
+        <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

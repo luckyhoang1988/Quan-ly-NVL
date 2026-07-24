@@ -51,6 +51,10 @@ INSTALLED_APPS = [
     'partners',     # Master data: nhà cung cấp
     'purchasing',   # PO (stub ở Phase 1, đầy đủ ở Phase 5)
     'inventory',    # Tồn kho / Batch (schema ở Phase 1)
+
+    # --- NVL/WMS apps (Phase 2) ---
+    'receiving',    # GRN (Phiếu Nhập)
+    'quality',      # Quality Control (QC)
 ]
 
 # Custom user model (NVL/WMS): thêm role RBAC + soft delete.

@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}GRN — NVL/WMS{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Phiếu Nhập (GRN)</h1>
+  {% if can_create %}
+    <a href="{% url 'receiving:grn_create' %}" class="btn btn-primary">+ Tạo GRN</a>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped align-middle">
+    <thead>
+      <tr>
+        <th>Mã GRN</th>
+        <th>NCC</th>
+        <th>PO</th>
+        <th>Trạng thái</th>
+        <th>Số dòng</th>
+        <th>Ngày tạo</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for grn in grns %}
+      <tr>
+        <td>{{ grn.grn_no }}</td>
+        <td>{{ grn.supplier.name }}</td>
+        <td>{{ grn.po.po_no }}</td>
+        <td><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></td>
+        <td>{{ grn.items.count }}</td>
+        <td>{{ grn.created_at|date:'d/m/Y H:i' }}</td>
+        <td>
+          <a href="{% url 'receiving:grn_detail' grn.pk %}" class="btn btn-sm btn-outline-secondary">Xem</a>
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7" class="text-center text-muted">Chưa có GRN nào.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

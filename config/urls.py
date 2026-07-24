@@ -24,4 +24,6 @@ urlpatterns = [
     path('products/', include('catalog.urls')),
     path('suppliers/', include('partners.urls')),
     path('purchase-orders/', include('purchasing.urls')),
+    path('grn/', include('receiving.urls')),
+    path('qc/', include('quality.urls')),
 ]

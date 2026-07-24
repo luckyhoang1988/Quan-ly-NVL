@@ -75,7 +75,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 | Role | GRN | GIN | Opname | QC | PO | Reports |
 |---|---|---|---|---|---|---|
 | Manager | CRUD | CRUD | CRUD | R | CRUD | R |
-| Staff | CR | CR | CRU | – | R | R |
+| Staff | CRU¹ | CR | CRU | – | R | R |
 | QC Inspector | R | R | – | CRU | R | R |
 | Purchasing | R | R | – | R | CRUD | R |
 | Accountant | R | R | – | R | R | CRUD |
@@ -88,6 +88,13 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] DELETE: soft delete (giữ audit trail)
 
 > ⚠️ Làm module này xong **trước** khi đụng vào GRN/QC — mọi bảng audit log ở Phase 2 cần FK tới `User`.
+
+> ¹ Điều chỉnh so với FSD gốc (bản FSD ghi Staff = CR trên GRN): khi cài Workflow States
+> ở mục 2a (Task 3, Phase 2) phát hiện mâu thuẫn — state `PENDING_QC` yêu cầu "nhân viên
+> Kho nhập Qty thực tế nhận, nút Submit to QC", tức STAFF cần sửa (`update`) GRN ở bước
+> này, nhưng ma trận CR gốc không cho. Đã chốt thêm `update` cho STAFF/GRN (giữ MANAGER/
+> ADMIN full CRUD+approve, `approve` — tức QC PASS/FAIL/PARTIAL_PASS — vẫn tách riêng ở
+> module QC, STAFF không đụng tới).
 
 ### 1b. Warehouse Management — `warehouse` app
 
@@ -140,8 +147,8 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] Batch model: `product_id` (FK), `batch_code`, `mfg_date`, `exp_date`, `qty_received`, `qty_used`, `qty_available` (computed), `status` (enum: ACTIVE/PARTIAL_USED/QUARANTINE/EXPIRED/CLOSED, mặc định ACTIVE), `supplier_id` (FK), `location_id` (FK) — chưa có view/form CRUD, chưa có transition logic (dời Phase 2/3), chỉ model + admin
 
 ### ✅ Definition of Done — Phase 1
-- [ ] Login được, phân quyền theo 6 role hoạt động đúng permission matrix
-- [ ] Tạo được Warehouse + Location + Product + Supplier + 1 PO stub qua UI/admin
+- [x] Login được, phân quyền theo 6 role hoạt động đúng permission matrix — verify sống qua `runserver` (2026-07-24): 7 user test (1 superuser + 6 role) login thành công (POST /login/ → 302); ma trận GET status trên user_list, warehouse/product/supplier/PO list+create khớp 100% permission matrix (ADMIN/superuser full quyền; MANAGER thêm được Warehouse/Product/Supplier/PO; PURCHASING chỉ thêm được PO; STAFF/QC/ACCOUNTANT chỉ Read). User/data verify đã xoá sau khi xong.
+- [x] Tạo được Warehouse + Location + Product + Supplier + 1 PO stub qua UI/admin — verify sống qua `runserver` (2026-07-24): tạo thành công cả 5 qua POST form thật (không phải admin) với role MANAGER — Warehouse (tự sinh 10 Location theo BR-WM-005) + 1 Location thủ công, Product, Supplier, PO kèm 1 dòng item — đã kiểm chứng lại qua DB rồi xoá (dữ liệu test tạm).
 - [x] `qty_available = qty_on_hand - qty_reserved` tính đúng (unit test) — `TC-INV-001-001` (Inventory), `TC-INV-002-001` (Batch: qty_received - qty_used)
 
 ---

@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+{% block title %}Kết quả QC — {{ grn.grn_no }} — NVL/WMS{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-9">
+    <h1 class="h3 mb-3">Nhập kết quả QC — {{ grn.grn_no }} ({{ inspection.qc_no }})</h1>
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {% if result_form.non_field_errors %}
+        <div class="alert alert-danger py-2">{{ result_form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="mb-3">
+        <label class="form-label" for="{{ result_form.location.id_for_label }}">{{ result_form.location.label }}</label>
+        {{ result_form.location }}
+        {% if result_form.location.help_text %}<div class="form-text">{{ result_form.location.help_text }}</div>{% endif %}
+        {% for error in result_form.location.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ result_form.reason.id_for_label }}">{{ result_form.reason.label }}</label>
+        {{ result_form.reason }}
+        {% for error in result_form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+
+      <h2 class="h5 mt-4 mb-2">Qty đạt QC từng item (dùng cho Partial Pass)</h2>
+      {{ formset.management_form }}
+      {% if formset.non_form_errors %}
+        <div class="alert alert-danger py-2">{{ formset.non_form_errors }}</div>
+      {% endif %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Sản phẩm</th>
+              <th>Qty thực nhận</th>
+              <th>Qty đạt QC</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item_form in formset %}
+            <tr>
+              {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+              <td>{{ item_form.instance.product.product_code }} — {{ item_form.instance.product.name }}</td>
+              <td>{{ item_form.instance.qty_received }}</td>
+              <td>
+                {{ item_form.qty_pass }}
+                {% for error in item_form.qty_pass.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" name="action" value="pass" class="btn btn-success">QC Pass</button>
+        <button type="submit" name="action" value="partial" class="btn btn-warning">QC Partial Pass</button>
+        <button type="submit" name="action" value="fail" class="btn btn-danger">QC Fail</button>
+        <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

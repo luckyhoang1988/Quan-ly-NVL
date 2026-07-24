@@ -55,11 +55,13 @@ class RBACMatrixTest(TestCase):
 
     # --- FR-USER-04: permission matrix từng role ---
 
-    def test_TC_USER_04_001_staff_grn_cr_only(self):
+    def test_TC_USER_04_001_staff_grn_cru_only(self):
         u = self.make('STAFF')
         self.assertTrue(u.can('create', 'grn'))
         self.assertTrue(u.can('read', 'grn'))
-        self.assertFalse(u.can('update', 'grn'))
+        # 'update' cần cho bước PENDING_QC: nhân viên Kho nhập Qty thực nhận +
+        # bấm Submit to QC (mục 2a Workflow States) — xem accounts/permissions.py.
+        self.assertTrue(u.can('update', 'grn'))
         self.assertFalse(u.can('delete', 'grn'))
         self.assertFalse(u.can('approve', 'grn'))
 

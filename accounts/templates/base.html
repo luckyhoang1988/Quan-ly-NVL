@@ -15,6 +15,7 @@
       <a class="small text-white text-decoration-none" href="{% url 'catalog:product_list' %}">Sản phẩm</a>
       <a class="small text-white text-decoration-none" href="{% url 'partners:supplier_list' %}">Nhà cung cấp</a>
       <a class="small text-white text-decoration-none" href="{% url 'purchasing:po_list' %}">Purchase Order</a>
+      <a class="small text-white text-decoration-none" href="{% url 'receiving:grn_list' %}">GRN</a>
       {% if user.is_superuser or user.role == 'ADMIN' %}
         <a class="small text-white text-decoration-none" href="{% url 'user_list' %}">Quản lý user</a>
       {% endif %}
