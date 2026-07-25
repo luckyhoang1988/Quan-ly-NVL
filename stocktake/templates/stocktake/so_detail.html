@@ -33,22 +33,32 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-2">Trạng thái</dt>
-      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ session.get_status_display }}</span></dd>
-      <dt class="col-sm-2">Kho</dt>
-      <dd class="col-sm-4">{{ session.warehouse }}</dd>
-      <dt class="col-sm-2">Vị trí</dt>
-      <dd class="col-sm-4">{{ session.location|default:"Toàn kho" }}</dd>
-      <dt class="col-sm-2">Người tạo</dt>
-      <dd class="col-sm-4">{{ session.created_by.username }}</dd>
-      <dt class="col-sm-2">Đối soát lúc</dt>
-      <dd class="col-sm-4">{{ session.reconciled_at|date:'d/m/Y H:i'|default:"—" }}</dd>
-      <dt class="col-sm-2">Hoàn tất lúc</dt>
-      <dd class="col-sm-4">{{ session.completed_at|date:'d/m/Y H:i'|default:"—" }}</dd>
-      <dt class="col-sm-2">Ghi chú</dt>
-      <dd class="col-sm-4">{{ session.notes|default:"—" }}</dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td><span class="badge bg-info text-dark">{{ session.get_status_display }}</span></td>
+          <th class="text-nowrap">Kho</th>
+          <td>{{ session.warehouse }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Vị trí</th>
+          <td>{{ session.location|default:"Toàn kho" }}</td>
+          <th class="text-nowrap">Người tạo</th>
+          <td>{{ session.created_by.username }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Đối soát lúc</th>
+          <td>{{ session.reconciled_at|date:'d/m/Y H:i'|default:"—" }}</td>
+          <th class="text-nowrap">Hoàn tất lúc</th>
+          <td>{{ session.completed_at|date:'d/m/Y H:i'|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ghi chú</th>
+          <td colspan="3">{{ session.notes|default:"—" }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 

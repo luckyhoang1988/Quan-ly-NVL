@@ -95,6 +95,9 @@
         <i class="bi bi-person-circle fs-5"></i>
         <span>{{ user.username }} · {{ user.get_role_display|default:"chưa gán role" }}</span>
       </div>
+      <a href="{% url 'password_change' %}" class="btn btn-sm btn-outline-light w-100 d-flex align-items-center justify-content-center gap-2 mb-2">
+        <i class="bi bi-key"></i> Đổi mật khẩu
+      </a>
       <form method="post" action="{% url 'logout' %}" class="m-0">
         {% csrf_token %}
         <button type="submit" class="btn btn-sm btn-outline-light w-100 d-flex align-items-center justify-content-center gap-2">

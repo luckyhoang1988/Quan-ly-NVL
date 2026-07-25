@@ -36,22 +36,30 @@
     <h2 class="panel-title">Dữ liệu đầu vào</h2>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-5">Nhu cầu năm (D) — 365 ngày qua</dt>
-      <dd class="col-sm-7">{{ result.annual_demand }} {{ product.uom }}</dd>
-
-      <dt class="col-sm-5">Đơn giá bình quân (theo lịch sử mua)</dt>
-      <dd class="col-sm-7">{{ result.avg_unit_cost|floatformat:2|default:"—" }}</dd>
-
-      <dt class="col-sm-5">Chi phí đặt hàng/lần (S)</dt>
-      <dd class="col-sm-7">{{ result.ordering_cost|default:"—" }}</dd>
-
-      <dt class="col-sm-5">% chi phí lưu kho/năm</dt>
-      <dd class="col-sm-7">{{ result.holding_cost_rate|default:"—" }}{% if result.holding_cost_rate %}%{% endif %}</dd>
-
-      <dt class="col-sm-5">Chi phí lưu kho/đơn vị/năm (H)</dt>
-      <dd class="col-sm-7">{{ result.holding_cost_per_unit|floatformat:2|default:"—" }}</dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Nhu cầu năm (D) — 365 ngày qua</th>
+          <td>{{ result.annual_demand }} {{ product.uom }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Đơn giá bình quân (theo lịch sử mua)</th>
+          <td>{{ result.avg_unit_cost|floatformat:2|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Chi phí đặt hàng/lần (S)</th>
+          <td>{{ result.ordering_cost|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">% chi phí lưu kho/năm</th>
+          <td>{{ result.holding_cost_rate|default:"—" }}{% if result.holding_cost_rate %}%{% endif %}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Chi phí lưu kho/đơn vị/năm (H)</th>
+          <td>{{ result.holding_cost_per_unit|floatformat:2|default:"—" }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 {% endblock %}

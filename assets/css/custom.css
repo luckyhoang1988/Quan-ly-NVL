@@ -17,6 +17,7 @@
   --wms-toolbar-bg: #f8f9fb;
   --wms-table-header-bg: #eef4ff;
   --wms-table-header-color: #1d3a66;
+  --wms-table-border: #b9c4d6;
 }
 
 body {
@@ -177,11 +178,15 @@ body {
 }
 
 /* ---- Tables ---- */
+.table-accent {
+  border: 1px solid var(--wms-table-border);
+}
+
 .table-accent thead th {
   background-color: var(--wms-table-header-bg);
   color: var(--wms-table-header-color);
   font-weight: 600;
-  border-bottom: 2px solid #d7e4fb;
+  border-bottom: 2px solid #a9bde0;
   white-space: nowrap;
 }
 
@@ -191,12 +196,17 @@ body {
 
 .table-accent > :not(caption) > * > th,
 .table-accent > :not(caption) > * > td {
-  border-right: 1px solid var(--wms-panel-border);
+  border-right: 1px solid var(--wms-table-border);
 }
 
 .table-accent > :not(caption) > * > th:last-child,
 .table-accent > :not(caption) > * > td:last-child {
   border-right: none;
+}
+
+.table-accent > tbody > tr > td,
+.table-accent > tbody > tr > th {
+  border-bottom: 1px solid var(--wms-table-border);
 }
 
 /* ---- Action toolbar ---- */

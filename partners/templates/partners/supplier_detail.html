@@ -17,18 +17,22 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-3">Trạng thái</dt>
-      <dd class="col-sm-9">
-        {% if obj.status == 'ACTIVE' %}
-          <span class="badge bg-success">{{ obj.get_status_display }}</span>
-        {% elif obj.status == 'SUSPENDED' %}
-          <span class="badge bg-warning text-dark">{{ obj.get_status_display }}</span>
-        {% else %}
-          <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
-        {% endif %}
-      </dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td>
+            {% if obj.status == 'ACTIVE' %}
+              <span class="badge bg-success">{{ obj.get_status_display }}</span>
+            {% elif obj.status == 'SUSPENDED' %}
+              <span class="badge bg-warning text-dark">{{ obj.get_status_display }}</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -39,18 +43,28 @@
   <div class="card-body">
     <div class="row">
       <div class="col-md-6 detail-col-split">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Tên nhà cung cấp</dt>
-          <dd class="col-sm-7">{{ obj.name }}</dd>
-          <dt class="col-sm-5">Tên quốc tế / viết tắt</dt>
-          <dd class="col-sm-7">{{ obj.international_name|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Tên nhà cung cấp</th>
+              <td>{{ obj.name }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Tên quốc tế / viết tắt</th>
+              <td>{{ obj.international_name|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div class="col-md-6">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Nhóm nhà cung cấp</dt>
-          <dd class="col-sm-7">{{ obj.supplier_group|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Nhóm nhà cung cấp</th>
+              <td>{{ obj.supplier_group|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -63,20 +77,32 @@
   <div class="card-body">
     <div class="row">
       <div class="col-md-6 detail-col-split">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Mã số thuế</dt>
-          <dd class="col-sm-7">{{ obj.tax_code|default:"—" }}</dd>
-          <dt class="col-sm-5">Địa chỉ đăng ký kinh doanh</dt>
-          <dd class="col-sm-7">{{ obj.registered_address|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Mã số thuế</th>
+              <td>{{ obj.tax_code|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Địa chỉ đăng ký kinh doanh</th>
+              <td>{{ obj.registered_address|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div class="col-md-6">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Địa chỉ kho / giao hàng</dt>
-          <dd class="col-sm-7">{{ obj.delivery_address|default:"—" }}</dd>
-          <dt class="col-sm-5">Website</dt>
-          <dd class="col-sm-7">{% if obj.website %}<a href="{{ obj.website }}" target="_blank" rel="noopener">{{ obj.website }}</a>{% else %}—{% endif %}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Địa chỉ kho / giao hàng</th>
+              <td>{{ obj.delivery_address|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Website</th>
+              <td>{% if obj.website %}<a href="{{ obj.website }}" target="_blank" rel="noopener">{{ obj.website }}</a>{% else %}—{% endif %}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -89,20 +115,32 @@
   <div class="card-body">
     <div class="row">
       <div class="col-md-6 detail-col-split">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Họ và tên</dt>
-          <dd class="col-sm-7">{{ obj.contact_name|default:"—" }}</dd>
-          <dt class="col-sm-5">Chức vụ</dt>
-          <dd class="col-sm-7">{{ obj.contact_title|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Họ và tên</th>
+              <td>{{ obj.contact_name|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Chức vụ</th>
+              <td>{{ obj.contact_title|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div class="col-md-6">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Điện thoại</dt>
-          <dd class="col-sm-7">{{ obj.contact_phone|default:"—" }}</dd>
-          <dt class="col-sm-5">Email</dt>
-          <dd class="col-sm-7">{{ obj.contact_email|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Điện thoại</th>
+              <td>{{ obj.contact_phone|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Email</th>
+              <td>{{ obj.contact_email|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -115,22 +153,36 @@
   <div class="card-body">
     <div class="row">
       <div class="col-md-6 detail-col-split">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Lead time (ngày)</dt>
-          <dd class="col-sm-7">{{ obj.lead_time_days|default:"—" }}</dd>
-          <dt class="col-sm-5">Ngưỡng chênh lệch Qty (%)</dt>
-          <dd class="col-sm-7">{{ obj.qty_tolerance_percent }}</dd>
-          <dt class="col-sm-5">Tiền tệ giao dịch</dt>
-          <dd class="col-sm-7">{{ obj.get_currency_display }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Lead time (ngày)</th>
+              <td>{{ obj.lead_time_days|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Ngưỡng chênh lệch Qty (%)</th>
+              <td>{{ obj.qty_tolerance_percent }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Tiền tệ giao dịch</th>
+              <td>{{ obj.get_currency_display }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div class="col-md-6">
-        <dl class="row mb-0">
-          <dt class="col-sm-5">Điều khoản thanh toán</dt>
-          <dd class="col-sm-7">{{ obj.payment_terms|default:"—" }}</dd>
-          <dt class="col-sm-5">Hạn mức công nợ</dt>
-          <dd class="col-sm-7">{{ obj.credit_limit|default:"—" }}</dd>
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-0">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Điều khoản thanh toán</th>
+              <td>{{ obj.payment_terms|default:"—" }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Hạn mức công nợ</th>
+              <td>{{ obj.credit_limit|default:"—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>

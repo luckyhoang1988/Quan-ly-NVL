@@ -35,25 +35,33 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-2">Trạng thái</dt>
-      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></dd>
-      <dt class="col-sm-2">Giao hàng</dt>
-      <dd class="col-sm-4">
-        {% if delivery_status %}
-          <span class="badge bg-{{ delivery_status.css }}{% if delivery_status.css == 'warning' %} text-dark{% endif %}">{{ delivery_status.label }}</span>
-        {% else %}—{% endif %}
-      </dd>
-      <dt class="col-sm-2">NCC</dt>
-      <dd class="col-sm-4">
-        {{ po.supplier.name }}
-        <a href="{% url 'purchasing:po_price_comparison' %}" class="small">So sánh giá NCC »</a>
-      </dd>
-      <dt class="col-sm-2">Ngày giao dự kiến</dt>
-      <dd class="col-sm-4">{{ po.expected_delivery_date|default:"—" }}</dd>
-      <dt class="col-sm-2">Ngày tạo</dt>
-      <dd class="col-sm-4">{{ po.created_at|date:'d/m/Y H:i' }}</dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
+          <th class="text-nowrap">Giao hàng</th>
+          <td>
+            {% if delivery_status %}
+              <span class="badge bg-{{ delivery_status.css }}{% if delivery_status.css == 'warning' %} text-dark{% endif %}">{{ delivery_status.label }}</span>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">NCC</th>
+          <td>
+            {{ po.supplier.name }}
+            <a href="{% url 'purchasing:po_price_comparison' %}" class="small">So sánh giá NCC »</a>
+          </td>
+          <th class="text-nowrap">Ngày giao dự kiến</th>
+          <td>{{ po.expected_delivery_date|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ngày tạo</th>
+          <td colspan="3">{{ po.created_at|date:'d/m/Y H:i' }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 

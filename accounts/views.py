@@ -11,7 +11,7 @@ actor = người đang đăng nhập + IP client.
 from functools import wraps
 
 from django.contrib import messages
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied
@@ -21,7 +21,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.crypto import get_random_string
 
 from .audit import client_ip, log_action
-from .forms import UserCreateForm, UserUpdateForm
+from .forms import UserCreateForm, UserUpdateForm, WmsPasswordChangeForm, WmsSetPasswordForm
 from .models import AuditLog
 from .pagination import paginate_queryset
 from .permissions import ACTIONS, MODULES, codenames_for_role
@@ -41,6 +41,24 @@ def dashboard(request):
     thật (cảnh báo tồn kho...) sẽ bổ sung khi làm warehouse ở mục 1b.
     """
     return render(request, 'dashboard.html')
+
+
+@login_required
+def password_change(request):
+    """Tự đổi mật khẩu của chính mình — mọi user đã đăng nhập đều dùng được, không
+    riêng admin. Cần ``update_session_auth_hash`` để không tự đăng xuất sau khi đổi."""
+    form = WmsPasswordChangeForm(request.user, request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        user = form.save()
+        update_session_auth_hash(request, user)
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=user,
+            description=f'{user.username} tự đổi mật khẩu',
+            ip_address=client_ip(request),
+        )
+        messages.success(request, 'Đã đổi mật khẩu thành công.')
+        return redirect('dashboard')
+    return render(request, 'accounts/password_change_form.html', {'form': form})
 
 
 # --- Phân quyền quản lý user (Admin-only) ---
@@ -235,6 +253,58 @@ def user_update(request, pk):
         return redirect('user_detail', pk=user.pk)
     return render(request, 'accounts/user_form.html',
                   {'form': form, 'mode': 'update', 'obj': obj})
+
+
+@user_admin_required
+def user_toggle_active(request, pk):
+    """Khoá/Mở khoá nhanh 1 user (POST-only, không cần trang xác nhận) — tương tự
+    ``warehouse.location_toggle_active``. Không áp dụng cho chính mình (tự khoá
+    sẽ tự đăng xuất khỏi hệ thống) hoặc user đã xoá mềm (đã bị khoá sẵn)."""
+    obj = get_object_or_404(User, pk=pk)
+    if request.method == 'POST':
+        if obj.pk == request.user.pk:
+            messages.error(request, 'Không thể tự khoá tài khoản của chính bạn.')
+        elif obj.is_deleted:
+            messages.error(request, 'User đã bị xoá, không thể khoá/mở khoá.')
+        else:
+            before = obj.is_active
+            obj.is_active = not obj.is_active
+            obj.save(update_fields=['is_active'])
+            log_action(
+                request.user, AuditLog.Action.UPDATE, target=obj,
+                description=f'{"Mở khoá" if obj.is_active else "Khoá"} user {obj.username}',
+                changes={'is_active': [before, obj.is_active]},
+                ip_address=client_ip(request),
+            )
+            messages.success(request, f'Đã {"mở khoá" if obj.is_active else "khoá"} user "{obj.username}".')
+    if request.POST.get('next') == 'detail':
+        return redirect('user_detail', pk=obj.pk)
+    return redirect('user_list')
+
+
+@user_admin_required
+def user_password_set(request, pk):
+    """Admin đặt mật khẩu mới cho user khác (không cần mật khẩu cũ). Không áp dụng
+    cho chính mình (dùng ``password_change`` tự phục vụ) hay user đã xoá mềm."""
+    obj = get_object_or_404(User, pk=pk)
+    if obj.pk == request.user.pk:
+        messages.error(request, 'Vui lòng dùng chức năng "Đổi mật khẩu" của chính bạn.')
+        return redirect('user_detail', pk=obj.pk)
+    if obj.is_deleted:
+        messages.error(request, 'User đã bị xoá, không thể đặt mật khẩu.')
+        return redirect('user_detail', pk=obj.pk)
+
+    form = WmsSetPasswordForm(obj, request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=obj,
+            description=f'Đặt lại mật khẩu cho user {obj.username}',
+            ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã đặt mật khẩu mới cho user "{obj.username}".')
+        return redirect('user_detail', pk=obj.pk)
+    return render(request, 'accounts/user_password_set_form.html', {'form': form, 'obj': obj})
 
 
 @user_admin_required

@@ -1,7 +1,8 @@
 """Form của app accounts."""
 from django import forms
-from django.contrib.auth import get_user_model
-from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth import get_user_model, password_validation
+from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm, SetPasswordForm
+from django.core.exceptions import ValidationError
 
 User = get_user_model()
 
@@ -62,4 +63,73 @@ class UserUpdateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+
+# --- Đổi mật khẩu ---
+#
+# Django dịch sẵn "This field is required." qua LANGUAGE_CODE='vi' (catalog forms lõi
+# khá đầy đủ), nhưng catalog vi.po lại KHÔNG có bản dịch cho các chuỗi của
+# contrib.auth.forms (PasswordChangeForm/SetPasswordForm) lẫn contrib.auth.password_validation
+# (MinimumLengthValidator...) — nên các label/help_text/error_messages liên quan mật khẩu
+# phải khai báo tiếng Việt tường minh ở đây thay vì trông chờ LANGUAGE_CODE.
+
+_PASSWORD_ERROR_MESSAGES_VI = {
+    'password_too_short': 'Mật khẩu quá ngắn, phải có ít nhất 8 ký tự.',
+    'password_too_similar': 'Mật khẩu quá giống với thông tin cá nhân của bạn.',
+    'password_too_common': 'Mật khẩu này quá phổ biến, dễ bị đoán ra.',
+    'password_entirely_numeric': 'Mật khẩu không được chỉ gồm toàn chữ số.',
+}
+
+_PASSWORD_HELP_TEXT = 'Tối thiểu 8 ký tự, không quá đơn giản/phổ biến và không được chỉ toàn chữ số.'
+
+
+class _VietnamesePasswordValidationMixin:
+    """Dịch lỗi độ mạnh mật khẩu (``AUTH_PASSWORD_VALIDATORS``) sang tiếng Việt theo
+    ``code`` của từng validator, vì bản thân message gốc không có trong catalog vi.po."""
+
+    def validate_password_for_user(self, user, password_field_name='password2'):
+        password = self.cleaned_data.get(password_field_name)
+        if not password:
+            return
+        try:
+            password_validation.validate_password(password, user)
+        except ValidationError as error:
+            messages = [_PASSWORD_ERROR_MESSAGES_VI.get(e.code, e.message) for e in error.error_list]
+            self.add_error(password_field_name, messages)
+
+
+class WmsSetPasswordForm(_VietnamesePasswordValidationMixin, SetPasswordForm):
+    """Admin đặt mật khẩu mới cho user khác — không cần nhập mật khẩu cũ."""
+
+    error_messages = {
+        **SetPasswordForm.error_messages,
+        'password_mismatch': 'Hai mật khẩu không khớp nhau.',
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['new_password1'].label = 'Mật khẩu mới'
+        self.fields['new_password1'].help_text = _PASSWORD_HELP_TEXT
+        self.fields['new_password2'].label = 'Xác nhận mật khẩu mới'
+        self.fields['new_password2'].help_text = 'Nhập lại đúng mật khẩu mới ở trên.'
+        _bootstrapify(self.fields)
+
+
+class WmsPasswordChangeForm(_VietnamesePasswordValidationMixin, PasswordChangeForm):
+    """User tự đổi mật khẩu của chính mình — yêu cầu nhập đúng mật khẩu hiện tại."""
+
+    error_messages = {
+        **PasswordChangeForm.error_messages,
+        'password_mismatch': 'Hai mật khẩu không khớp nhau.',
+        'password_incorrect': 'Mật khẩu hiện tại không đúng. Vui lòng nhập lại.',
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['old_password'].label = 'Mật khẩu hiện tại'
+        self.fields['new_password1'].label = 'Mật khẩu mới'
+        self.fields['new_password1'].help_text = _PASSWORD_HELP_TEXT
+        self.fields['new_password2'].label = 'Xác nhận mật khẩu mới'
+        self.fields['new_password2'].help_text = 'Nhập lại đúng mật khẩu mới ở trên.'
         _bootstrapify(self.fields)

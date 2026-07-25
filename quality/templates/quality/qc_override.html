@@ -17,18 +17,28 @@
         <div class="alert alert-warning py-2">
           ⚠ Đây chỉ là ghi chú xem lại — KHÔNG đảo ngược Batch/Inventory đã tạo từ kết quả gốc.
         </div>
-        <dl class="row mb-3">
-          <dt class="col-sm-4">Kết quả gốc</dt>
-          <dd class="col-sm-8"><span class="badge bg-secondary">{{ inspection.get_status_display }}</span></dd>
-          <dt class="col-sm-4">Người kiểm</dt>
-          <dd class="col-sm-8">{{ inspection.inspector.username }}</dd>
-          <dt class="col-sm-4">Hoàn thành lúc</dt>
-          <dd class="col-sm-8">{{ inspection.completed_at|date:'d/m/Y H:i'|default:'—' }}</dd>
-          {% if inspection.overridden_at %}
-          <dt class="col-sm-4">Đã override trước đó</dt>
-          <dd class="col-sm-8">{{ inspection.overridden_by.username|default:'—' }} lúc {{ inspection.overridden_at|date:'d/m/Y H:i' }}</dd>
-          {% endif %}
-        </dl>
+        <table class="table table-sm align-middle table-accent mb-3">
+          <tbody>
+            <tr>
+              <th class="text-nowrap">Kết quả gốc</th>
+              <td><span class="badge bg-secondary">{{ inspection.get_status_display }}</span></td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Người kiểm</th>
+              <td>{{ inspection.inspector.username }}</td>
+            </tr>
+            <tr>
+              <th class="text-nowrap">Hoàn thành lúc</th>
+              <td>{{ inspection.completed_at|date:'d/m/Y H:i'|default:'—' }}</td>
+            </tr>
+            {% if inspection.overridden_at %}
+            <tr>
+              <th class="text-nowrap">Đã override trước đó</th>
+              <td>{{ inspection.overridden_by.username|default:'—' }} lúc {{ inspection.overridden_at|date:'d/m/Y H:i' }}</td>
+            </tr>
+            {% endif %}
+          </tbody>
+        </table>
         <form method="post" novalidate>
           {% csrf_token %}
           <div class="mb-3">

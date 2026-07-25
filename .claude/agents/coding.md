@@ -30,6 +30,7 @@ Khi task đụng env, secret, Dockerfile, build/bundle, hoặc thêm API/respons
 
 Nếu môi trường HIỆN CÓ các skill dưới đây thì ưu tiên gọi để theo quy trình chi tiết & cập nhật nhất; nếu KHÔNG có, các nguyên tắc trong file này tự đủ để chạy trọn task (giữ agent portable qua mọi máy).
 
+- `wms-conventions` (skill riêng của repo này, `.claude/skills/wms-conventions/`) → LUÔN gọi đầu tiên cho task trong dự án NVL/WMS: nêu quy ước UI trang detail (bảng `table-accent`) và quy tắc đồng bộ CLAUDE.md/BACKLOG.md/skill sau mỗi thay đổi.
 - `superpowers:test-driven-development` → khi vào bước TDD.
 - `superpowers:systematic-debugging` → khi gặp bug/test fail/hành vi lạ (điều tra nguyên nhân gốc trước khi vá).
 - `superpowers:verification-before-completion` → trước khi tuyên bố "xong".

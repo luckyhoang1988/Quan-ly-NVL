@@ -4,11 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repo is **pre-code**: it currently contains only planning/reference documents, no Django project, no
-`manage.py`, no dependency manifest, and no git history. There are no build/lint/test commands to run yet.
-When the first Django scaffolding is added (see Phase 0 in `BACKLOG.md`), standard Django commands
-(`manage.py runserver`, `manage.py test`, `manage.py makemigrations`) will apply — until then, don't invent
-tooling that isn't in the repo.
+Phase 0 scaffolding is done and well past it: this is a working Django project (`manage.py`, `config/`
+settings, `requirements.txt` pinned deps) with all 10 apps from the module map below already created —
+`accounts`, `warehouse`, `catalog`, `partners`, `purchasing`, `inventory`, `receiving`, `quality`,
+`shipping`, `stocktake` (plus `reports`; `api` not started). Standard Django commands apply:
+`manage.py runserver`, `manage.py test <app>`, `manage.py makemigrations`/`migrate`, `manage.py check`.
+DB is PostgreSQL (`psycopg[binary]`), configured via `.env` (see `config/settings.py`) — not SQLite, don't
+assume a fallback exists. No Dockerfile/compose yet — still pre-Docker per the "Docker deferred to end of
+Phase 1" decision below. Progress against the 60-FR checklist is tracked at the top of `BACKLOG.md`
+(currently 55/60) — check there for what's actually implemented per module rather than assuming from the
+phase table alone, since phases can be partially done.
 
 ## What this project is
 
@@ -51,6 +56,22 @@ leads to unfocused code.
 - When a module's FRs are completed, tick the checkboxes in `BACKLOG.md` — it's the single tracked backlog,
   not a Jira/Trello substitute.
 - Phụ Lục B test case naming convention: `TC-<MODULE>-<FR#>-<seq>` (e.g. `TC-GIN-002-001`).
+
+## Keeping documentation in sync
+
+After finishing any code change, check whether it needs to be reflected in:
+
+- **`.claude/skills/wms-conventions/SKILL.md`** — if the change establishes or modifies a reusable
+  convention (UI pattern, code organization, workflow). Update the relevant entry there so the next session
+  doesn't have to re-derive it.
+- **This file (`CLAUDE.md`)** — if the change is a cross-cutting design decision, a "chốt" (settled)
+  architecture choice, or a project-wide convention. Keep the "Non-obvious cross-cutting design decisions"
+  and "UI conventions" sections matching what the code actually does.
+- **`BACKLOG.md`** — if the change completes or touches a tracked `FR-XX-##`: tick the checkbox and update
+  the "Tổng tiến độ: X / 60 FR" line at the top of the file.
+
+Not every change touches all three — a pure UI/refactor pass with no FR attached only needs the skill file
+and/or this file; there's nothing to tick in `BACKLOG.md` for it.
 
 ## Frontend language convention
 
@@ -119,6 +140,16 @@ written for a full team) toward a solo-maintainable stack:
 
 Build order follows this dependency chain, not the BRD's business-narrative order (User/Permission was moved
 from position #9 to Phase 1 because every audit trail and RBAC check needs the `User` model to exist first).
+
+## UI conventions
+
+- **Detail-page key/value panels use `<table class="table-accent">`, not `dl.row`.** Bootstrap's
+  `dl.row`/`dt`/`dd` grid only renders reliable borders when the `dt`+`dd` column widths sum to exactly 12,
+  and a 2-column split (`col-md-6`) only gets a divider border at the `md` breakpoint and up — both broke in
+  practice and were rejected twice before landing on the table version (see `grn_detail.html` as the
+  reference page). Full pattern, density rules, and the list of pages already converted are in
+  `.claude/skills/wms-conventions/SKILL.md` — follow it for any new detail page instead of reinventing the
+  layout.
 
 ## Non-obvious cross-cutting design decisions
 

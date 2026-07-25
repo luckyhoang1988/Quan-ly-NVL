@@ -34,32 +34,46 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-2">Kho yêu cầu</dt>
-      <dd class="col-sm-4">{{ obj.warehouse.name }}</dd>
-      <dt class="col-sm-2">Người yêu cầu</dt>
-      <dd class="col-sm-4">{{ obj.requested_by.get_full_name|default:obj.requested_by.username }}</dd>
-      <dt class="col-sm-2">Ngày tạo</dt>
-      <dd class="col-sm-4">{{ obj.created_at|date:'d/m/Y H:i' }}</dd>
-      {% if obj.note %}
-        <dt class="col-sm-2">Ghi chú</dt>
-        <dd class="col-sm-10">{{ obj.note }}</dd>
-      {% endif %}
-      {% if obj.decided_by %}
-        <dt class="col-sm-2">Người duyệt/từ chối</dt>
-        <dd class="col-sm-4">{{ obj.decided_by.get_full_name|default:obj.decided_by.username }}</dd>
-        <dt class="col-sm-2">Ngày quyết định</dt>
-        <dd class="col-sm-4">{{ obj.decided_at|date:'d/m/Y H:i' }}</dd>
-      {% endif %}
-      {% if obj.reject_reason %}
-        <dt class="col-sm-2">Lý do từ chối</dt>
-        <dd class="col-sm-10">{{ obj.reject_reason }}</dd>
-      {% endif %}
-      {% if obj.linked_po %}
-        <dt class="col-sm-2">PO liên kết</dt>
-        <dd class="col-sm-10"><a href="{% url 'purchasing:po_detail' obj.linked_po.pk %}">{{ obj.linked_po.po_no }}</a></dd>
-      {% endif %}
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Kho yêu cầu</th>
+          <td>{{ obj.warehouse.name }}</td>
+          <th class="text-nowrap">Người yêu cầu</th>
+          <td>{{ obj.requested_by.get_full_name|default:obj.requested_by.username }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ngày tạo</th>
+          <td colspan="3">{{ obj.created_at|date:'d/m/Y H:i' }}</td>
+        </tr>
+        {% if obj.note %}
+        <tr>
+          <th class="text-nowrap">Ghi chú</th>
+          <td colspan="3">{{ obj.note }}</td>
+        </tr>
+        {% endif %}
+        {% if obj.decided_by %}
+        <tr>
+          <th class="text-nowrap">Người duyệt/từ chối</th>
+          <td>{{ obj.decided_by.get_full_name|default:obj.decided_by.username }}</td>
+          <th class="text-nowrap">Ngày quyết định</th>
+          <td>{{ obj.decided_at|date:'d/m/Y H:i' }}</td>
+        </tr>
+        {% endif %}
+        {% if obj.reject_reason %}
+        <tr>
+          <th class="text-nowrap">Lý do từ chối</th>
+          <td colspan="3">{{ obj.reject_reason }}</td>
+        </tr>
+        {% endif %}
+        {% if obj.linked_po %}
+        <tr>
+          <th class="text-nowrap">PO liên kết</th>
+          <td colspan="3"><a href="{% url 'purchasing:po_detail' obj.linked_po.pk %}">{{ obj.linked_po.po_no }}</a></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
   </div>
 </div>
 

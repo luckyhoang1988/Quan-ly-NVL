@@ -373,6 +373,126 @@ class UserCrudTest(TestCase):
                 action='DELETE', target_id=str(self.admin.pk)).exists())
 
 
+class PasswordChangeTest(TestCase):
+    """Đổi mật khẩu: tự phục vụ (mọi user) + admin đặt lại cho user khác.
+
+    Nhánh dễ sai:
+    - Tự đổi mật khẩu phải giữ nguyên session (không tự đăng xuất) — cần
+      ``update_session_auth_hash``.
+    - Sai mật khẩu hiện tại -> báo lỗi, mật khẩu KHÔNG đổi.
+    - Admin đặt mật khẩu cho user khác không cần mật khẩu cũ.
+    - Admin không tự đặt mật khẩu cho chính mình qua route admin (phải dùng tự đổi).
+    - Chỉ Admin được vào route đặt mật khẩu cho user khác; ẩn danh -> redirect login.
+    """
+
+    OLD_PASSWORD = 'old-pass-123'
+    NEW_PASSWORD = 'brand-new-pass-456'
+
+    def setUp(self):
+        sync_roles()
+        self.admin = User.objects.create_user(
+            username='pwadmin', password='admin-pass-123', role='ADMIN')
+        self.staff = User.objects.create_user(
+            username='pwstaff', password=self.OLD_PASSWORD, role='STAFF')
+
+    # --- Tự đổi mật khẩu (mọi user) ---
+
+    def test_self_change_success_keeps_session_and_audits(self):
+        self.client.force_login(self.staff)
+
+        resp = self.client.post(reverse('password_change'), {
+            'old_password': self.OLD_PASSWORD,
+            'new_password1': self.NEW_PASSWORD,
+            'new_password2': self.NEW_PASSWORD,
+        })
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.url, reverse('dashboard'))
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password(self.NEW_PASSWORD))
+        # Vẫn đang đăng nhập (update_session_auth_hash chống session bị invalidate
+        # do đổi password hash — session_key có thể đổi/cycle, nhưng KHÔNG bị đăng xuất).
+        self.assertIn('_auth_user_id', self.client.session)
+        dash_resp = self.client.get(reverse('dashboard'))
+        self.assertEqual(dash_resp.status_code, 200)  # vẫn còn phiên hợp lệ, không bị đá về login
+
+        entry = AuditLog.objects.filter(action='UPDATE', target_id=str(self.staff.pk)).first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.staff)  # tự thực hiện
+
+    def test_self_change_wrong_old_password_rejected(self):
+        self.client.force_login(self.staff)
+        resp = self.client.post(reverse('password_change'), {
+            'old_password': 'sai-mat-khau',
+            'new_password1': self.NEW_PASSWORD,
+            'new_password2': self.NEW_PASSWORD,
+        })
+
+        self.assertEqual(resp.status_code, 200)  # render lại form với lỗi
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password(self.OLD_PASSWORD))  # chưa đổi
+
+    def test_self_change_requires_login(self):
+        resp = self.client.get(reverse('password_change'))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse('login'), resp.url)
+
+    # --- Admin đặt mật khẩu cho user khác ---
+
+    def test_admin_sets_password_for_other_user(self):
+        self.client.force_login(self.admin)
+        resp = self.client.post(
+            reverse('user_password_set', args=[self.staff.pk]),
+            {'new_password1': self.NEW_PASSWORD, 'new_password2': self.NEW_PASSWORD},
+        )
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.url, reverse('user_detail', args=[self.staff.pk]))
+        self.staff.refresh_from_db()
+        self.assertTrue(self.staff.check_password(self.NEW_PASSWORD))
+
+        entry = AuditLog.objects.filter(action='UPDATE', target_id=str(self.staff.pk)).first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.actor, self.admin)  # admin là người thực hiện, không phải staff
+
+    def test_admin_cannot_use_admin_route_on_self(self):
+        self.client.force_login(self.admin)
+        old_hash = self.admin.password
+        resp = self.client.post(
+            reverse('user_password_set', args=[self.admin.pk]),
+            {'new_password1': self.NEW_PASSWORD, 'new_password2': self.NEW_PASSWORD},
+        )
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.url, reverse('user_detail', args=[self.admin.pk]))
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.password, old_hash)  # không đổi
+
+    def test_admin_cannot_set_password_of_deleted_user(self):
+        self.staff.soft_delete()
+        self.client.force_login(self.admin)
+        old_hash = self.staff.password
+        resp = self.client.post(
+            reverse('user_password_set', args=[self.staff.pk]),
+            {'new_password1': self.NEW_PASSWORD, 'new_password2': self.NEW_PASSWORD},
+        )
+
+        self.assertEqual(resp.status_code, 302)
+        self.staff.refresh_from_db()
+        self.assertEqual(self.staff.password, old_hash)
+
+    def test_non_admin_forbidden_from_setting_others_password(self):
+        other = User.objects.create_user(username='pwother', password='x', role='STAFF')
+        self.client.force_login(other)
+        resp = self.client.get(reverse('user_password_set', args=[self.staff.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_anonymous_redirected_to_login(self):
+        resp = self.client.get(reverse('user_password_set', args=[self.staff.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse('login'), resp.url)
+
+
 class UserPermissionOverrideTest(TestCase):
     """Phân quyền chi tiết cho từng user (mở rộng FR-USER-04): admin ghi đè ma
     trận mặc định của role — có thể THU HỒI (không chỉ thêm) một quyền cụ thể.

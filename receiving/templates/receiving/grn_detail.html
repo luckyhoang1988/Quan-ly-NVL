@@ -36,18 +36,28 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-2">Trạng thái</dt>
-      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></dd>
-      <dt class="col-sm-2">NCC</dt>
-      <dd class="col-sm-4">{{ grn.supplier.name }}</dd>
-      <dt class="col-sm-2">PO</dt>
-      <dd class="col-sm-4">{{ grn.po.po_no }}</dd>
-      <dt class="col-sm-2">Ngày GRN</dt>
-      <dd class="col-sm-4">{{ grn.grn_date }}</dd>
-      <dt class="col-sm-2">Ghi chú</dt>
-      <dd class="col-sm-4">{{ grn.notes|default:"—" }}</dd>
-    </dl>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle table-accent mb-0">
+        <tbody>
+          <tr>
+            <th class="text-nowrap">Trạng thái</th>
+            <td><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></td>
+            <th class="text-nowrap">NCC</th>
+            <td>{{ grn.supplier.name }}</td>
+          </tr>
+          <tr>
+            <th class="text-nowrap">PO</th>
+            <td>{{ grn.po.po_no }}</td>
+            <th class="text-nowrap">Ngày GRN</th>
+            <td>{{ grn.grn_date }}</td>
+          </tr>
+          <tr>
+            <th class="text-nowrap">Ghi chú</th>
+            <td colspan="3">{{ grn.notes|default:"—" }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 

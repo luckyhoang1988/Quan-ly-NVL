@@ -70,7 +70,20 @@
               {% endif %}
             </td>
             <td class="text-end">
-              <a href="{% url 'user_update' u.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+              <div class="d-inline-flex gap-1 flex-wrap justify-content-end">
+                <a href="{% url 'user_update' u.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+                <a href="{% url 'user_permission_edit' u.pk %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-key"></i> Phân quyền</a>
+                {% if u.pk != user.pk and not u.is_deleted %}
+                <a href="{% url 'user_password_set' u.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-key-fill"></i> Đặt mật khẩu</a>
+                <form method="post" action="{% url 'user_toggle_active' u.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-warning">
+                    {% if u.is_active %}<i class="bi bi-lock"></i> Khoá{% else %}<i class="bi bi-unlock"></i> Mở khoá{% endif %}
+                  </button>
+                </form>
+                <a href="{% url 'user_delete' u.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i> Xoá</a>
+                {% endif %}
+              </div>
             </td>
           </tr>
           {% empty %}

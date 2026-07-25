@@ -38,20 +38,28 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-2">Trạng thái</dt>
-      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></dd>
-      <dt class="col-sm-2">Kho</dt>
-      <dd class="col-sm-4">{{ gin.warehouse }}</dd>
-      <dt class="col-sm-2">Tham chiếu</dt>
-      <dd class="col-sm-4">{{ gin.get_reference_type_display }} {{ gin.reference_no }}</dd>
-      <dt class="col-sm-2">Người yêu cầu</dt>
-      <dd class="col-sm-4">{{ gin.requested_by.username }}</dd>
-      <dt class="col-sm-2">Ngày xuất</dt>
-      <dd class="col-sm-4">{{ gin.issued_at|date:'d/m/Y H:i'|default:"—" }}</dd>
-      <dt class="col-sm-2">Ghi chú</dt>
-      <dd class="col-sm-4">{{ gin.notes|default:"—" }}</dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></td>
+          <th class="text-nowrap">Kho</th>
+          <td>{{ gin.warehouse }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Tham chiếu</th>
+          <td>{{ gin.get_reference_type_display }} {{ gin.reference_no }}</td>
+          <th class="text-nowrap">Người yêu cầu</th>
+          <td>{{ gin.requested_by.username }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ngày xuất</th>
+          <td>{{ gin.issued_at|date:'d/m/Y H:i'|default:"—" }}</td>
+          <th class="text-nowrap">Ghi chú</th>
+          <td>{{ gin.notes|default:"—" }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 

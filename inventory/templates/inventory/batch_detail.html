@@ -27,31 +27,42 @@
       <div class="alert alert-danger py-2">⚠ Lô Quarantine này đã tồn quá 7 ngày chưa xử lý (scrap/return/rework).</div>
     {% endif %}
 
-    <dl class="row mb-0">
-      <dt class="col-sm-3">Sản phẩm</dt>
-      <dd class="col-sm-9">{{ batch.product.product_code }} — {{ batch.product.name }}</dd>
-
-      <dt class="col-sm-3">Nhà cung cấp</dt>
-      <dd class="col-sm-9">{{ batch.supplier.name }}</dd>
-
-      <dt class="col-sm-3">Vị trí</dt>
-      <dd class="col-sm-9">{{ batch.location.warehouse.code }} / {{ batch.location.code }}</dd>
-
-      <dt class="col-sm-3">Ngày sản xuất</dt>
-      <dd class="col-sm-9">{{ batch.mfg_date|date:'d/m/Y'|default:'—' }}</dd>
-
-      <dt class="col-sm-3">Hạn sử dụng</dt>
-      <dd class="col-sm-9">{{ batch.exp_date|date:'d/m/Y'|default:'—' }}</dd>
-
-      <dt class="col-sm-3">Qty nhận / đã dùng / khả dụng</dt>
-      <dd class="col-sm-9">{{ batch.qty_received }} / {{ batch.qty_used }} / {{ batch.qty_available }}</dd>
-
-      <dt class="col-sm-3">Trạng thái</dt>
-      <dd class="col-sm-9"><span class="badge bg-secondary">{{ batch.get_status_display }}</span></dd>
-
-      <dt class="col-sm-3">Ngày tạo</dt>
-      <dd class="col-sm-9">{{ batch.created_at|date:'d/m/Y H:i' }}</dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Sản phẩm</th>
+          <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Nhà cung cấp</th>
+          <td>{{ batch.supplier.name }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Vị trí</th>
+          <td>{{ batch.location.warehouse.code }} / {{ batch.location.code }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ngày sản xuất</th>
+          <td>{{ batch.mfg_date|date:'d/m/Y'|default:'—' }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Hạn sử dụng</th>
+          <td>{{ batch.exp_date|date:'d/m/Y'|default:'—' }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Qty nhận / đã dùng / khả dụng</th>
+          <td>{{ batch.qty_received }} / {{ batch.qty_used }} / {{ batch.qty_available }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td><span class="badge bg-secondary">{{ batch.get_status_display }}</span></td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Ngày tạo</th>
+          <td>{{ batch.created_at|date:'d/m/Y H:i' }}</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 

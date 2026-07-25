@@ -25,30 +25,40 @@
     </div>
   </div>
   <div class="card-body">
-    <dl class="row mb-0">
-      <dt class="col-sm-3">Loại kho</dt>
-      <dd class="col-sm-9">
-        {% if obj.warehouse_type == 'MAIN' %}
-          <span class="badge bg-primary">{{ obj.get_warehouse_type_display }}</span>
-        {% elif obj.warehouse_type == 'STAGING' %}
-          <span class="badge bg-info text-dark">{{ obj.get_warehouse_type_display }}</span>
-        {% else %}
-          <span class="badge bg-secondary">{{ obj.get_warehouse_type_display }}</span>
-        {% endif %}
-      </dd>
-      <dt class="col-sm-3">Địa chỉ</dt>
-      <dd class="col-sm-9">{{ obj.address|default:"—" }}</dd>
-      <dt class="col-sm-3">Dung tích</dt>
-      <dd class="col-sm-9">{{ obj.capacity|default:"—" }}</dd>
-      <dt class="col-sm-3">Trạng thái</dt>
-      <dd class="col-sm-9">
-        {% if obj.is_active %}
-          <span class="badge bg-success">Hoạt động</span>
-        {% else %}
-          <span class="badge bg-warning text-dark">Khoá</span>
-        {% endif %}
-      </dd>
-    </dl>
+    <table class="table table-sm align-middle table-accent mb-0">
+      <tbody>
+        <tr>
+          <th class="text-nowrap">Loại kho</th>
+          <td>
+            {% if obj.warehouse_type == 'MAIN' %}
+              <span class="badge bg-primary">{{ obj.get_warehouse_type_display }}</span>
+            {% elif obj.warehouse_type == 'STAGING' %}
+              <span class="badge bg-info text-dark">{{ obj.get_warehouse_type_display }}</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ obj.get_warehouse_type_display }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Địa chỉ</th>
+          <td>{{ obj.address|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Dung tích</th>
+          <td>{{ obj.capacity|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th class="text-nowrap">Trạng thái</th>
+          <td>
+            {% if obj.is_active %}
+              <span class="badge bg-success">Hoạt động</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">Khoá</span>
+            {% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
