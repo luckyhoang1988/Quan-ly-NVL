@@ -12,7 +12,17 @@ class Warehouse(models.Model):
     ``is_active`` là cờ hoạt động duy nhất — "xoá" kho (CRUD Delete) nghĩa là
     khoá hoạt động (soft), không xoá cứng bản ghi, để giữ tham chiếu cho
     Inventory/GRN/GIN ở các Phase sau.
+
+    ``warehouse_type``: MAIN là kho thường (duy nhất loại được GIN/FIFO chọn
+    xuất hàng); STAGING (Kho chờ QC) và SCRAP (Kho phế) là kho hệ thống, tối
+    đa 1 kho đang hoạt động cho mỗi loại (``unique_active_staging_scrap_warehouse``)
+    — xem ``warehouse.services.get_staging_warehouse``/``get_scrap_warehouse``.
     """
+
+    class WarehouseType(models.TextChoices):
+        MAIN = 'MAIN', 'Kho thành phẩm'
+        STAGING = 'STAGING', 'Kho chờ'
+        SCRAP = 'SCRAP', 'Kho phế'
 
     code = models.CharField(max_length=20, unique=True, help_text='Mã kho, vd KHO-HN.')
     name = models.CharField(max_length=150)
@@ -20,11 +30,23 @@ class Warehouse(models.Model):
     capacity = models.PositiveIntegerField(
         null=True, blank=True, help_text='Dung tích kho (đơn vị tuỳ chọn, vd m3/pallet).',
     )
+    warehouse_type = models.CharField(
+        max_length=20, choices=WarehouseType.choices, default=WarehouseType.MAIN,
+        help_text='MAIN: kho thường (GIN/FIFO được phép xuất). STAGING/SCRAP: kho hệ '
+                   'thống, tối đa 1 kho hoạt động/loại.',
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['warehouse_type'],
+                condition=models.Q(warehouse_type__in=['STAGING', 'SCRAP'], is_active=True),
+                name='unique_active_staging_scrap_warehouse',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.code} - {self.name}'

@@ -65,6 +65,11 @@ class Batch(models.Model):
     batch_code = models.CharField(max_length=40, unique=True, help_text='Mã lô, vd LOT-0001.')
     supplier = models.ForeignKey('partners.Supplier', on_delete=models.PROTECT, related_name='batches')
     location = models.ForeignKey('warehouse.Location', on_delete=models.PROTECT, related_name='batches')
+    grn_item = models.ForeignKey(
+        'receiving.GrnItem', on_delete=models.PROTECT, null=True, blank=True, related_name='batches',
+        help_text='Nguồn gốc GRN item (lineage) — null cho batch không sinh trực tiếp từ GRN. '
+                   'Batch con tách ra qua move_batch_qty copy lại field này từ batch nguồn.',
+    )
     mfg_date = models.DateField(null=True, blank=True, verbose_name='Ngày sản xuất')
     exp_date = models.DateField(null=True, blank=True, verbose_name='Hạn sử dụng')
     qty_received = models.PositiveIntegerField(validators=[MinValueValidator(1)])

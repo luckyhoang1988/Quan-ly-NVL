@@ -207,17 +207,21 @@ def grn_receive_qty(request, pk):
     formset = ReceiveQtyFormSet(request.POST or None, instance=obj, prefix='items')
     submit_form = SubmitToQcForm(request.POST or None)
     if request.method == 'POST' and formset.is_valid() and submit_form.is_valid():
-        with transaction.atomic():
-            formset.save()
-            sync_po_status(obj.po)
-            inspection = start_qc(
-                obj, submit_form.cleaned_data['inspector'],
-                actor=request.user, ip_address=client_ip(request),
-            )
-        for alert in tolerance_alerts(obj):
-            messages.warning(request, alert)
-        messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang QC ({inspection.qc_no}).')
-        return redirect('receiving:grn_detail', pk=obj.pk)
+        try:
+            with transaction.atomic():
+                formset.save()
+                sync_po_status(obj.po)
+                inspection = start_qc(
+                    obj, submit_form.cleaned_data['inspector'],
+                    actor=request.user, ip_address=client_ip(request),
+                )
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+        else:
+            for alert in tolerance_alerts(obj):
+                messages.warning(request, alert)
+            messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang QC ({inspection.qc_no}).')
+            return redirect('receiving:grn_detail', pk=obj.pk)
     return render(request, 'receiving/grn_receive_qty.html', {
         'grn': obj, 'formset': formset, 'submit_form': submit_form,
     })

@@ -1,19 +1,21 @@
 """Transaction nghiệp vụ GRN↔QC (BACKLOG mục 2c) — PASS/FAIL/PARTIAL_PASS.
 
 Mỗi hàm là MỘT transaction atomic (``@transaction.atomic``), all-or-nothing,
-đúng yêu cầu "Inventory Update Triggers" của mục 2c:
+đúng yêu cầu "Inventory Update Triggers" của mục 2c. Từ khi có Kho chờ (kế
+hoạch phân loại kho), toàn bộ hàng "đã nhận nhưng chưa QC" nằm thật trong
+Batch + Inventory tại Kho chờ (STAGING) — không còn "biến mất" khỏi hệ thống
+giữa lúc xác nhận Qty thực nhận và lúc có kết quả QC:
 
-- ``start_qc``: glue tối thiểu để GRN có thể được QC — DRAFT/PENDING_QC ->
-  QC_IN_PROGRESS, tạo ``QcInspection``. Không phải workflow đầy đủ (chưa có
-  view/form nhập Qty thực nhận ở state PENDING_QC), chỉ đủ để qc_pass/fail/
-  partial_pass có input hợp lệ.
-- ``qc_pass``: Batch ACTIVE full qty_received từng item, Inventory += qty,
-  GRN -> RECEIVED.
-- ``qc_fail``: GRN_RETURN, GRN -> REJECTED, KHÔNG tạo Batch, KHÔNG đụng
-  Inventory (đây là nhánh dễ sai nhất theo CLAUDE.md).
+- ``start_qc``: DRAFT/PENDING_QC -> QC_IN_PROGRESS, tạo ``QcInspection`` +
+  1 Batch ACTIVE/item tại Kho chờ (RECEIPT thật — hàng đã nhận vật lý).
+- ``qc_pass``: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
+  ACTIVE tại kho MAIN (``move_batch_qty`` — TRANSFER_OUT/IN, không phải
+  RECEIPT nữa vì hàng đã có trong hệ thống từ ``start_qc``), GRN -> RECEIVED.
+- ``qc_fail``: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
+  QUARANTINE tại Kho phế (SCRAP), GRN -> REJECTED, vẫn tạo ``GrnReturn``.
 - ``qc_partial_pass``: mỗi item nhận ``qty_pass`` riêng (0 <= qty_pass <=
-  qty_received) -> tách 2 Batch (ACTIVE phần pass + QUARANTINE phần fail),
-  Inventory chỉ cộng phần pass.
+  qty_received) -> tách batch Kho chờ làm 2 (ACTIVE phần pass tại kho MAIN +
+  QUARANTINE phần fail tại Kho phế).
 
 Mọi transition đều ghi ``AuditLog`` qua ``accounts.audit.log_action`` (hạ
 tầng có sẵn từ Phase 1) — một dòng log cho mỗi transaction nghiệp vụ (không
@@ -26,8 +28,10 @@ from django.utils import timezone
 from accounts.audit import log_action
 from accounts.models import AuditLog
 from inventory.models import Batch, Inventory, StockMovement
-from inventory.services import record_movement
+from inventory.services import move_batch_qty, record_movement
 from receiving.models import Grn, GrnItem, GrnReturn
+from warehouse.models import Warehouse
+from warehouse.services import get_default_location, get_scrap_warehouse, get_staging_warehouse
 
 from .models import QcInspection
 
@@ -55,20 +59,60 @@ def _require_pending_inspection(inspection):
         raise ValidationError('GRN không ở trạng thái QC_IN_PROGRESS.')
 
 
+def _get_staging_batch(grn_item):
+    """Batch đang nằm ở Kho chờ ứng với ``grn_item`` (tạo bởi ``start_qc``).
+
+    Lọc theo ``grn_item`` (lineage FK) chứ không theo product/location vì 1
+    GRN có thể có nhiều item cùng product — chỉ ``grn_item`` mới xác định
+    đúng batch cần tiêu thụ.
+    """
+    batch = Batch.objects.select_for_update().filter(
+        grn_item=grn_item, status=Batch.Status.ACTIVE,
+        location__warehouse__warehouse_type=Warehouse.WarehouseType.STAGING,
+    ).first()
+    if batch is None:
+        raise ValidationError(
+            f'Không tìm thấy batch tại Kho chờ cho "{grn_item}" — có thể GRN chưa qua bước '
+            'xác nhận Qty thực nhận, hoặc đã được xử lý QC trước đó.'
+        )
+    return batch
+
+
 @transaction.atomic
 def start_qc(grn, inspector, actor=None, ip_address=None):
-    """DRAFT/PENDING_QC -> QC_IN_PROGRESS, tạo ``QcInspection`` mới cho GRN."""
+    """DRAFT/PENDING_QC -> QC_IN_PROGRESS: tạo ``QcInspection`` + đưa từng item
+    vào Kho chờ (1 Batch ACTIVE/item tại vị trí mặc định, Inventory Kho chờ
+    tăng tương ứng, ghi RECEIPT — hàng đã nhận vật lý, chỉ chưa qua QC).
+    """
     grn = Grn.objects.select_for_update().get(pk=grn.pk)
     if grn.status not in (Grn.Status.DRAFT, Grn.Status.PENDING_QC):
         raise ValidationError(f'Không thể bắt đầu QC khi GRN đang ở trạng thái {grn.status}.')
 
+    staging_warehouse = get_staging_warehouse()
+    staging_location = get_default_location(staging_warehouse)
+
     inspection = QcInspection.objects.create(grn=grn, inspector=inspector, started_at=timezone.now())
+
+    for item in grn.items.select_for_update():
+        if item.qty_received <= 0:
+            continue
+        batch = Batch.objects.create(
+            product=item.product, batch_code=_batch_code(item, '-STG'), supplier=grn.supplier,
+            location=staging_location, grn_item=item, mfg_date=item.mfg_date, exp_date=item.exp_date,
+            qty_received=item.qty_received, status=Batch.Status.ACTIVE,
+        )
+        _credit_inventory(
+            item.product, staging_warehouse, item.qty_received,
+            batch=batch, reference=grn.grn_no, actor=actor,
+        )
+
     grn.status = Grn.Status.QC_IN_PROGRESS
     grn.save(update_fields=['status'])
 
     log_action(
         actor, AuditLog.Action.UPDATE, target=grn,
-        description=f'Submit to QC: {grn.grn_no} -> QC_IN_PROGRESS ({inspection.qc_no}).',
+        description=f'Submit to QC: {grn.grn_no} -> QC_IN_PROGRESS ({inspection.qc_no}), '
+                    f'{grn.items.count()} item(s) vào Kho chờ.',
         ip_address=ip_address,
     )
     return inspection
@@ -76,23 +120,26 @@ def start_qc(grn, inspector, actor=None, ip_address=None):
 
 @transaction.atomic
 def qc_pass(inspection, actor=None, location=None, ip_address=None):
-    """QC PASS: Batch ACTIVE full qty_received từng item, Inventory tăng, GRN RECEIVED."""
+    """QC PASS: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
+    ACTIVE tại ``location`` (phải thuộc kho loại MAIN), GRN -> RECEIVED.
+    """
     _require_pending_inspection(inspection)
+    if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
+        raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     grn = inspection.grn
 
     for item in grn.items.select_for_update():
-        batch = Batch.objects.create(
-            product=item.product, batch_code=_batch_code(item), supplier=grn.supplier,
-            location=location, mfg_date=item.mfg_date, exp_date=item.exp_date,
-            qty_received=item.qty_received, status=Batch.Status.ACTIVE,
-        )
-        _credit_inventory(
-            item.product, location.warehouse, item.qty_received,
-            batch=batch, reference=grn.grn_no, actor=actor,
-        )
         item.qty_pass = item.qty_received
         item.status = GrnItem.Status.RECEIVED
         item.save(update_fields=['qty_pass', 'status'])
+        if item.qty_received <= 0:
+            continue
+        staging_batch = _get_staging_batch(item)
+        move_batch_qty(
+            source_batch=staging_batch, qty=item.qty_received, to_location=location,
+            new_batch_code=_batch_code(item), new_status=Batch.Status.ACTIVE,
+            actor=actor, reference=grn.grn_no,
+        )
 
     grn.status = Grn.Status.RECEIVED
     grn.save(update_fields=['status'])
@@ -102,7 +149,7 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None):
 
     log_action(
         actor, AuditLog.Action.APPROVE, target=grn,
-        description=f'QC PASS: {grn.grn_no} -> RECEIVED, batch tạo tự động.',
+        description=f'QC PASS: {grn.grn_no} -> RECEIVED, chuyển Kho chờ -> {location.warehouse.code}.',
         ip_address=ip_address,
     )
     return grn
@@ -110,11 +157,27 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None):
 
 @transaction.atomic
 def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
-    """QC FAIL: GRN_RETURN, GRN REJECTED — KHÔNG tạo Batch, KHÔNG đụng Inventory."""
+    """QC FAIL: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
+    QUARANTINE tại Kho phế, GRN -> REJECTED, vẫn tạo ``GrnReturn``.
+    """
     _require_pending_inspection(inspection)
     grn = inspection.grn
+    scrap_warehouse = get_scrap_warehouse()
+    scrap_location = get_default_location(scrap_warehouse)
 
-    grn.items.update(status=GrnItem.Status.REJECTED, qty_pass=0)
+    for item in grn.items.select_for_update():
+        item.status = GrnItem.Status.REJECTED
+        item.qty_pass = 0
+        item.save(update_fields=['status', 'qty_pass'])
+        if item.qty_received <= 0:
+            continue
+        staging_batch = _get_staging_batch(item)
+        move_batch_qty(
+            source_batch=staging_batch, qty=item.qty_received, to_location=scrap_location,
+            new_batch_code=_batch_code(item, '-SCRAP'), new_status=Batch.Status.QUARANTINE,
+            actor=actor, reference=grn.grn_no,
+        )
+
     grn.status = Grn.Status.REJECTED
     grn.save(update_fields=['status'])
     inspection.status = QcInspection.Result.FAIL
@@ -125,7 +188,7 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
 
     log_action(
         actor, AuditLog.Action.REJECT, target=grn,
-        description=f'QC FAIL: {grn.grn_no} -> REJECTED, tạo {ret}.',
+        description=f'QC FAIL: {grn.grn_no} -> REJECTED, chuyển Kho chờ -> Kho phế, tạo {ret}.',
         reason=reason, ip_address=ip_address,
     )
     return ret
@@ -133,18 +196,25 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
 
 @transaction.atomic
 def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_address=None):
-    """PARTIAL_PASS: mỗi item tách Batch ACTIVE(pass) + QUARANTINE(fail).
+    """PARTIAL_PASS: tiêu thụ batch Kho chờ, tách mỗi item thành Batch ACTIVE
+    (phần pass, tại ``location`` thuộc kho MAIN) + Batch QUARANTINE (phần
+    fail, tại Kho phế).
 
     ``item_results``: ``{grn_item_id: qty_pass}`` — bắt buộc có đủ mọi item
-    của GRN, ``0 <= qty_pass <= qty_received``. Inventory chỉ cộng phần pass.
+    của GRN, ``0 <= qty_pass <= qty_received``.
     """
     _require_pending_inspection(inspection)
+    if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
+        raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     grn = inspection.grn
     items = list(grn.items.select_for_update())
 
     missing = {item.pk for item in items} - set(item_results)
     if missing:
         raise ValidationError(f'Thiếu kết quả QC cho {len(missing)} item.')
+
+    scrap_warehouse = get_scrap_warehouse()
+    scrap_location = get_default_location(scrap_warehouse)
 
     for item in items:
         qty_pass = item_results[item.pk]
@@ -153,22 +223,20 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         qty_fail = item.qty_received - qty_pass
         has_both = qty_pass > 0 and qty_fail > 0
 
-        if qty_pass > 0:
-            pass_batch = Batch.objects.create(
-                product=item.product, batch_code=_batch_code(item, '-A' if has_both else ''),
-                supplier=grn.supplier, location=location, mfg_date=item.mfg_date, exp_date=item.exp_date,
-                qty_received=qty_pass, status=Batch.Status.ACTIVE,
-            )
-            _credit_inventory(
-                item.product, location.warehouse, qty_pass,
-                batch=pass_batch, reference=grn.grn_no, actor=actor,
-            )
-        if qty_fail > 0:
-            Batch.objects.create(
-                product=item.product, batch_code=_batch_code(item, '-Q' if has_both else ''),
-                supplier=grn.supplier, location=location, mfg_date=item.mfg_date, exp_date=item.exp_date,
-                qty_received=qty_fail, status=Batch.Status.QUARANTINE,
-            )
+        if item.qty_received > 0:
+            staging_batch = _get_staging_batch(item)
+            if qty_pass > 0:
+                move_batch_qty(
+                    source_batch=staging_batch, qty=qty_pass, to_location=location,
+                    new_batch_code=_batch_code(item, '-A' if has_both else ''),
+                    new_status=Batch.Status.ACTIVE, actor=actor, reference=grn.grn_no,
+                )
+            if qty_fail > 0:
+                move_batch_qty(
+                    source_batch=staging_batch, qty=qty_fail, to_location=scrap_location,
+                    new_batch_code=_batch_code(item, '-Q' if has_both else ''),
+                    new_status=Batch.Status.QUARANTINE, actor=actor, reference=grn.grn_no,
+                )
 
         item.qty_pass = qty_pass
         item.status = (
@@ -186,7 +254,7 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
 
     log_action(
         actor, AuditLog.Action.APPROVE, target=grn,
-        description=f'QC PARTIAL_PASS: {grn.grn_no} -> RECEIVED, batch ACTIVE+QUARANTINE split.',
+        description=f'QC PARTIAL_PASS: {grn.grn_no} -> RECEIVED, Kho chờ tách MAIN+SCRAP.',
         ip_address=ip_address,
     )
     return grn

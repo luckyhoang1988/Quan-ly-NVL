@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
+from warehouse.models import Warehouse
 
 from .models import Batch, Inventory, StockMovement, StockTransfer
 
@@ -103,71 +104,110 @@ def record_movement(*, product, warehouse, movement_type, qty, batch=None, refer
 
 
 @transaction.atomic
-def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=None):
-    """FR-WM-06: điều chuyển ``qty`` từ ``batch`` sang ``to_location``.
+def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status, actor=None, reference=''):
+    """Nguyên thủy dùng chung: tách ``qty`` từ ``source_batch`` thành 1 batch
+    MỚI tại ``to_location`` với ``new_status``, batch nguồn CLOSED/PARTIAL_USED
+    tuỳ còn dư (batch bất biến về vị trí — không sửa tại chỗ).
 
-    Batch bất biến về vị trí (giống cách ``qc_partial_pass`` tách batch thay
-    vì sửa tại chỗ): luôn tách ``qty`` thành 1 batch mới ACTIVE tại vị trí
-    đích, batch nguồn tăng ``qty_used`` (CLOSED nếu hết, không thì
-    PARTIAL_USED — cùng convention BR-GIN-006). Nếu khác kho, trừ/cộng
-    ``Inventory`` 2 đầu qua ``StockMovement`` TRANSFER_OUT/TRANSFER_IN; cùng
-    kho (chỉ đổi vị trí nội bộ) thì Inventory không đổi.
+    Dùng bởi ``transfer_stock()`` (tạo thêm ``StockTransfer``, riêng dưới đây)
+    và bởi ``quality.services`` cho các quyết định QC (không tạo
+    ``StockTransfer`` — tự ghi ``log_action`` riêng ở tầng gọi). Khác kho thì
+    cập nhật ``Inventory`` 2 đầu qua ``StockMovement`` TRANSFER_OUT/TRANSFER_IN;
+    cùng kho thì Inventory không đổi. ``grn_item`` của batch mới copy từ
+    ``source_batch`` để giữ lineage qua nhiều lần tách (Kho chờ -> MAIN/SCRAP).
     """
-    batch = Batch.objects.select_for_update().get(pk=batch.pk)
-    if batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
+    source_batch = Batch.objects.select_for_update().get(pk=source_batch.pk)
+    if source_batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
         raise ValidationError(
-            f'Không thể điều chuyển batch đang ở trạng thái {batch.get_status_display()}.'
+            f'Không thể tách batch đang ở trạng thái {source_batch.get_status_display()}.'
         )
     if qty <= 0:
-        raise ValidationError('Số lượng điều chuyển phải lớn hơn 0.')
-    if qty > batch.qty_available:
+        raise ValidationError('Số lượng phải lớn hơn 0.')
+    if qty > source_batch.qty_available:
         raise ValidationError(
-            f'Batch "{batch.batch_code}" chỉ còn {batch.qty_available}, không đủ {qty}.'
+            f'Batch "{source_batch.batch_code}" chỉ còn {source_batch.qty_available}, không đủ {qty}.'
         )
     if not to_location.is_active:
         raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
-    if to_location.pk == batch.location_id:
-        raise ValidationError('Vị trí đích phải khác vị trí hiện tại của batch.')
 
-    from_location = batch.location
+    from_location = source_batch.location
     same_warehouse = from_location.warehouse_id == to_location.warehouse_id
 
-    seq = batch.transfers_from.count() + 1
     new_batch = Batch.objects.create(
-        product=batch.product, batch_code=f'{batch.batch_code}-T{seq}', supplier=batch.supplier,
-        location=to_location, mfg_date=batch.mfg_date, exp_date=batch.exp_date,
-        qty_received=qty, status=Batch.Status.ACTIVE,
+        product=source_batch.product, batch_code=new_batch_code, supplier=source_batch.supplier,
+        location=to_location, grn_item=source_batch.grn_item,
+        mfg_date=source_batch.mfg_date, exp_date=source_batch.exp_date,
+        qty_received=qty, status=new_status,
     )
-    batch.qty_used += qty
-    batch.status = Batch.Status.CLOSED if batch.qty_available <= 0 else Batch.Status.PARTIAL_USED
-    batch.save(update_fields=['qty_used', 'status'])
-
-    transfer = StockTransfer.objects.create(
-        batch=batch, new_batch=new_batch, from_location=from_location, to_location=to_location,
-        qty=qty, note=note, created_by=actor if getattr(actor, 'pk', None) else None,
+    source_batch.qty_used += qty
+    source_batch.status = (
+        Batch.Status.CLOSED if source_batch.qty_available <= 0 else Batch.Status.PARTIAL_USED
     )
+    source_batch.save(update_fields=['qty_used', 'status'])
 
     if not same_warehouse:
         src_inv = Inventory.objects.select_for_update().get(
-            product=batch.product, warehouse=from_location.warehouse,
+            product=source_batch.product, warehouse=from_location.warehouse,
         )
         src_inv.qty_on_hand -= qty
         src_inv.save(update_fields=['qty_on_hand', 'updated_at'])
         record_movement(
-            product=batch.product, warehouse=from_location.warehouse, batch=batch,
+            product=source_batch.product, warehouse=from_location.warehouse, batch=source_batch,
             movement_type=StockMovement.MovementType.TRANSFER_OUT, qty=-qty,
-            reference=transfer.transfer_no, actor=actor,
+            reference=reference, actor=actor,
         )
         dst_inv, _ = Inventory.objects.select_for_update().get_or_create(
-            product=batch.product, warehouse=to_location.warehouse,
+            product=source_batch.product, warehouse=to_location.warehouse,
         )
         dst_inv.qty_on_hand += qty
         dst_inv.save(update_fields=['qty_on_hand', 'updated_at'])
         record_movement(
-            product=batch.product, warehouse=to_location.warehouse, batch=new_batch,
+            product=source_batch.product, warehouse=to_location.warehouse, batch=new_batch,
             movement_type=StockMovement.MovementType.TRANSFER_IN, qty=qty,
-            reference=transfer.transfer_no, actor=actor,
+            reference=reference, actor=actor,
         )
+    return new_batch
+
+
+@transaction.atomic
+def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=None):
+    """FR-WM-06: điều chuyển ``qty`` từ ``batch`` sang ``to_location``.
+
+    Validate riêng của điều chuyển thủ công (vị trí đích phải khác vị trí
+    hiện tại, sinh mã ``-T{seq}``, tạo ``StockTransfer`` để có màn hình
+    audit riêng — FR-WM-06) rồi delegate phần tách batch/Inventory cho
+    ``move_batch_qty()``. Batch đang ở Kho chờ (STAGING) bị chặn: hàng ở đó
+    phải đi qua QC (Pass/Fail/Partial Pass), không được điều chuyển tay.
+    """
+    batch = Batch.objects.select_for_update().get(pk=batch.pk)
+    if not to_location.is_active:
+        raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
+    if to_location.pk == batch.location_id:
+        raise ValidationError('Vị trí đích phải khác vị trí hiện tại của batch.')
+    if batch.location.warehouse.warehouse_type == Warehouse.WarehouseType.STAGING:
+        raise ValidationError(
+            'Không thể điều chuyển thủ công batch đang ở Kho chờ — '
+            'phải xử lý qua QC (Pass/Fail/Partial Pass).'
+        )
+
+    from_location = batch.location
+    seq = batch.transfers_from.count() + 1
+    # Sinh trước transfer_no (classmethod tự khoá select_for_update trong cùng
+    # transaction atomic) để truyền làm reference cho StockMovement ngay trong
+    # move_batch_qty(), thay vì tạo StockTransfer trước rồi phải biết batch mới.
+    transfer_no = StockTransfer.generate_transfer_no()
+    new_batch = move_batch_qty(
+        source_batch=batch, qty=qty, to_location=to_location,
+        new_batch_code=f'{batch.batch_code}-T{seq}', new_status=Batch.Status.ACTIVE,
+        actor=actor, reference=transfer_no,
+    )
+    batch.refresh_from_db()
+
+    transfer = StockTransfer.objects.create(
+        transfer_no=transfer_no, batch=batch, new_batch=new_batch,
+        from_location=from_location, to_location=to_location,
+        qty=qty, note=note, created_by=actor if getattr(actor, 'pk', None) else None,
+    )
 
     log_action(
         actor, AuditLog.Action.CREATE, target=transfer,

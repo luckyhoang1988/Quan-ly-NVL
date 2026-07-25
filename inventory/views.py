@@ -50,10 +50,14 @@ def inventory_list(request):
     below_min_count = 0
     above_max_count = 0
     for inv in inventories:
+        # Cảnh báo Min/Max chỉ có ý nghĩa cho tồn khả dụng ở Kho thành phẩm —
+        # tồn ở Kho chờ/Kho phế vẫn hiển thị trong danh sách nhưng không tính vào
+        # cảnh báo/gợi ý đặt hàng (hàng đó chưa qua QC hoặc đã bị loại).
+        is_main = inv.warehouse.warehouse_type == Warehouse.WarehouseType.MAIN
         min_level = inv.product.min_level
         max_level = inv.product.max_level
-        below_min = min_level is not None and inv.qty_on_hand < min_level
-        above_max = max_level is not None and inv.qty_on_hand > max_level
+        below_min = is_main and min_level is not None and inv.qty_on_hand < min_level
+        above_max = is_main and max_level is not None and inv.qty_on_hand > max_level
         below_min_count += int(below_min)
         above_max_count += int(above_max)
         suggested_po_qty = None

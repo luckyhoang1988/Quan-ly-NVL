@@ -350,6 +350,9 @@ class GrnViewTest(TestCase):
             purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
         self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
         self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        Location.objects.create(warehouse=self.staging_warehouse, code='A-01')
         self.client.force_login(self.staff)
 
     def _create_payload(self, **overrides):

@@ -70,7 +70,7 @@ def gin_list(request):
         'page_size': page_size,
         'can_create': request.user.can('create', 'gin'),
         'statuses': Gin.Status.choices,
-        'warehouses': Warehouse.objects.filter(is_active=True),
+        'warehouses': Warehouse.objects.filter(is_active=True, warehouse_type=Warehouse.WarehouseType.MAIN),
         'selected_status': selected_status,
         'selected_warehouse': selected_warehouse,
         'q': q,

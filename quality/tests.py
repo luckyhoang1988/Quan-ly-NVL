@@ -11,14 +11,15 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from catalog.models import Product
-from inventory.models import Batch, Inventory
+from inventory.models import Batch, Inventory, StockMovement
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder
 from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Location, Warehouse
 
+from .forms import QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem
-from .services import qc_fail, qc_partial_pass, qc_pass, start_qc
+from .services import _get_staging_batch, qc_fail, qc_partial_pass, qc_pass, start_qc
 
 User = get_user_model()
 
@@ -91,8 +92,15 @@ class QcServiceTestBase(TestCase):
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
-        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-HN', name='Kho Hà Nội', warehouse_type=Warehouse.WarehouseType.MAIN)
         self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        self.staging_location = Location.objects.create(warehouse=self.staging_warehouse, code='A-01')
+        self.scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        self.scrap_location = Location.objects.create(warehouse=self.scrap_warehouse, code='A-01')
         self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
         self.grn_item = GrnItem.objects.create(
             grn=self.grn, product=self.product, qty_ordered=10, qty_received=10,
@@ -120,20 +128,59 @@ class StartQcTest(QcServiceTestBase):
         with self.assertRaises(ValidationError):
             start_qc(self.grn, self.qc_user, actor=self.qc_user)
 
+    def test_TC_QC_START_002_001_creates_active_batch_at_staging_and_credits_inventory(self):
+        self._start_qc()
+        batch = Batch.objects.get(grn_item=self.grn_item)
+        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        self.assertEqual(batch.location, self.staging_location)
+        self.assertEqual(batch.qty_received, 10)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(inv.qty_on_hand, 10)
+        self.assertTrue(StockMovement.objects.filter(
+            product=self.product, warehouse=self.staging_warehouse,
+            movement_type=StockMovement.MovementType.RECEIPT, qty=10,
+        ).exists())
+
+    def test_TC_QC_START_002_002_skips_item_with_zero_qty_received(self):
+        zero_item = GrnItem.objects.create(
+            grn=self.grn, product=self.product, qty_ordered=5, qty_received=0,
+            unit_price=Decimal('15000.00'),
+        )
+        self._start_qc()
+        self.assertFalse(Batch.objects.filter(grn_item=zero_item).exists())
+
+    def test_TC_QC_START_003_001_raises_when_no_staging_warehouse_configured(self):
+        # Kịch bản "≥2 kho STAGING active" bị chặn ở tầng DB (unique_active_staging_scrap_warehouse
+        # — xem warehouse.tests.WarehouseTypeSingletonTest), nên chỉ còn kịch bản 0 kho khả thi ở đây.
+        self.staging_warehouse.is_active = False
+        self.staging_warehouse.save(update_fields=['is_active'])
+        with self.assertRaises(ValidationError):
+            self._start_qc()
+
 
 class QcPassTransactionTest(QcServiceTestBase):
     """QC PASS (mục 2c). ``TC-QC-PASS-<seq>``."""
 
-    def test_TC_QC_PASS_001_001_creates_active_batch_and_credits_inventory(self):
+    def test_TC_QC_PASS_001_001_consumes_staging_batch_and_credits_main_inventory(self):
         inspection = self._start_qc()
+        staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
         grn = qc_pass(inspection, actor=self.qc_user, location=self.location)
 
         self.assertEqual(grn.status, Grn.Status.RECEIVED)
-        batch = Batch.objects.get(product=self.product)
-        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        staging_batch.refresh_from_db()
+        self.assertEqual(staging_batch.status, Batch.Status.CLOSED)
+        batch = Batch.objects.get(status=Batch.Status.ACTIVE)
+        self.assertEqual(batch.location, self.location)
         self.assertEqual(batch.qty_received, 10)
+        self.assertEqual(batch.grn_item, self.grn_item)
+        staging_inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(staging_inv.qty_on_hand, 0)
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
         self.assertEqual(inv.qty_on_hand, 10)
+        self.assertEqual(StockMovement.objects.filter(
+            product=self.product, movement_type=StockMovement.MovementType.TRANSFER_OUT).count(), 1)
+        self.assertEqual(StockMovement.objects.filter(
+            product=self.product, movement_type=StockMovement.MovementType.TRANSFER_IN).count(), 1)
         self.grn_item.refresh_from_db()
         self.assertEqual(self.grn_item.qty_pass, 10)
         self.assertEqual(self.grn_item.status, GrnItem.Status.RECEIVED)
@@ -147,12 +194,21 @@ class QcPassTransactionTest(QcServiceTestBase):
         with self.assertRaises(ValidationError):
             qc_pass(inspection, actor=self.qc_user, location=self.location)
 
+    def test_TC_QC_PASS_002_001_rejects_non_main_warehouse_location(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_pass(inspection, actor=self.qc_user, location=self.staging_location)
+
 
 class QcFailTransactionTest(QcServiceTestBase):
-    """QC FAIL (mục 2c) — nhánh dễ sai nhất: KHÔNG được đụng Inventory. ``TC-QC-FAIL-<seq>``."""
+    """QC FAIL (mục 2c) — nhánh dễ sai nhất trước đây (không đụng Inventory);
+    nay tiêu thụ batch Kho chờ và chuyển toàn bộ sang Kho phế (QUARANTINE).
+    ``TC-QC-FAIL-<seq>``.
+    """
 
-    def test_TC_QC_FAIL_001_001_creates_return_rejects_grn_no_inventory_change(self):
+    def test_TC_QC_FAIL_001_001_creates_return_rejects_grn_moves_to_scrap(self):
         inspection = self._start_qc()
+        staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
         ret = qc_fail(inspection, actor=self.qc_user, reason='Ngoại hình không đạt')
 
         self.assertEqual(ret.grn, self.grn)
@@ -165,8 +221,17 @@ class QcFailTransactionTest(QcServiceTestBase):
         self.assertEqual(self.grn_item.qty_pass, 0)
         inspection.refresh_from_db()
         self.assertEqual(inspection.status, QcInspection.Result.FAIL)
-        self.assertFalse(Batch.objects.exists())
-        self.assertFalse(Inventory.objects.filter(product=self.product).exists())
+
+        staging_batch.refresh_from_db()
+        self.assertEqual(staging_batch.status, Batch.Status.CLOSED)
+        scrap_batch = Batch.objects.get(status=Batch.Status.QUARANTINE)
+        self.assertEqual(scrap_batch.location, self.scrap_location)
+        self.assertEqual(scrap_batch.qty_received, 10)
+        self.assertEqual(scrap_batch.grn_item, self.grn_item)
+        staging_inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(staging_inv.qty_on_hand, 0)
+        scrap_inv = Inventory.objects.get(product=self.product, warehouse=self.scrap_warehouse)
+        self.assertEqual(scrap_inv.qty_on_hand, 10)
 
     def test_TC_QC_FAIL_001_002_raises_when_inspection_already_resolved(self):
         inspection = self._start_qc()
@@ -180,17 +245,26 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
 
     def test_TC_QC_PARTIAL_001_001_splits_batch_and_credits_only_passed_qty(self):
         inspection = self._start_qc()
+        staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
         grn = qc_partial_pass(
             inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.location)
 
         self.assertEqual(grn.status, Grn.Status.RECEIVED)
+        staging_batch.refresh_from_db()
+        self.assertEqual(staging_batch.status, Batch.Status.CLOSED)
         active = Batch.objects.get(status=Batch.Status.ACTIVE)
         quarantine = Batch.objects.get(status=Batch.Status.QUARANTINE)
         self.assertEqual(active.qty_received, 6)
+        self.assertEqual(active.location, self.location)
         self.assertEqual(quarantine.qty_received, 4)
+        self.assertEqual(quarantine.location, self.scrap_location)
         self.assertNotEqual(active.batch_code, quarantine.batch_code)
+        staging_inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(staging_inv.qty_on_hand, 0)
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
         self.assertEqual(inv.qty_on_hand, 6)
+        scrap_inv = Inventory.objects.get(product=self.product, warehouse=self.scrap_warehouse)
+        self.assertEqual(scrap_inv.qty_on_hand, 4)
         self.grn_item.refresh_from_db()
         self.assertEqual(self.grn_item.qty_pass, 6)
         self.assertEqual(self.grn_item.status, GrnItem.Status.PARTIAL_RECEIVED)
@@ -207,6 +281,41 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
         with self.assertRaises(ValidationError):
             qc_partial_pass(
                 inspection, {self.grn_item.pk: 11}, actor=self.qc_user, location=self.location)
+
+    def test_TC_QC_PARTIAL_004_001_rejects_non_main_warehouse_location(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_partial_pass(
+                inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.scrap_location)
+
+
+class GetStagingBatchTest(QcServiceTestBase):
+    """``_get_staging_batch`` — helper nội bộ tìm batch Kho chờ theo lineage
+    ``grn_item``. ``TC-QC-STG-<seq>``.
+    """
+
+    def test_TC_QC_STG_001_raises_when_grn_not_yet_submitted_to_qc(self):
+        with self.assertRaises(ValidationError):
+            _get_staging_batch(self.grn_item)
+
+    def test_TC_QC_STG_002_raises_after_batch_already_consumed(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        with self.assertRaises(ValidationError):
+            _get_staging_batch(self.grn_item)
+
+
+class QcResultFormTest(QcServiceTestBase):
+    """``QcResultForm.location`` chỉ liệt kê vị trí thuộc kho MAIN (M5) — field
+    này giờ chỉ dùng cho đích PASS/PARTIAL_PASS, không được trỏ vào Kho chờ/Kho phế.
+    """
+
+    def test_location_queryset_excludes_staging_and_scrap(self):
+        form = QcResultForm()
+        locations = list(form.fields['location'].queryset)
+        self.assertIn(self.location, locations)
+        self.assertNotIn(self.staging_location, locations)
+        self.assertNotIn(self.scrap_location, locations)
 
 
 class QcResultViewTest(QcServiceTestBase):
@@ -255,14 +364,15 @@ class QcResultViewTest(QcServiceTestBase):
         self.grn.refresh_from_db()
         self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
 
-    def test_TC_QC_VIEW_001_004_fail_action_creates_return_no_inventory_change(self):
+    def test_TC_QC_VIEW_001_004_fail_action_creates_return_moves_to_scrap(self):
         response = self.client.post(self._url(), self._payload(
             location='', reason='Ngoại hình không đạt', action='fail'))
         self.grn.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[self.grn.pk]))
         self.assertEqual(self.grn.status, Grn.Status.REJECTED)
-        self.assertFalse(Batch.objects.exists())
-        self.assertFalse(Inventory.objects.filter(product=self.product).exists())
+        self.assertTrue(Batch.objects.filter(status=Batch.Status.QUARANTINE, qty_received=10).exists())
+        scrap_inv = Inventory.objects.get(product=self.product, warehouse=self.scrap_warehouse)
+        self.assertEqual(scrap_inv.qty_on_hand, 10)
         self.assertTrue(GrnReturn.objects.filter(grn=self.grn, reason='Ngoại hình không đạt').exists())
 
     def test_TC_QC_VIEW_001_005_partial_action_splits_batches(self):

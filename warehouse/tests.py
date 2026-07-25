@@ -1,10 +1,13 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.urls import reverse
 
 from accounts.models import AuditLog
 
 from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
+from .services import deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse
 
 User = get_user_model()
 
@@ -20,7 +23,10 @@ class WarehouseCrudTest(TestCase):
         self.client.force_login(self.manager)
 
     def _create_payload(self, **overrides):
-        payload = {'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '123 Đường A', 'capacity': 1000}
+        payload = {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '123 Đường A', 'capacity': 1000,
+            'warehouse_type': Warehouse.WarehouseType.MAIN,
+        }
         payload.update(overrides)
         return payload
 
@@ -156,3 +162,127 @@ class WarehouseListPaginationFilterTest(TestCase):
         response = self.client.get(reverse('warehouse:warehouse_list'), {'q': 'KHO-001'})
         codes = [w.code for w in response.context['warehouses']]
         self.assertEqual(codes, ['KHO-001'])
+
+    def test_filter_type_main(self):
+        Warehouse.objects.create(code='KHO-STG', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        response = self.client.get(
+            reverse('warehouse:warehouse_list'), {'type': 'STAGING', 'page_size': 50})
+        codes = [w.code for w in response.context['warehouses']]
+        self.assertEqual(codes, ['KHO-STG'])
+
+
+class WarehouseTypeSingletonTest(TestCase):
+    """warehouse_type mặc định MAIN + ràng buộc duy nhất STAGING/SCRAP (M2)."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.client.force_login(self.manager)
+
+    def test_default_type_is_main(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.assertEqual(warehouse.warehouse_type, Warehouse.WarehouseType.MAIN)
+
+    def test_second_active_staging_rejected_by_db_constraint(self):
+        Warehouse.objects.create(code='KHO-STG1', name='Kho chờ 1', warehouse_type=Warehouse.WarehouseType.STAGING)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Warehouse.objects.create(code='KHO-STG2', name='Kho chờ 2', warehouse_type=Warehouse.WarehouseType.STAGING)
+
+    def test_second_active_scrap_rejected_by_form(self):
+        Warehouse.objects.create(code='KHO-SCR1', name='Kho phế 1', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-SCR2', 'name': 'Kho phế 2', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.SCRAP,
+        })
+        self.assertEqual(response.status_code, 200)  # re-render với lỗi form
+        self.assertFalse(Warehouse.objects.filter(code='KHO-SCR2').exists())
+
+    def test_create_second_staging_after_deactivating_first_ok(self):
+        old = Warehouse.objects.create(
+            code='KHO-STG1', name='Kho chờ 1', warehouse_type=Warehouse.WarehouseType.STAGING, is_active=False)
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-STG2', 'name': 'Kho chờ 2', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.STAGING,
+        })
+        new = Warehouse.objects.get(code='KHO-STG2')
+        self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[new.pk]))
+        old.refresh_from_db()
+        self.assertFalse(old.is_active)
+
+    def test_warehouse_type_disabled_on_update(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.client.post(reverse('warehouse:warehouse_update', args=[warehouse.pk]), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.SCRAP,  # cố tình đổi loại qua POST giả mạo
+        })
+        warehouse.refresh_from_db()
+        self.assertEqual(warehouse.warehouse_type, Warehouse.WarehouseType.MAIN)  # bị bỏ qua vì disabled
+
+
+class DeactivateWarehouseServiceTest(TestCase):
+    """BR-WM-006: khoá kho — implement qua warehouse.services (M2)."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.client.force_login(self.manager)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+
+    def test_deactivate_raises_when_qty_on_hand_positive(self):
+        from catalog.models import Product
+        from inventory.models import Inventory
+        product = Product.objects.create(product_code='SP-01', name='Sản phẩm 1', uom='cái')
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        with self.assertRaises(ValidationError):
+            deactivate_warehouse(self.warehouse)
+        self.warehouse.refresh_from_db()
+        self.assertTrue(self.warehouse.is_active)
+
+    def test_deactivate_ok_when_no_stock(self):
+        deactivate_warehouse(self.warehouse, actor=self.manager)
+        self.warehouse.refresh_from_db()
+        self.assertFalse(self.warehouse.is_active)
+        self.assertTrue(AuditLog.objects.filter(
+            action=AuditLog.Action.DELETE, target_id=str(self.warehouse.pk)).exists())
+
+    def test_view_surfaces_validation_error_as_message(self):
+        from catalog.models import Product
+        from inventory.models import Inventory
+        product = Product.objects.create(product_code='SP-01', name='Sản phẩm 1', uom='cái')
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        response = self.client.post(
+            reverse('warehouse:warehouse_deactivate', args=[self.warehouse.pk]), follow=True)
+        self.warehouse.refresh_from_db()
+        self.assertTrue(self.warehouse.is_active)
+        messages = list(response.context['messages'])
+        self.assertTrue(any('tồn kho' in str(m) for m in messages))
+
+
+class WarehouseSingletonHelpersTest(TestCase):
+    """get_staging_warehouse/get_scrap_warehouse/get_default_location (M2)."""
+
+    def test_get_staging_warehouse_raises_when_missing(self):
+        with self.assertRaises(ValidationError):
+            get_staging_warehouse()
+
+    def test_get_staging_warehouse_returns_active_singleton(self):
+        warehouse = Warehouse.objects.create(
+            code='KHO-STG', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        self.assertEqual(get_staging_warehouse(), warehouse)
+
+    def test_get_scrap_warehouse_returns_active_singleton(self):
+        warehouse = Warehouse.objects.create(
+            code='KHO-SCR', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        self.assertEqual(get_scrap_warehouse(), warehouse)
+
+    def test_get_default_location_returns_first_active_location_by_code(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        Location.objects.create(warehouse=warehouse, code='A-02')
+        Location.objects.create(warehouse=warehouse, code='A-01', is_active=False)
+        first_active = Location.objects.create(warehouse=warehouse, code='A-01-B')
+        self.assertEqual(get_default_location(warehouse), first_active)
+
+    def test_get_default_location_raises_when_no_active_location(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        with self.assertRaises(ValidationError):
+            get_default_location(warehouse)

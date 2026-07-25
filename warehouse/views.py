@@ -13,7 +13,7 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -23,6 +23,7 @@ from accounts.pagination import paginate_queryset
 
 from .forms import LocationForm, WarehouseForm
 from .models import MIN_LOCATIONS_PER_WAREHOUSE, Location, Warehouse
+from .services import deactivate_warehouse
 
 User = get_user_model()
 
@@ -54,13 +55,17 @@ def warehouse_list(request):
         warehouses = warehouses.filter(is_active=True)
     elif status == 'inactive':
         warehouses = warehouses.filter(is_active=False)
+    warehouse_type = request.GET.get('type', '')
+    if warehouse_type in Warehouse.WarehouseType.values:
+        warehouses = warehouses.filter(warehouse_type=warehouse_type)
     q = request.GET.get('q', '').strip()
     if q:
         warehouses = warehouses.filter(Q(code__icontains=q) | Q(name__icontains=q))
     page_obj, page_size = paginate_queryset(request, warehouses)
     return render(request, 'warehouse/warehouse_list.html', {
         'warehouses': page_obj, 'page_obj': page_obj, 'page_size': page_size,
-        'selected_status': status, 'q': q,
+        'selected_status': status, 'selected_type': warehouse_type, 'q': q,
+        'warehouse_types': Warehouse.WarehouseType.choices,
     })
 
 
@@ -116,21 +121,14 @@ def warehouse_update(request, pk):
 
 @warehouse_manager_required
 def warehouse_deactivate(request, pk):
-    """DELETE (soft) — khoá hoạt động kho.
-
-    BR-WM-006 (không xoá/khoá kho nếu ``qty_on_hand > 0``): việc kiểm tra tồn
-    kho thực tế cần model Inventory (mục 1f, chưa tồn tại ở bước này) — bổ
-    sung check ở đây khi Inventory có mặt.
-    """
+    """DELETE (soft) — khoá hoạt động kho (BR-WM-006: chặn nếu còn qty_on_hand > 0)."""
     obj = get_object_or_404(Warehouse, pk=pk)
     if request.method == 'POST':
-        obj.is_active = False
-        obj.save(update_fields=['is_active'])
-        log_action(
-            request.user, AuditLog.Action.DELETE, target=obj,
-            description=f'Khoá hoạt động kho {obj.code}',
-            ip_address=client_ip(request),
-        )
+        try:
+            deactivate_warehouse(obj, actor=request.user, ip_address=client_ip(request))
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+            return redirect('warehouse:warehouse_detail', pk=obj.pk)
         messages.success(request, f'Đã khoá hoạt động kho "{obj.code}".')
         return redirect('warehouse:warehouse_detail', pk=obj.pk)
     return render(request, 'warehouse/warehouse_confirm_deactivate.html', {'obj': obj})

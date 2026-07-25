@@ -16,6 +16,7 @@ from purchasing.models import PurchaseOrder, PurchaseOrderItem
 from purchasing.services import supplier_lead_time_stats
 from quality.models import QcInspection
 from receiving.models import Grn
+from warehouse.models import Warehouse
 
 
 def latest_unit_price_by_product():
@@ -36,7 +37,9 @@ def dashboard_kpis():
 
     total_inventory_value = Decimal('0')
     low_stock_count = 0
-    for inv in Inventory.objects.select_related('product'):
+    for inv in Inventory.objects.select_related('product').filter(
+        warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
+    ):
         price = prices.get(inv.product_id)
         if price is not None:
             total_inventory_value += inv.qty_on_hand * price
@@ -65,7 +68,8 @@ def abc_analysis():
     """
     prices = latest_unit_price_by_product()
     qty_by_product = dict(
-        Inventory.objects.values('product_id').annotate(total_qty=Sum('qty_on_hand'))
+        Inventory.objects.filter(warehouse__warehouse_type=Warehouse.WarehouseType.MAIN)
+        .values('product_id').annotate(total_qty=Sum('qty_on_hand'))
         .values_list('product_id', 'total_qty')
     )
     products = {p.pk: p for p in Product.objects.filter(pk__in=qty_by_product.keys())}
@@ -118,7 +122,8 @@ def slow_moving_items(days=180):
     today = timezone.localdate()
     prices = latest_unit_price_by_product()
     qty_by_product = dict(
-        Inventory.objects.values('product_id').annotate(total_qty=Sum('qty_on_hand'))
+        Inventory.objects.filter(warehouse__warehouse_type=Warehouse.WarehouseType.MAIN)
+        .values('product_id').annotate(total_qty=Sum('qty_on_hand'))
         .values_list('product_id', 'total_qty')
     )
     last_issue_by_product = dict(

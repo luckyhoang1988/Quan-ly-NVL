@@ -107,6 +107,27 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   ORDER BY exp_date ASC, created_at ASC`, and allow splitting the requested qty across multiple batches if
   one batch isn't enough. This is flagged in the backlog as the most error-prone piece of logic and requires
   dedicated unit tests (single batch, multi-batch split, insufficient total stock).
+- **Three warehouse types, one mandatory QC staging step**: `Warehouse.warehouse_type` is `MAIN` (normal,
+  GIN/FIFO-eligible), `STAGING` ("Kho chờ" — goods awaiting QC), or `SCRAP` ("Kho phế" — QC-rejected goods).
+  At most one active `STAGING` warehouse and one active `SCRAP` warehouse company-wide, enforced by a DB-level
+  `UniqueConstraint`; `warehouse_type` is locked (disabled in the form) after creation — changing type means
+  creating a new warehouse and deactivating the old one via `warehouse.services.deactivate_warehouse()`.
+  Confirmed qty received on a GRN goes straight into a full `Batch` (`ACTIVE`) + `Inventory` record in
+  `STAGING` via `start_qc()` — it no longer "disappears" from the system until QC decides, the way it used
+  to. `qc_pass`/`qc_fail`/`qc_partial_pass` then consume that staging batch via
+  `inventory.services.move_batch_qty()` (the shared split primitive also used by `transfer_stock`, recording
+  `TRANSFER_OUT`/`TRANSFER_IN` rather than `RECEIPT`): PASS moves 100% to a new `ACTIVE` batch in the chosen
+  `MAIN` warehouse; FAIL moves 100% to a new `QUARANTINE` batch in `SCRAP`; PARTIAL_PASS splits into both in
+  the same transaction. `Batch.grn_item` (nullable `PROTECT` FK) tracks lineage back to the source `GrnItem`
+  across every split. Two guards keep the "must go through QC" invariant: `qc_pass`/`qc_partial_pass` reject
+  any destination location whose warehouse isn't `MAIN`, and `transfer_stock` rejects any source batch
+  currently sitting in a `STAGING` warehouse. `GinForm`/`Gin.clean()` restrict GIN to `MAIN` warehouses only —
+  necessary because the FIFO query's `status='ACTIVE'` filter alone doesn't exclude staging batches (they're
+  `ACTIVE` too); it's the warehouse restriction that does the excluding. `reports.services` (dashboard KPI,
+  ABC Analysis, slow-moving) and the Min/Max banner in `inventory_list` all filter
+  `warehouse__warehouse_type=MAIN` so `STAGING`/`SCRAP` stock never inflates those numbers. Singleton lookup
+  helpers (`get_staging_warehouse()`, `get_scrap_warehouse()`, `get_default_location()`) live in
+  `warehouse/services.py` (new file — this app previously had no service layer).
 - **Audit trail** (who/what/when/why) is required on every state transition of GRN, QC, and Batch from Phase
   2 onward — it's called out as "hard to add later," so don't defer it while building the workflow states.
 - `qty_available = qty_on_hand - qty_reserved` is computed, not stored input — keep it derived wherever it's

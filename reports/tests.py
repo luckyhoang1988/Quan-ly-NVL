@@ -69,6 +69,24 @@ class DashboardKpisTest(TestCase):
     def test_TC_RPT_01_006_pending_grn_count(self):
         self.assertEqual(dashboard_kpis()['pending_grn_count'], 1)
 
+    def test_TC_RPT_01_007_excludes_staging_and_scrap_inventory(self):
+        """M6: tồn ở Kho chờ/Kho phế không được cộng vào KPI — hàng chưa qua QC
+        hoặc đã bị loại không phải "tồn khả dụng"."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        other_product = Product.objects.create(
+            product_code='NVL-0002', name='Đường', uom='kg', min_level=20)
+        Inventory.objects.create(product=other_product, warehouse=staging, qty_on_hand=5)
+        Inventory.objects.create(product=self.product, warehouse=scrap, qty_on_hand=999)
+
+        kpis = dashboard_kpis()
+        # other_product chỉ có tồn ở Kho chờ (5 < min_level=20) -> không tính vào low_stock_count.
+        self.assertEqual(kpis['low_stock_count'], 1)
+        # self.product tồn thêm 999 ở Kho phế -> nếu không lọc, total_inventory_value sẽ tăng vọt.
+        self.assertEqual(kpis['total_inventory_value'], Decimal('150000.00'))
+
 
 class AbcAnalysisTest(TestCase):
     """FR-RPT-02: phân loại A/B/C theo % giá trị tồn kho tích luỹ.
@@ -114,6 +132,15 @@ class AbcAnalysisTest(TestCase):
         self.assertNotIn(self.product_unpriced.product_code, priced_codes)
         unpriced_codes = [row['product'].product_code for row in result['unpriced']]
         self.assertIn(self.product_unpriced.product_code, unpriced_codes)
+
+    def test_TC_RPT_02_004_excludes_staging_and_scrap_inventory(self):
+        """M6: qty tồn ở Kho chờ/Kho phế không được cộng vào total_qty dùng để xếp hạng A/B/C."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        Inventory.objects.create(product=self.product_a, warehouse=staging, qty_on_hand=9999)
+        result = abc_analysis()
+        row = next(r for r in result['rows'] if r['product'] == self.product_a)
+        self.assertEqual(row['total_qty'], 10)
 
 
 class SlowMovingItemsTest(TestCase):
@@ -171,6 +198,19 @@ class SlowMovingItemsTest(TestCase):
         result = {row['product'].product_code: row for row in slow_moving_items(days=180)}
         self.assertEqual(result[markdown_product.product_code]['recommendation'], 'Giảm giá / Markdown')
         self.assertEqual(result[scrap_product.product_code]['recommendation'], 'Thanh lý (Scrap)')
+
+    def test_TC_RPT_03_006_staging_only_inventory_excluded(self):
+        """M6: sản phẩm chỉ tồn ở Kho chờ (chưa qua QC) không được liệt vào slow-moving."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        staging_product = Product.objects.create(product_code='NVL-STG', name='Chỉ ở Kho chờ', uom='kg')
+        Product.objects.filter(pk=staging_product.pk).update(
+            created_at=timezone.now() - timedelta(days=200))
+        Inventory.objects.create(product=staging_product, warehouse=staging, qty_on_hand=10)
+
+        result = slow_moving_items(days=180)
+        codes = [row['product'].product_code for row in result]
+        self.assertNotIn(staging_product.product_code, codes)
 
 
 class SupplierPerformanceTest(TestCase):

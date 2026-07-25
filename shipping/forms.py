@@ -6,6 +6,7 @@ from django import forms
 from django.forms import inlineformset_factory
 
 from inventory.models import Batch
+from warehouse.models import Warehouse
 
 from .models import Gin, GinItem
 
@@ -29,6 +30,8 @@ class GinForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields['warehouse'].queryset = Warehouse.objects.filter(
+            is_active=True, warehouse_type=Warehouse.WarehouseType.MAIN)
         _bootstrapify(self.fields)
 
 

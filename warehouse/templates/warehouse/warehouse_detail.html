@@ -26,6 +26,16 @@
   </div>
   <div class="card-body">
     <dl class="row mb-0">
+      <dt class="col-sm-3">Loại kho</dt>
+      <dd class="col-sm-9">
+        {% if obj.warehouse_type == 'MAIN' %}
+          <span class="badge bg-primary">{{ obj.get_warehouse_type_display }}</span>
+        {% elif obj.warehouse_type == 'STAGING' %}
+          <span class="badge bg-info text-dark">{{ obj.get_warehouse_type_display }}</span>
+        {% else %}
+          <span class="badge bg-secondary">{{ obj.get_warehouse_type_display }}</span>
+        {% endif %}
+      </dd>
       <dt class="col-sm-3">Địa chỉ</dt>
       <dd class="col-sm-9">{{ obj.address|default:"—" }}</dd>
       <dt class="col-sm-3">Dung tích</dt>

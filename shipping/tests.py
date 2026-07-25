@@ -20,6 +20,7 @@ from inventory.models import Batch, Inventory, StockMovement
 from partners.models import Supplier
 from warehouse.models import Location, Warehouse
 
+from .forms import GinForm
 from .models import Gin, GinBatchAllocation, GinItem
 from .services import close_gin, issue_gin, override_allocation, start_picking
 
@@ -62,6 +63,36 @@ class GinModelTest(TestCase):
     def test_TC_GIN_001_004_default_status_is_draft(self):
         gin = self._gin()
         self.assertEqual(gin.status, Gin.Status.DRAFT)
+
+    def test_TC_GIN_001_005_clean_rejects_non_main_warehouse(self):
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        gin = Gin(warehouse=staging, reference_type=Gin.ReferenceType.SALES, requested_by=self.manager)
+        with self.assertRaises(ValidationError):
+            gin.clean()
+
+    def test_TC_GIN_001_006_clean_allows_main_warehouse(self):
+        gin = Gin(
+            warehouse=self.warehouse, reference_type=Gin.ReferenceType.SALES, requested_by=self.manager)
+        gin.clean()  # không raise
+
+
+class GinFormTest(TestCase):
+    """``GinForm.warehouse`` chỉ liệt kê kho loại MAIN (M5)."""
+
+    def setUp(self):
+        self.main_warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        self.scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+
+    def test_warehouse_queryset_excludes_staging_and_scrap(self):
+        form = GinForm()
+        warehouses = list(form.fields['warehouse'].queryset)
+        self.assertIn(self.main_warehouse, warehouses)
+        self.assertNotIn(self.staging_warehouse, warehouses)
+        self.assertNotIn(self.scrap_warehouse, warehouses)
 
 
 class GinPickingServiceTest(TestCase):

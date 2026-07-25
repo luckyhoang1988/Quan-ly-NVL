@@ -115,7 +115,9 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm — thuộc Phase 3 (GIN)
 - [ ] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng — thuộc Phase 2 (GRN)
 - [x] BR-WM-005: Tạo warehouse → min 10 vị trí (tự sinh 10 vị trí mặc định A-01..A-10 khi tạo kho)
-- [ ] BR-WM-006: Không thể xóa warehouse nếu `qty_on_hand > 0` — "xoá" hiện là khoá hoạt động (soft); kiểm tra `qty_on_hand` thực tế cần model Inventory (mục 1f), đã đánh dấu TODO trong code (`warehouse/views.py::warehouse_deactivate`)
+- [x] BR-WM-006: Không thể xóa warehouse nếu `qty_on_hand > 0` — `warehouse.services.deactivate_warehouse()` kiểm tra `Inventory.qty_on_hand > 0` trước khi khoá (soft), raise `ValidationError` nếu còn tồn; `warehouse/views.py::warehouse_deactivate` gọi hàm này trong try/except
+- [x] BR-WM-007: `Warehouse.warehouse_type` (MAIN/STAGING/SCRAP) — MAIN là kho thường (duy nhất loại được GIN/FIFO chọn xuất hàng); tối đa 1 kho STAGING (Kho chờ QC) và 1 kho SCRAP (Kho phế) đang hoạt động cho toàn công ty, enforce ở tầng DB (`UniqueConstraint` có điều kiện `warehouse_type IN (STAGING, SCRAP) AND is_active`) lẫn tầng form (`WarehouseForm.clean_warehouse_type`); `warehouse_type` khoá (disabled) sau khi tạo — đổi loại phải tạo kho mới + khoá kho cũ, không sửa tại chỗ
+- [x] BR-WM-008: Kho chờ/Kho phế được track tồn kho **đầy đủ** như kho thường (Batch + Inventory thật, không phải ghi chú) — nhưng bị loại khỏi mọi KPI/báo cáo tổng hợp (`reports.services`: `dashboard_kpis`, `abc_analysis`, `slow_moving_items` đều lọc `warehouse__warehouse_type=MAIN`) và khỏi cảnh báo Min/Max (`inventory/views.py::inventory_list` — dòng vẫn hiển thị, chỉ không tính `below_min`/`above_max`/`suggested_po_qty` cho row không phải MAIN) để không thổi phồng số liệu tồn khả dụng
 
 > ⏸️ **FR-WM-04 phần "gợi ý tạo PO tự động"**: chỉ cần hiển thị cảnh báo trên dashboard ở Phase 1 (tính on-the-fly khi load trang). Auto-tạo PO draft thật sự (cần job chạy nền) dời qua Phase 5 khi có Celery.
 
@@ -208,12 +210,15 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 ### 2c. GRN ↔ QC Integration & Batch Lifecycle (dùng chung cho cả 2)
 
-- [x] **QC result mapping**:
-  - PASS → GRN: RECEIVED, tạo Batch status ACTIVE
-  - FAIL → GRN: REJECTED, tạo GRN_RETURN, inventory KHÔNG cập nhật
-  - PARTIAL_PASS → GRN: RECEIVED, Batch split: ACTIVE (qty pass) + QUARANTINE (qty fail)
-  (`quality/services.py:71-180`, xem `qc_pass`/`qc_fail`/`qc_partial_pass`)
+- [x] **Kho chờ (STAGING) là điểm vào bắt buộc**: `start_qc()` (gọi từ `receiving/views.py::grn_receive_qty` khi xác nhận Qty thực nhận) tạo ngay 1 Batch `ACTIVE` cho mỗi `GrnItem` tại vị trí mặc định của Kho chờ và cộng `Inventory` ở đó (RECEIPT) — hàng vật lý đã nhận hiện diện thật trong tồn kho từ lúc này, không "biến mất" cho tới khi QC quyết định
+- [x] **QC result mapping** (đều tiêu thụ batch ở Kho chờ qua `inventory.services.move_batch_qty`, ghi `TRANSFER_OUT`/`TRANSFER_IN`, không phải RECEIPT):
+  - PASS → GRN: RECEIVED, tách toàn bộ batch Kho chờ thành 1 Batch `ACTIVE` mới tại kho MAIN đích do QC chọn
+  - FAIL → GRN: REJECTED, tạo GRN_RETURN, tách toàn bộ batch Kho chờ thành 1 Batch `QUARANTINE` tại Kho phế (SCRAP) — inventory Kho chờ giảm về 0, inventory Kho phế tăng đúng qty
+  - PARTIAL_PASS → GRN: RECEIVED, tách batch Kho chờ làm 2: `ACTIVE` (qty pass) tại kho MAIN + `QUARANTINE` (qty fail) tại Kho phế
+  (`quality/services.py`, xem `start_qc`/`qc_pass`/`qc_fail`/`qc_partial_pass`)
+- [x] **Batch.grn_item** (FK nullable, `on_delete=PROTECT`, `inventory/models.py`): trace batch về đúng `GrnItem` sinh ra nó; copy sang batch con mỗi lần `move_batch_qty` tách, giữ lineage Kho chờ → MAIN/SCRAP qua nhiều lần tách
 - [x] **Batch status enum**: ACTIVE, PARTIAL_USED, QUARANTINE, EXPIRED, CLOSED — định nghĩa ở `inventory` app
+- [x] `qc_pass`/`qc_partial_pass` chỉ nhận vị trí đích thuộc kho `warehouse_type=MAIN` (`ValidationError` nếu không), `inventory.services.transfer_stock` chặn điều chuyển thủ công có nguồn là Kho chờ (phải qua QC) — 2 hàng rào giữ đúng ý nghĩa "phải qua QC"
 - [ ] **Quarantine batch**: không thể xuất (GIN reject), admin quyết định scrap/return/rework, alert nếu quarantine > 7 ngày (⏸️ tính on-the-fly, chưa cần Celery) — thuộc Phase 3 (GIN), chưa làm
 
 #### GRN_RETURN Workflow (tự động tạo từ QC FAIL)
@@ -222,9 +227,10 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] ⏸️ Auto-email supplier khi reject — **hoãn** (cần Celery/email async); tạm thời: hiện thông báo trong app, gửi email thủ công
 
 #### Inventory Update Triggers (transaction, atomicity)
-- [x] **GRN RECEIVED transaction**: Create Batch → Update Inventory (qty_on_hand, qty_available) → Update GRN status → Audit log — all-or-nothing, rollback nếu fail bước nào (`quality/services.py:71-99`, `@transaction.atomic` + `select_for_update`)
-- [x] **QC FAIL transaction**: Create GRN_RETURN → Update GRN status REJECTED → Audit log — **không** update Inventory (`quality/services.py:102-122`)
-- [x] **PARTIAL_PASS transaction**: Create 2 Batch (ACTIVE + QUARANTINE) → Update Inventory (chỉ cộng phần pass) → Update GRN status (`quality/services.py:125-180`)
+- [x] **Submit QC transaction** (`start_qc`): Create Batch ACTIVE/item tại Kho chờ → cộng Inventory Kho chờ (RECEIPT) → GRN status QC_IN_PROGRESS → Audit log — all-or-nothing (`@transaction.atomic` + `select_for_update`)
+- [x] **QC PASS transaction** (`qc_pass`): tách batch Kho chờ → Batch ACTIVE tại MAIN qua `move_batch_qty` → trừ Inventory Kho chờ/cộng Inventory MAIN (TRANSFER_OUT/TRANSFER_IN) → GRN status RECEIVED → Audit log
+- [x] **QC FAIL transaction** (`qc_fail`): tách batch Kho chờ → Batch QUARANTINE tại Kho phế qua `move_batch_qty` → trừ Inventory Kho chờ/cộng Inventory Kho phế → Create GRN_RETURN → GRN status REJECTED → Audit log (không còn "không đụng Inventory" như trước M4 — hàng FAIL giờ có mặt thật ở Kho phế)
+- [x] **PARTIAL_PASS transaction** (`qc_partial_pass`): tách batch Kho chờ làm 2 lần `move_batch_qty` (ACTIVE tại MAIN cho qty pass, QUARANTINE tại Kho phế cho qty fail) → cập nhật Inventory cả 2 đầu đích, Kho chờ về 0 → GRN status RECEIVED
 
 #### Audit Trail (bắt buộc, khó thêm sau)
 - [x] Ghi WHO/WHEN/WHAT/WHY cho mọi state transition của GRN, QC, Batch — qua `accounts.AuditLog` (`log_action()`), gọi ở tạo GRN, submit PENDING_QC, start QC, QC PASS/FAIL/PARTIAL
@@ -281,6 +287,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] BR-GIN-001: `qty_issued <= qty_available`
 - [x] BR-GIN-006: khi `qty_on_hand` = 0 → `batch.status = CLOSED`
 - [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE
+- [x] BR-GIN-008: GIN chỉ được chọn kho `warehouse_type=MAIN` (`GinForm.warehouse` giới hạn queryset + `Gin.clean()` chặn ở tầng model, dropdown filter ở `gin_list` cùng convention) — bắt buộc vì FIFO chỉ lọc `status='ACTIVE'`, không tự loại được batch đang nằm ở Kho chờ (STAGING) dù batch đó cũng `ACTIVE`; ràng buộc kho là lớp chặn duy nhất
 
 ### ✅ Definition of Done — Phase 3
 - [x] Unit test FIFO: nhiều batch cùng SKU, hạn khác nhau → lấy đúng thứ tự hạn gần nhất trước

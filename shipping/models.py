@@ -13,9 +13,12 @@ yêu cầu (1 product, 1 qty_requested) thành nhiều batch (giống
 batch được phân bổ là 1 dòng, giữ cả cờ ``is_override``/``override_reason``
 cho FR-GIN-03 và dữ liệu in phiếu (FR-GIN-06) sau này.
 """
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.utils import timezone
+
+from warehouse.models import Warehouse
 
 
 class Gin(models.Model):
@@ -48,6 +51,11 @@ class Gin(models.Model):
 
     def __str__(self):
         return self.gin_no
+
+    def clean(self):
+        super().clean()
+        if self.warehouse_id and self.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
+            raise ValidationError('Kho xuất GIN phải thuộc loại "Kho thành phẩm" — không thể xuất từ Kho chờ/Kho phế.')
 
     @classmethod
     def generate_gin_no(cls):

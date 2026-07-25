@@ -26,6 +26,15 @@
         </select>
       </div>
       <div class="col-auto">
+        <label class="form-label" for="type">Loại kho</label>
+        <select name="type" id="type" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả loại kho --</option>
+          {% for value, label in warehouse_types %}
+            <option value="{{ value }}" {% if selected_type == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
         <label class="form-label" for="q">Tìm kiếm</label>
         <input type="text" name="q" id="q" class="form-control" placeholder="Mã kho, tên kho..." value="{{ q }}">
       </div>
@@ -40,6 +49,7 @@
           <tr>
             <th>Mã kho</th>
             <th>Tên kho</th>
+            <th>Loại kho</th>
             <th>Địa chỉ</th>
             <th>Dung tích</th>
             <th>Số vị trí</th>
@@ -51,6 +61,15 @@
           <tr class="{% if not w.is_active %}table-secondary text-muted{% endif %}">
             <td><a href="{% url 'warehouse:warehouse_detail' w.pk %}">{{ w.code }}</a></td>
             <td>{{ w.name }}</td>
+            <td>
+              {% if w.warehouse_type == 'MAIN' %}
+                <span class="badge bg-primary">{{ w.get_warehouse_type_display }}</span>
+              {% elif w.warehouse_type == 'STAGING' %}
+                <span class="badge bg-info text-dark">{{ w.get_warehouse_type_display }}</span>
+              {% else %}
+                <span class="badge bg-secondary">{{ w.get_warehouse_type_display }}</span>
+              {% endif %}
+            </td>
             <td>{{ w.address|default:"—" }}</td>
             <td>{{ w.capacity|default:"—" }}</td>
             <td>{{ w.locations.count }}</td>
@@ -63,7 +82,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="6" class="text-center text-muted">Chưa có kho nào.</td></tr>
+          <tr><td colspan="7" class="text-center text-muted">Chưa có kho nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

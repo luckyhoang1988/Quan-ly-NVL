@@ -6,7 +6,7 @@ from django import forms
 from django.forms import inlineformset_factory
 
 from receiving.models import Grn, GrnItem
-from warehouse.models import Location
+from warehouse.models import Location, Warehouse
 
 from .models import QcCriteria, QcInspection, QcInspectionItem
 
@@ -27,8 +27,9 @@ class QcResultForm(forms.Form):
     """Vị trí lưu kho cho Batch mới (ACTIVE/QUARANTINE) + lý do khi FAIL."""
 
     location = forms.ModelChoiceField(
-        queryset=Location.objects.filter(is_active=True), label='Vị trí lưu kho', required=False,
-        help_text='Bắt buộc khi kết quả là Pass hoặc Partial Pass (cần chỗ đặt Batch).',
+        queryset=Location.objects.filter(is_active=True, warehouse__warehouse_type=Warehouse.WarehouseType.MAIN),
+        label='Vị trí lưu kho', required=False,
+        help_text='Bắt buộc khi kết quả là Pass hoặc Partial Pass (cần chỗ đặt Batch, chỉ Kho thành phẩm).',
     )
     reason = forms.CharField(
         required=False, widget=forms.Textarea(attrs={'rows': 2}),

@@ -15,8 +15,8 @@ from warehouse.models import Location, Warehouse
 
 from .models import Batch, Inventory, StockMovement, StockTransfer
 from .services import (
-    calculate_eoq, expiring_soon_batches, record_movement, suggest_fifo_batches, sync_expired_batches,
-    transfer_stock,
+    calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, suggest_fifo_batches,
+    sync_expired_batches, transfer_stock,
 )
 
 User = get_user_model()
@@ -232,6 +232,25 @@ class FifoSuggestionServiceTest(TestCase):
         with self.assertRaises(ValidationError):
             suggest_fifo_batches(self.product, self.warehouse, 0)
 
+    def test_TC_INV_FIFO_007_ignores_active_batch_at_staging_warehouse(self):
+        """M5: batch ACTIVE ở Kho chờ (cùng product) không bao giờ được gợi ý
+        cho kho MAIN, dù đủ trạng thái ACTIVE và đủ số lượng — suggest_fifo_batches
+        lọc theo đúng ``location__warehouse`` được truyền vào (kho MAIN của GIN)."""
+        staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        staging_location = Location.objects.create(warehouse=staging_warehouse, code='A-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-STG', supplier=self.supplier, location=staging_location,
+            qty_received=100, exp_date=self.today + datetime.timedelta(days=5), status=Batch.Status.ACTIVE,
+        )
+        main_batch = self._batch('LOT-MAIN', self.today + datetime.timedelta(days=10), 20)
+
+        plan = suggest_fifo_batches(self.product, self.warehouse, 20)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]['batch'], main_batch)
+        with self.assertRaises(ValidationError):
+            suggest_fifo_batches(self.product, self.warehouse, 21)
+
 
 class InventoryDashboardViewTest(TestCase):
     """``inventory_list`` (mục 3a): FR-WM-03 tồn real-time + FR-WM-04/05 cảnh
@@ -285,6 +304,23 @@ class InventoryDashboardViewTest(TestCase):
         response = self.client.get(reverse('inventory:inventory_list'), {'warehouse': self.warehouse.pk})
         self.assertEqual(len(response.context['rows']), 1)
         self.assertEqual(response.context['rows'][0]['inventory'].warehouse, self.warehouse)
+
+    def test_TC_INV_DASH_007_staging_row_below_min_not_flagged(self):
+        """M6: row ở Kho chờ dưới min_level vẫn hiển thị (không bị lọc khỏi danh
+        sách) nhưng không được set below_min/suggested_po_qty — hàng chưa qua QC
+        không phải "tồn khả dụng" đúng nghĩa Min/Max. Row MAIN tương đương thì có."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        product = Product.objects.create(product_code='NVL-0006', name='Gừng', uom='kg', min_level=50, max_level=200)
+        Inventory.objects.create(product=product, warehouse=staging, qty_on_hand=10)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+
+        response = self.client.get(reverse('inventory:inventory_list'))
+        rows_by_warehouse = {row['inventory'].warehouse_id: row for row in response.context['rows']}
+        self.assertFalse(rows_by_warehouse[staging.pk]['below_min'])
+        self.assertIsNone(rows_by_warehouse[staging.pk]['suggested_po_qty'])
+        self.assertTrue(rows_by_warehouse[self.warehouse.pk]['below_min'])
+        self.assertEqual(response.context['below_min_count'], 1)
 
 
 class BatchViewTest(TestCase):
@@ -482,6 +518,132 @@ class StockTransferServiceTest(TestCase):
         self.assertTrue(
             AuditLog.objects.filter(target_id=str(transfer.pk), action=AuditLog.Action.CREATE).exists()
         )
+
+    def test_TC_INV_TRF_015_staging_source_rejected(self):
+        """M3: batch đang ở Kho chờ (STAGING) không được điều chuyển thủ công — phải qua QC."""
+        staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        staging_location = Location.objects.create(warehouse=staging_warehouse, code='A-01')
+        batch = self._batch(qty=10, location=staging_location)
+        with self.assertRaises(ValidationError):
+            transfer_stock(batch=batch, to_location=self.location2, qty=5, actor=self.user)
+
+
+class MoveBatchQtyServiceTest(TestCase):
+    """``move_batch_qty`` (M3) — nguyên thủy tách batch dùng chung bởi
+    ``transfer_stock`` và ``quality.services``. ``TC-INV-MBQ-<seq>``.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.other_warehouse = Warehouse.objects.create(code='KHO-SG', name='Kho Sài Gòn')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        self.other_location = Location.objects.create(warehouse=self.other_warehouse, code='B-01')
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+
+    def _batch(self, code='LOT-0001', qty=100, status=Batch.Status.ACTIVE, location=None, grn_item=None):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier,
+            location=location or self.location, qty_received=qty, status=status, grn_item=grn_item,
+        )
+
+    def test_TC_INV_MBQ_001_same_warehouse_splits_batch_no_inventory_change(self):
+        batch = self._batch(qty=100)
+        new_batch = move_batch_qty(
+            source_batch=batch, qty=40, to_location=self.location2,
+            new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+        )
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.PARTIAL_USED)
+        self.assertEqual(batch.qty_available, 60)
+        self.assertEqual(new_batch.qty_received, 40)
+        self.assertEqual(new_batch.location, self.location2)
+        self.assertEqual(new_batch.status, Batch.Status.ACTIVE)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(inv.qty_on_hand, 100)
+        self.assertFalse(StockMovement.objects.exists())
+
+    def test_TC_INV_MBQ_002_cross_warehouse_updates_both_inventories_and_movements(self):
+        batch = self._batch(qty=100)
+        new_batch = move_batch_qty(
+            source_batch=batch, qty=30, to_location=self.other_location,
+            new_batch_code='LOT-0001-A', new_status=Batch.Status.QUARANTINE,
+            actor=self.user, reference='QC-TEST-001',
+        )
+        src_inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        dst_inv = Inventory.objects.get(product=self.product, warehouse=self.other_warehouse)
+        self.assertEqual(src_inv.qty_on_hand, 70)
+        self.assertEqual(dst_inv.qty_on_hand, 30)
+        self.assertEqual(new_batch.status, Batch.Status.QUARANTINE)
+        out_move = StockMovement.objects.get(movement_type=StockMovement.MovementType.TRANSFER_OUT)
+        in_move = StockMovement.objects.get(movement_type=StockMovement.MovementType.TRANSFER_IN)
+        self.assertEqual(out_move.reference, 'QC-TEST-001')
+        self.assertEqual(in_move.reference, 'QC-TEST-001')
+
+    def test_TC_INV_MBQ_003_full_qty_closes_source_batch(self):
+        batch = self._batch(qty=30)
+        move_batch_qty(
+            source_batch=batch, qty=30, to_location=self.location2,
+            new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+        )
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        self.assertEqual(batch.qty_available, 0)
+
+    def test_TC_INV_MBQ_004_copies_grn_item_lineage_to_new_batch(self):
+        from purchasing.models import PurchaseOrder
+        from receiving.models import Grn, GrnItem
+
+        creator = User.objects.create_user(username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=creator)
+        grn_item = GrnItem.objects.create(
+            grn=grn, product=self.product, qty_ordered=100, qty_received=100, unit_price='15000.00',
+        )
+        batch = self._batch(qty=100, grn_item=grn_item)
+        new_batch = move_batch_qty(
+            source_batch=batch, qty=40, to_location=self.location2,
+            new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+        )
+        self.assertEqual(new_batch.grn_item, grn_item)
+
+    def test_TC_INV_MBQ_005_batch_without_grn_item_stays_null(self):
+        batch = self._batch(qty=100, grn_item=None)
+        new_batch = move_batch_qty(
+            source_batch=batch, qty=40, to_location=self.location2,
+            new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+        )
+        self.assertIsNone(new_batch.grn_item)
+
+    def test_TC_INV_MBQ_006_qty_exceeding_available_raises(self):
+        batch = self._batch(qty=10)
+        with self.assertRaises(ValidationError):
+            move_batch_qty(
+                source_batch=batch, qty=11, to_location=self.location2,
+                new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+            )
+
+    def test_TC_INV_MBQ_007_quarantine_source_rejected(self):
+        batch = self._batch(qty=10, status=Batch.Status.QUARANTINE)
+        with self.assertRaises(ValidationError):
+            move_batch_qty(
+                source_batch=batch, qty=5, to_location=self.location2,
+                new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+            )
+
+    def test_TC_INV_MBQ_008_inactive_destination_location_rejected(self):
+        self.location2.is_active = False
+        self.location2.save(update_fields=['is_active'])
+        batch = self._batch(qty=10)
+        with self.assertRaises(ValidationError):
+            move_batch_qty(
+                source_batch=batch, qty=5, to_location=self.location2,
+                new_batch_code='LOT-0001-A', new_status=Batch.Status.ACTIVE, actor=self.user,
+            )
 
 
 class StockTransferViewTest(TestCase):
