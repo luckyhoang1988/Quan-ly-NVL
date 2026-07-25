@@ -20,14 +20,18 @@ from warehouse.models import Warehouse
 
 from .forms import StockTransferForm
 from .models import Batch, Inventory, StockTransfer
-from .services import calculate_eoq, expiring_soon_batches, sync_expired_batches, transfer_stock
+from .services import (
+    calculate_eoq, expiring_soon_batches, stale_quarantine_batches, sync_expired_batches, transfer_stock,
+)
 
 
 @login_required
 def inventory_list(request):
-    """FR-WM-03: tồn real-time theo kho (qty on-hand/reserved/quarantine/
-    available). FR-WM-04/05: đánh dấu dòng dưới Min Level / trên Max Level so
-    với ``Product.min_level``/``max_level``, tính on-the-fly khi load trang
+    """FR-WM-03: tồn real-time theo kho (qty on-hand/reserved/available).
+    Hàng quarantine (QC fail/partial) không có cột riêng — xem trực tiếp dòng
+    Inventory của kho SCRAP (đã tách kho theo warehouse_type, xem CLAUDE.md).
+    FR-WM-04/05: đánh dấu dòng dưới Min Level / trên Max Level so với
+    ``Product.min_level``/``max_level``, tính on-the-fly khi load trang
     (⏸️ auto-tạo PO khi dưới Min Level dời Phase 5 theo CLAUDE.md).
     """
     selected_warehouse = None
@@ -89,7 +93,9 @@ def batch_list(request):
     """FR-INV-01: quản lý lô hàng — danh sách batch (mã lô/NSX/HSD/NCC, qty
     received/used/available, status). FR-INV-02: cảnh báo lô ``ACTIVE`` sắp
     hết hạn trong 30 ngày, tính on-the-fly bằng ``expiring_soon_batches()``
-    (⏸️ theo CLAUDE.md, không cron).
+    (⏸️ theo CLAUDE.md, không cron). Cảnh báo lô QUARANTINE tồn quá 7 ngày
+    chưa xử lý bằng ``stale_quarantine_batches()`` (alert-only, xem BACKLOG
+    mục 2c).
     """
     sync_expired_batches()
 
@@ -113,6 +119,7 @@ def batch_list(request):
         batches = batches.filter(Q(batch_code__icontains=q) | Q(product__product_code__icontains=q))
 
     expiring_ids = set(expiring_soon_batches().values_list('pk', flat=True))
+    stale_quarantine_ids = set(stale_quarantine_batches().values_list('pk', flat=True))
 
     page_obj, page_size = paginate_queryset(request, batches)
     return render(request, 'inventory/batch_list.html', {
@@ -121,6 +128,8 @@ def batch_list(request):
         'page_size': page_size,
         'expiring_ids': expiring_ids,
         'expiring_count': len(expiring_ids),
+        'stale_quarantine_ids': stale_quarantine_ids,
+        'stale_quarantine_count': len(stale_quarantine_ids),
         'statuses': Batch.Status.choices,
         'warehouses': Warehouse.objects.filter(is_active=True),
         'selected_warehouse': selected_warehouse,
@@ -139,10 +148,12 @@ def batch_detail(request, pk):
         Batch.objects.select_related('product', 'supplier', 'location__warehouse'), pk=pk,
     )
     is_expiring_soon = expiring_soon_batches().filter(pk=batch.pk).exists()
+    is_stale_quarantine = stale_quarantine_batches().filter(pk=batch.pk).exists()
     return render(request, 'inventory/batch_detail.html', {
         'batch': batch,
         'movements': batch.movements.select_related('created_by').all(),
         'is_expiring_soon': is_expiring_soon,
+        'is_stale_quarantine': is_stale_quarantine,
     })
 
 

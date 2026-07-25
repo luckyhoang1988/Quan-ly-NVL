@@ -1,4 +1,4 @@
-"""URL app quality: nhập kết quả QC (mục 2c)."""
+"""URL app quality: nhập kết quả QC (mục 2c) + override (mục 2b)."""
 from django.urls import path
 
 from . import views
@@ -7,6 +7,7 @@ app_name = 'quality'
 
 urlpatterns = [
     path('grn/<int:grn_pk>/result/', views.qc_result, name='qc_result'),
+    path('inspection/<int:pk>/override/', views.qc_override, name='qc_override'),
 
     path('criteria/', views.qc_criteria_list, name='qc_criteria_list'),
     path('criteria/new/', views.qc_criteria_create, name='qc_criteria_create'),

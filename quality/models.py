@@ -54,6 +54,16 @@ class QcInspection(models.Model):
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # QC approval override (BACKLOG mục 2b) — Supervisor (Manager/Admin) ghi
+    # chú lý do xem lại 1 kết quả đã quyết định. Phạm vi đã chốt với user:
+    # CHỈ annotation, KHÔNG đảo ngược Batch/Inventory đã tạo bởi
+    # qc_pass/qc_fail/qc_partial_pass.
+    override_note = models.TextField(blank=True)
+    overridden_by = models.ForeignKey(
+        'accounts.User', on_delete=models.PROTECT, null=True, blank=True, related_name='qc_overrides',
+    )
+    overridden_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['-created_at']
 

@@ -96,6 +96,7 @@ class AuditLog(models.Model):
         DELETE = 'DELETE', 'Xoá'
         APPROVE = 'APPROVE', 'Duyệt'
         REJECT = 'REJECT', 'Từ chối'
+        OVERRIDE = 'OVERRIDE', 'Override'
         LOGIN = 'LOGIN', 'Đăng nhập'
         LOGOUT = 'LOGOUT', 'Đăng xuất'
         LOGIN_FAILED = 'LOGIN_FAILED', 'Đăng nhập thất bại'

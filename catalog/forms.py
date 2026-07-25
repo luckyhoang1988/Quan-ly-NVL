@@ -25,7 +25,7 @@ class ProductForm(forms.ModelForm):
         model = Product
         fields = [
             'product_code', 'name', 'category', 'uom', 'min_level', 'max_level',
-            'ordering_cost', 'holding_cost_rate', 'is_active',
+            'ordering_cost', 'holding_cost_rate', 'qc_sampling_method', 'qc_sampling_value', 'is_active',
         ]
 
     def __init__(self, *args, **kwargs):

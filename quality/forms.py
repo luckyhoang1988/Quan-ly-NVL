@@ -95,6 +95,21 @@ QcInspectionItemFormSet = inlineformset_factory(
 )
 
 
+class QcOverrideForm(forms.Form):
+    """QC approval override (BACKLOG mục 2b) — Supervisor ghi chú lý do xem lại
+    1 kết quả QC đã quyết định. Chỉ annotation nên bắt buộc phải có lý do.
+    """
+
+    override_note = forms.CharField(
+        widget=forms.Textarea(attrs={'rows': 3}), label='Lý do override',
+        help_text='Bắt buộc — ghi rõ vì sao xem lại kết quả này (không đảo ngược Batch/Inventory đã tạo).',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+
 class QcCriteriaForm(forms.ModelForm):
     """Tạo/sửa tiêu chuẩn QC master data (FR-QC-02)."""
 

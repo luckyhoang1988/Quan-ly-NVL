@@ -21,12 +21,16 @@ Mọi transition đều ghi ``AuditLog`` qua ``accounts.audit.log_action`` (hạ
 tầng có sẵn từ Phase 1) — một dòng log cho mỗi transaction nghiệp vụ (không
 log riêng từng Batch/GrnItem bị đụng tới bên trong).
 """
+import datetime
+import math
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
+from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
 from inventory.services import move_batch_qty, record_movement
 from receiving.models import Grn, GrnItem, GrnReturn
@@ -34,6 +38,33 @@ from warehouse.models import Warehouse
 from warehouse.services import get_default_location, get_scrap_warehouse, get_staging_warehouse
 
 from .models import QcInspection
+
+
+def suggested_sample_qty(product, qty_received):
+    """QC Criteria & Sampling (BACKLOG mục 2b): cỡ mẫu gợi ý theo cấu hình
+    ``Product.qc_sampling_method``/``qc_sampling_value`` — chỉ gợi ý hiển thị,
+    KHÔNG chặn quyết định PASS/FAIL/PARTIAL (mục 2c không yêu cầu đủ mẫu mới
+    được quyết định).
+
+    PERCENT: làm tròn lên ``qty_received * value / 100``, tối thiểu 1 nếu có
+    hàng nhận. FIXED: ``value``, nhưng không vượt quá ``qty_received``.
+    """
+    if qty_received <= 0:
+        return 0
+    if product.qc_sampling_method == Product.SamplingMethod.FIXED:
+        return min(product.qc_sampling_value, qty_received)
+    return max(1, min(math.ceil(qty_received * product.qc_sampling_value / 100), qty_received))
+
+
+def overdue_inspections(sla_hours=24):
+    """QC duration tracking / SLA alert (mục 2b): inspection còn ``PENDING_QC``
+    quá ``sla_hours`` kể từ ``started_at`` — tính on-the-fly khi load trang
+    (⏸️ theo CLAUDE.md, chưa cần Celery).
+    """
+    threshold = timezone.now() - datetime.timedelta(hours=sla_hours)
+    return QcInspection.objects.filter(
+        status=QcInspection.Result.PENDING_QC, started_at__lt=threshold,
+    ).select_related('grn').order_by('started_at')
 
 
 def _batch_code(grn_item, suffix=''):

@@ -16,6 +16,9 @@
     {% endif %}
   </div>
   <div class="card-body">
+    {% if overdue_qc_count %}
+      <div class="alert alert-danger py-2">⚠ {{ overdue_qc_count }} GRN đang QC quá hạn SLA 24h.</div>
+    {% endif %}
     <form method="get" class="row g-2 align-items-end mb-3">
       <div class="col-auto">
         <label class="form-label" for="status">Trạng thái</label>
@@ -63,7 +66,10 @@
             <td>{{ grn.grn_no }}</td>
             <td>{{ grn.supplier.name }}</td>
             <td>{{ grn.po.po_no }}</td>
-            <td><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></td>
+            <td>
+              <span class="badge bg-info text-dark">{{ grn.get_status_display }}</span>
+              {% if grn.pk in overdue_grn_ids %}<span class="badge bg-danger">Quá hạn QC</span>{% endif %}
+            </td>
             <td>{{ grn.items.count }}</td>
             <td>{{ grn.created_at|date:'d/m/Y H:i' }}</td>
             <td>

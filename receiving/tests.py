@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import AuditLog
 from catalog.models import Product
@@ -639,3 +640,37 @@ class GrnListPaginationFilterTest(TestCase):
         response = self.client.get(reverse('receiving:grn_list'), {'q': 'GRN-TEST-0001'})
         grn_nos = [g.grn_no for g in response.context['grns']]
         self.assertEqual(grn_nos, ['GRN-TEST-0001'])
+
+
+class GrnListOverdueQcBannerTest(TestCase):
+    """QC SLA alert 24h (mục 2b) hiện trên trang GRN list. ``TC-GRN-SLA-<seq>``."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.qc_user = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.client.force_login(self.staff)
+        supplier = Supplier.objects.create(supplier_code='NCC-A', name='NCC A')
+        po = PurchaseOrder.objects.create(po_no='PO-TEST-0001', supplier=supplier)
+        self.grn = Grn.objects.create(
+            grn_no='GRN-TEST-0001', po=po, supplier=supplier,
+            status=Grn.Status.QC_IN_PROGRESS, created_by=self.staff,
+        )
+
+    def _create_inspection(self, hours_ago):
+        return QcInspection.objects.create(
+            grn=self.grn, inspector=self.qc_user,
+            started_at=timezone.now() - datetime.timedelta(hours=hours_ago),
+        )
+
+    def test_TC_GRN_SLA_001_no_banner_when_within_sla(self):
+        self._create_inspection(hours_ago=1)
+        response = self.client.get(reverse('receiving:grn_list'))
+        self.assertNotContains(response, 'quá hạn SLA')
+
+    def test_TC_GRN_SLA_002_banner_shown_when_overdue(self):
+        self._create_inspection(hours_ago=25)
+        response = self.client.get(reverse('receiving:grn_list'))
+        self.assertContains(response, 'quá hạn SLA')
+        self.assertContains(response, 'Quá hạn QC')

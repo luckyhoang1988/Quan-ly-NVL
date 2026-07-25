@@ -22,6 +22,9 @@
     {% if expiring_count %}
       <div class="alert alert-warning py-2">⚠ {{ expiring_count }} lô đang hoạt động sẽ hết hạn trong vòng 30 ngày tới.</div>
     {% endif %}
+    {% if stale_quarantine_count %}
+      <div class="alert alert-danger py-2">⚠ {{ stale_quarantine_count }} lô Quarantine (Kho phế) đã tồn quá 7 ngày chưa xử lý.</div>
+    {% endif %}
 
     <form method="get" class="row g-2 align-items-end mb-3">
       <div class="col-auto">
@@ -71,7 +74,7 @@
         </thead>
         <tbody>
           {% for batch in batches %}
-          <tr class="{% if batch.status == 'EXPIRED' %}table-danger{% elif batch.pk in expiring_ids %}table-warning{% endif %}">
+          <tr class="{% if batch.status == 'EXPIRED' %}table-danger{% elif batch.pk in stale_quarantine_ids %}table-danger{% elif batch.pk in expiring_ids %}table-warning{% endif %}">
             <td>{{ batch.batch_code }}</td>
             <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
             <td>{{ batch.supplier.name }}</td>
@@ -85,6 +88,9 @@
             <td>
               {% if batch.pk in expiring_ids %}
                 <span class="badge bg-warning text-dark">Sắp hết hạn</span>
+              {% endif %}
+              {% if batch.pk in stale_quarantine_ids %}
+                <span class="badge bg-danger">Quarantine quá 7 ngày</span>
               {% endif %}
             </td>
             <td>

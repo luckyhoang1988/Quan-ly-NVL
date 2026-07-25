@@ -23,6 +23,9 @@
     {% elif batch.status == 'EXPIRED' %}
       <div class="alert alert-danger py-2">⚠ Lô này đã hết hạn.</div>
     {% endif %}
+    {% if is_stale_quarantine %}
+      <div class="alert alert-danger py-2">⚠ Lô Quarantine này đã tồn quá 7 ngày chưa xử lý (scrap/return/rework).</div>
+    {% endif %}
 
     <dl class="row mb-0">
       <dt class="col-sm-3">Sản phẩm</dt>

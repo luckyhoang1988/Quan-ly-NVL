@@ -15,8 +15,8 @@ from warehouse.models import Location, Warehouse
 
 from .models import Batch, Inventory, StockMovement, StockTransfer
 from .services import (
-    calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, suggest_fifo_batches,
-    sync_expired_batches, transfer_stock,
+    calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, stale_quarantine_batches,
+    suggest_fifo_batches, sync_expired_batches, transfer_stock,
 )
 
 User = get_user_model()
@@ -166,6 +166,42 @@ class ExpiredBatchSyncServiceTest(TestCase):
             'LOT-Q', self.today + datetime.timedelta(days=5), status=Batch.Status.QUARANTINE)
         result = list(expiring_soon_batches(days=30))
         self.assertNotIn(quarantine, result)
+
+
+class StaleQuarantineBatchesTest(TestCase):
+    """``stale_quarantine_batches`` (BACKLOG mục 2c "Quarantine batch" — alert
+    quarantine > 7 ngày, alert-only, không có scrap/return/rework tự động).
+    ``TC-INV-QTN-<seq>``.
+    """
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+
+    def _batch(self, code, status=Batch.Status.QUARANTINE, qty=50):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier, location=self.location,
+            qty_received=qty, status=status,
+        )
+
+    def test_TC_INV_QTN_001_quarantine_batch_past_7_days_flagged(self):
+        batch = self._batch('LOT-OLD')
+        Batch.objects.filter(pk=batch.pk).update(created_at=timezone.now() - datetime.timedelta(days=8))
+        result = list(stale_quarantine_batches())
+        self.assertIn(batch, result)
+
+    def test_TC_INV_QTN_002_quarantine_batch_within_7_days_not_flagged(self):
+        batch = self._batch('LOT-NEW')
+        result = list(stale_quarantine_batches())
+        self.assertNotIn(batch, result)
+
+    def test_TC_INV_QTN_003_active_batch_not_flagged_even_if_old(self):
+        batch = self._batch('LOT-ACTIVE', status=Batch.Status.ACTIVE)
+        Batch.objects.filter(pk=batch.pk).update(created_at=timezone.now() - datetime.timedelta(days=8))
+        result = list(stale_quarantine_batches())
+        self.assertNotIn(batch, result)
 
 
 class FifoSuggestionServiceTest(TestCase):
@@ -391,6 +427,26 @@ class BatchViewTest(TestCase):
         batch = self._batch('LOT-FAR', self.today + datetime.timedelta(days=90))
         response = self.client.get(reverse('inventory:batch_detail', args=[batch.pk]))
         self.assertFalse(response.context['is_expiring_soon'])
+
+    def test_TC_INV_BATCH_010_list_flags_stale_quarantine_batch(self):
+        old = self._batch('LOT-OLD', status=Batch.Status.QUARANTINE)
+        Batch.objects.filter(pk=old.pk).update(created_at=timezone.now() - datetime.timedelta(days=8))
+        new = self._batch('LOT-NEW', status=Batch.Status.QUARANTINE)
+        response = self.client.get(reverse('inventory:batch_list'))
+        self.assertEqual(response.context['stale_quarantine_count'], 1)
+        self.assertIn(old.pk, response.context['stale_quarantine_ids'])
+        self.assertNotIn(new.pk, response.context['stale_quarantine_ids'])
+
+    def test_TC_INV_BATCH_011_detail_flags_stale_quarantine(self):
+        batch = self._batch('LOT-OLD', status=Batch.Status.QUARANTINE)
+        Batch.objects.filter(pk=batch.pk).update(created_at=timezone.now() - datetime.timedelta(days=8))
+        response = self.client.get(reverse('inventory:batch_detail', args=[batch.pk]))
+        self.assertTrue(response.context['is_stale_quarantine'])
+
+    def test_TC_INV_BATCH_012_detail_not_flagged_when_quarantine_recent(self):
+        batch = self._batch('LOT-NEW', status=Batch.Status.QUARANTINE)
+        response = self.client.get(reverse('inventory:batch_detail', args=[batch.pk]))
+        self.assertFalse(response.context['is_stale_quarantine'])
 
     def test_TC_INV_BATCH_009_detail_shows_related_movements(self):
         batch = self._batch('LOT-0001')

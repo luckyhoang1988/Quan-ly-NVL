@@ -20,7 +20,7 @@ from accounts.models import AuditLog
 from accounts.pagination import paginate_queryset
 from partners.models import Supplier
 from purchasing.services import sync_po_status
-from quality.services import start_qc
+from quality.services import overdue_inspections, start_qc
 
 from .forms import GrnForm, GrnItemFormSet, ReceiveQtyFormSet, SubmitToQcForm
 from .models import Grn, GrnReturn
@@ -71,6 +71,8 @@ def grn_list(request):
     q = request.GET.get('q', '').strip()
     if q:
         grns = grns.filter(grn_no__icontains=q)
+    overdue_grn_ids = set(overdue_inspections().values_list('grn_id', flat=True))
+
     page_obj, page_size = paginate_queryset(request, grns)
     return render(request, 'receiving/grn_list.html', {
         'grns': page_obj,
@@ -82,6 +84,8 @@ def grn_list(request):
         'selected_status': selected_status,
         'selected_supplier': selected_supplier,
         'q': q,
+        'overdue_grn_ids': overdue_grn_ids,
+        'overdue_qc_count': len(overdue_grn_ids),
     })
 
 
@@ -98,6 +102,7 @@ def grn_detail(request, pk):
         'grn': grn,
         'can_update': request.user.can('update', 'grn'),
         'can_qc': request.user.can('approve', 'qc'),
+        'can_override_qc': request.user.can('override', 'qc'),
         'can_close': can_close,
         'can_manage_return': request.user.can('update', 'grn'),
         'can_approve_return': request.user.can('approve', 'grn'),

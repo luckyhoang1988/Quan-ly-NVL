@@ -23,24 +23,32 @@ MODULES = {
 }
 
 # Hành động (FR-USER-04: Create / Read / Update / Delete / Approve).
+# 'override' bổ sung riêng cho QC approval override (mục 2b/2c) — Supervisor
+# (Manager/Admin) ghi chú override lên 1 kết quả QC đã quyết định, tách biệt
+# với 'approve' (mà QC Inspector cũng có) vì override đúng nghĩa là "người
+# khác xem lại quyết định", không phải người ra quyết định ban đầu.
 ACTIONS = {
     'create': 'Create',
     'read': 'Read',
     'update': 'Update',
     'delete': 'Delete',
     'approve': 'Approve',
+    'override': 'Override',
 }
 
 # Ma trận: role -> module -> set(action).
 # - Phần C/R/U/D: chép nguyên bảng Permission Matrix ở BACKLOG mục 1a.
 # - Cột Approve: theo phương án "Theo nghiệp vụ" (user chốt ở bước A2):
 #     GRN/GIN/Opname/PO/Reports -> Manager + Admin;  QC -> QC Inspector + Manager + Admin.
+# - 'override' chỉ gán cho QC module, Manager + Admin (QC Inspector KHÔNG có —
+#   xem BACKLOG mục 2b "QC approval override", phạm vi đã chốt: chỉ ghi chú,
+#   không đảo giao dịch Batch/Inventory).
 ROLE_PERMISSIONS = {
     'MANAGER': {
         'grn': {'create', 'read', 'update', 'delete', 'approve'},   # CRUD + approve
         'gin': {'create', 'read', 'update', 'delete', 'approve'},    # CRUD + approve
         'opname': {'create', 'read', 'update', 'delete', 'approve'}, # CRUD + approve
-        'qc': {'read', 'approve'},                                   # R + approve
+        'qc': {'read', 'approve', 'override'},                       # R + approve + override
         'po': {'create', 'read', 'update', 'delete', 'approve'},     # CRUD + approve
         'reports': {'read', 'approve'},                              # R + approve
     },

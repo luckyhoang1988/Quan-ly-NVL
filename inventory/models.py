@@ -26,7 +26,6 @@ class Inventory(models.Model):
     warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='inventories')
     qty_on_hand = models.PositiveIntegerField(default=0, help_text='BR-WM-001: không cho âm.')
     qty_reserved = models.PositiveIntegerField(default=0)
-    qty_quarantine = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -5,7 +5,7 @@ from .models import Batch, Inventory, StockMovement, StockTransfer
 
 @admin.register(Inventory)
 class InventoryAdmin(admin.ModelAdmin):
-    list_display = ('product', 'warehouse', 'qty_on_hand', 'qty_reserved', 'qty_available', 'qty_quarantine')
+    list_display = ('product', 'warehouse', 'qty_on_hand', 'qty_reserved', 'qty_available')
     list_filter = ('warehouse',)
     search_fields = ('product__product_code', 'product__name')
 

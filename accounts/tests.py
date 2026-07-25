@@ -71,6 +71,7 @@ class RBACMatrixTest(TestCase):
         self.assertTrue(u.can('approve', 'qc'))    # QC duyệt kết quả QC
         self.assertTrue(u.can('create', 'qc'))
         self.assertFalse(u.can('delete', 'qc'))    # QC chỉ CRU, không có Delete
+        self.assertFalse(u.can('override', 'qc'))  # override -> Manager/Admin, không phải QC Inspector
         self.assertFalse(u.can('approve', 'grn'))  # KHÔNG duyệt GRN
         self.assertFalse(u.can('create', 'grn'))   # trên GRN chỉ Read
 
@@ -94,7 +95,9 @@ class RBACMatrixTest(TestCase):
             self.assertTrue(u.can('approve', m), f'MANAGER thiếu approve_{m}')
             self.assertTrue(u.can('delete', m), f'MANAGER thiếu delete_{m}')
         self.assertTrue(u.can('approve', 'qc'))
-        self.assertFalse(u.can('create', 'qc'))       # trên QC chỉ R + approve
+        self.assertFalse(u.can('create', 'qc'))       # trên QC chỉ R + approve + override
+        self.assertTrue(u.can('override', 'qc'))      # QC approval override (mục 2b)
+        self.assertFalse(u.can('override', 'grn'))    # override chỉ áp dụng cho QC
         self.assertTrue(u.can('approve', 'reports'))
         self.assertFalse(u.can('create', 'reports'))  # trên Reports chỉ R + approve
 

@@ -146,7 +146,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 *(GRN ở Phase 2 cần model này tồn tại để ghi `qty_on_hand`/tạo Batch — logic FIFO/EOQ/alert đầy đủ làm ở Phase 3)*
 
-- [x] Inventory model: `product_id` (FK), `warehouse_id` (FK), `qty_on_hand`, `qty_reserved`, `qty_available` (computed), `qty_quarantine` — unique per (product, warehouse); `qty_available` là property, không lưu cột riêng
+- [x] Inventory model: `product_id` (FK), `warehouse_id` (FK), `qty_on_hand`, `qty_reserved`, `qty_available` (computed) — unique per (product, warehouse); `qty_available` là property, không lưu cột riêng. Không có cột `qty_quarantine` riêng — từ khi tách kho theo `warehouse_type` (Phase 3, xem CLAUDE.md), số lượng quarantine đã có sẵn qua dòng `Inventory` của kho SCRAP nên field cũ (thiết kế trước khi có 3-loại-kho) đã bị xoá để tránh trùng state với `qty_on_hand` của kho SCRAP.
 - [x] Batch model: `product_id` (FK), `batch_code`, `mfg_date`, `exp_date`, `qty_received`, `qty_used`, `qty_available` (computed), `status` (enum: ACTIVE/PARTIAL_USED/QUARANTINE/EXPIRED/CLOSED, mặc định ACTIVE), `supplier_id` (FK), `location_id` (FK) — chưa có view/form CRUD, chưa có transition logic (dời Phase 2/3), chỉ model + admin
 
 ### ✅ Definition of Done — Phase 1
@@ -202,11 +202,11 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] **FR-QC-06** `SHOULD` — Hỗ trợ upload hình ảnh evidence
 
 #### QC Criteria & Sampling
-- [ ] **Sampling method**: % based (default 10%) hoặc fixed qty (config per SKU)
+- [x] **Sampling method**: % based (default 10%) hoặc fixed qty (config per SKU) — `Product.qc_sampling_method`/`qc_sampling_value` (`catalog/models.py`), gợi ý cỡ mẫu qua `quality.services.suggested_sample_qty()`, hiện ở `qc_result.html`; chỉ gợi ý, không chặn quyết định PASS/FAIL/PARTIAL
 - [x] **QC Criteria master data**: per category (Bột mỳ, Đường...), mỗi criteria có name/pass_rule/fail_rule, cho phép upload ảnh reference
 - [x] **Result tracking**: mỗi item trong sample ghi PASS/FAIL từng criteria, không chỉ overall result
-- [ ] **QC duration tracking**: log start/end time, alert nếu > SLA (24h) — ⏸️ tính on-the-fly khi load trang QC dashboard, chưa cần Celery
-- [ ] **QC approval override**: Supervisor có thể override kết quả (ghi chú lý do)
+- [x] **QC duration tracking**: log start/end time (`QcInspection.started_at`/`completed_at` có sẵn), alert nếu > SLA (24h) — `quality.services.overdue_inspections()`, ⏸️ tính on-the-fly khi load trang `receiving:grn_list` (banner) + badge riêng ở `quality:qc_result`, chưa cần Celery
+- [x] **QC approval override**: Supervisor (Manager/Admin — permission riêng `can_override_qc`, KHÔNG phải QC Inspector) override kết quả (ghi chú lý do) qua `quality:qc_override`, ghi `QcInspection.override_note`/`overridden_by`/`overridden_at` + AuditLog — **alert-only/annotation-only** (đã chốt với user): KHÔNG đảo ngược Batch/Inventory đã tạo bởi qc_pass/qc_fail/qc_partial_pass
 
 ### 2c. GRN ↔ QC Integration & Batch Lifecycle (dùng chung cho cả 2)
 
@@ -219,7 +219,9 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] **Batch.grn_item** (FK nullable, `on_delete=PROTECT`, `inventory/models.py`): trace batch về đúng `GrnItem` sinh ra nó; copy sang batch con mỗi lần `move_batch_qty` tách, giữ lineage Kho chờ → MAIN/SCRAP qua nhiều lần tách
 - [x] **Batch status enum**: ACTIVE, PARTIAL_USED, QUARANTINE, EXPIRED, CLOSED — định nghĩa ở `inventory` app
 - [x] `qc_pass`/`qc_partial_pass` chỉ nhận vị trí đích thuộc kho `warehouse_type=MAIN` (`ValidationError` nếu không), `inventory.services.transfer_stock` chặn điều chuyển thủ công có nguồn là Kho chờ (phải qua QC) — 2 hàng rào giữ đúng ý nghĩa "phải qua QC"
-- [ ] **Quarantine batch**: không thể xuất (GIN reject), admin quyết định scrap/return/rework, alert nếu quarantine > 7 ngày (⏸️ tính on-the-fly, chưa cần Celery) — thuộc Phase 3 (GIN), chưa làm
+- [x] **Quarantine batch — không thể xuất**: GIN chỉ FIFO chọn batch `status=ACTIVE` tại kho `MAIN`, `GinForm`/`Gin.clean()` chặn kho STAGING/SCRAP — QUARANTINE (luôn nằm ở Kho phế/SCRAP) tự động bị loại (test riêng, xem mục Phase 3 GIN)
+- [x] **Quarantine batch — alert > 7 ngày**: `inventory.services.stale_quarantine_batches()`, ⏸️ tính on-the-fly khi load trang `inventory:batch_list` (banner + badge từng dòng) và `inventory:batch_detail`, chưa cần Celery
+- [ ] **Quarantine batch — disposition scrap/return/rework**: admin thao tác xử lý lô Quarantine (scrap hẳn/trả NCC/tái chế) — **chưa làm, ngoài phạm vi round này** (đã chốt với user: chỉ làm alert trước)
 
 #### GRN_RETURN Workflow (tự động tạo từ QC FAIL)
 - [x] State: PENDING → APPROVED → RETURNED → CLOSED — `approve_return`/`mark_return_returned`/`close_return` (`receiving/services.py`), view + nút "Duyệt"/"Xác nhận đã trả"/"Đóng" ở `grn_detail.html` (duyệt/đóng cần quyền `approve`; xác nhận đã trả chỉ cần `update` — STAFF làm được)
@@ -257,7 +259,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 #### Batch → Inventory Link
 - [ ] `Inventory.qty_on_hand` phản ánh tổng batch vật lý còn trong kho (kể cả EXPIRED — hàng vẫn nằm đó); nhưng FIFO/GIN chỉ được chọn batch `status = ACTIVE`
-- [ ] Batch `QUARANTINE` tính riêng vào `qty_quarantine`, KHÔNG cộng vào `qty_available`
+- [x] Batch `QUARANTINE` tính riêng, KHÔNG cộng vào `qty_available` — không dùng cột `qty_quarantine` riêng (đã xoá, xem mục 1f), thay vào đó `move_batch_qty()` chuyển batch QUARANTINE sang kho SCRAP nên nó chỉ nằm trong `Inventory(warehouse=SCRAP).qty_on_hand`, tách biệt hoàn toàn khỏi `qty_available` của kho MAIN
 
 > ✅ FR-INV-01/02 đã lên UI: `inventory` app có `batch_list`/`batch_detail` (danh sách + chi tiết lô, kèm lịch sử `StockMovement`) và banner cảnh báo lô `ACTIVE` sắp hết hạn (`expiring_soon_batches()`, tính on-the-fly mỗi lần load trang — ⏸️ chưa cần Celery/cron).
 > ✅ FR-INV-05 (EOQ) đã lên UI: `inventory/services.py::calculate_eoq` (D = tổng qty ISSUE 365 ngày qua từ `StockMovement`, S/H từ 2 field mới `Product.ordering_cost`/`holding_cost_rate` cộng đơn giá bình quân từ lịch sử `PurchaseOrderItem.unit_price`) — view `inventory:product_eoq`, link "Tính EOQ" ở `inventory_list.html`. Thiếu dữ liệu thì hiển thị rõ lý do, không tự suy đoán giá trị mặc định. Test `EoqServiceTest`/`EoqViewTest` (`inventory/tests.py`).

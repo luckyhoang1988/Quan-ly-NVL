@@ -45,6 +45,20 @@ def expiring_soon_batches(days=30, warehouse=None):
     return qs.order_by('exp_date')
 
 
+def stale_quarantine_batches(days=7, warehouse=None):
+    """BACKLOG mục 2c "Quarantine batch": lô ``QUARANTINE`` (QC fail/partial,
+    nằm ở Kho phế) đã tạo quá ``days`` ngày mà chưa được xử lý — alert-only,
+    KHÔNG có thao tác scrap/return/rework tự động (phạm vi đã chốt với user).
+    """
+    threshold = timezone.now() - datetime.timedelta(days=days)
+    qs = Batch.objects.filter(
+        status=Batch.Status.QUARANTINE, created_at__lt=threshold,
+    ).select_related('product', 'location__warehouse')
+    if warehouse is not None:
+        qs = qs.filter(location__warehouse=warehouse)
+    return qs.order_by('created_at')
+
+
 def suggest_fifo_batches(product, warehouse, qty_needed):
     """FR-INV-04/FR-GIN-02: gợi ý danh sách batch FIFO đáp ứng ``qty_needed``.
 

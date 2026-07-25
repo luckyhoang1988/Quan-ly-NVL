@@ -100,6 +100,8 @@
             <th>Kết quả</th>
             <th>Bắt đầu</th>
             <th>Hoàn thành</th>
+            <th>Override</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -110,6 +112,20 @@
             <td>{{ inspection.get_status_display }}</td>
             <td>{{ inspection.started_at|date:'d/m/Y H:i'|default:"—" }}</td>
             <td>{{ inspection.completed_at|date:'d/m/Y H:i'|default:"—" }}</td>
+            <td>
+              {% if inspection.overridden_at %}
+                <span class="badge bg-warning text-dark" title="{{ inspection.override_note }}">
+                  {{ inspection.overridden_by.username|default:'—' }} — {{ inspection.overridden_at|date:'d/m/Y H:i' }}
+                </span>
+              {% endif %}
+            </td>
+            <td>
+              {% if can_override_qc and inspection.status != 'PENDING_QC' %}
+                <a href="{% url 'quality:qc_override' inspection.pk %}" class="btn btn-sm btn-outline-warning">
+                  <i class="bi bi-arrow-counterclockwise"></i> Override
+                </a>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>

@@ -14,6 +14,9 @@
         <h1 class="panel-title">Nhập kết quả QC — {{ grn.grn_no }} ({{ inspection.qc_no }})</h1>
       </div>
       <div class="card-body">
+        {% if is_overdue %}
+          <div class="alert alert-danger py-2">⚠ QC đã quá hạn SLA 24h (bắt đầu lúc {{ inspection.started_at|date:'d/m/Y H:i' }}).</div>
+        {% endif %}
         <form method="post" novalidate>
           {% csrf_token %}
           {% if result_form.non_field_errors %}
@@ -43,6 +46,7 @@
                 <tr>
                   <th>Sản phẩm</th>
                   <th>Qty thực nhận</th>
+                  <th>Cỡ mẫu gợi ý</th>
                   <th>Qty đạt QC</th>
                 </tr>
               </thead>
@@ -52,6 +56,7 @@
                   {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
                   <td>{{ item_form.instance.product.product_code }} — {{ item_form.instance.product.name }}</td>
                   <td>{{ item_form.instance.qty_received }}</td>
+                  <td>{{ item_form.instance.suggested_sample_qty }}</td>
                   <td>
                     {{ item_form.qty_pass }}
                     {% for error in item_form.qty_pass.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}

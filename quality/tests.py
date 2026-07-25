@@ -9,6 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
@@ -19,7 +20,15 @@ from warehouse.models import Location, Warehouse
 
 from .forms import QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem
-from .services import _get_staging_batch, qc_fail, qc_partial_pass, qc_pass, start_qc
+from .services import (
+    _get_staging_batch,
+    overdue_inspections,
+    qc_fail,
+    qc_partial_pass,
+    qc_pass,
+    start_qc,
+    suggested_sample_qty,
+)
 
 User = get_user_model()
 
@@ -79,6 +88,29 @@ class QcCriteriaModelTest(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 QcCriteria.objects.create(category='Bột mì', name='Ngoại hình')
+
+
+class SuggestedSampleQtyTest(TestCase):
+    """Sampling method config per SKU (mục 2b). ``TC-QC-SAMPLE-<seq>``."""
+
+    def test_TC_QC_SAMPLE_001_percent_rounds_up_and_caps_at_qty_received(self):
+        product = Product.objects.create(
+            product_code='NVL-P', name='Bột mì', uom='kg',
+            qc_sampling_method=Product.SamplingMethod.PERCENT, qc_sampling_value=10)
+        self.assertEqual(suggested_sample_qty(product, 100), 10)
+        self.assertEqual(suggested_sample_qty(product, 25), 3)  # ceil(2.5) = 3
+        self.assertEqual(suggested_sample_qty(product, 5), 1)  # ceil(0.5) = 1, min 1
+
+    def test_TC_QC_SAMPLE_002_fixed_capped_at_qty_received(self):
+        product = Product.objects.create(
+            product_code='NVL-F', name='Đường', uom='kg',
+            qc_sampling_method=Product.SamplingMethod.FIXED, qc_sampling_value=20)
+        self.assertEqual(suggested_sample_qty(product, 100), 20)
+        self.assertEqual(suggested_sample_qty(product, 5), 5)  # không vượt qty_received
+
+    def test_TC_QC_SAMPLE_003_zero_qty_received_returns_zero(self):
+        product = Product.objects.create(product_code='NVL-Z', name='Muối', uom='kg')
+        self.assertEqual(suggested_sample_qty(product, 0), 0)
 
 
 class QcServiceTestBase(TestCase):
@@ -156,6 +188,28 @@ class StartQcTest(QcServiceTestBase):
         self.staging_warehouse.save(update_fields=['is_active'])
         with self.assertRaises(ValidationError):
             self._start_qc()
+
+
+class OverdueInspectionsTest(QcServiceTestBase):
+    """QC SLA alert 24h (mục 2b). ``TC-QC-SLA-<seq>``."""
+
+    def test_TC_QC_SLA_001_not_overdue_within_sla(self):
+        self._start_qc()
+        self.assertEqual(overdue_inspections().count(), 0)
+
+    def test_TC_QC_SLA_002_overdue_past_24h_still_pending(self):
+        inspection = self._start_qc()
+        QcInspection.objects.filter(pk=inspection.pk).update(
+            started_at=timezone.now() - datetime.timedelta(hours=25))
+        self.assertEqual(list(overdue_inspections()), [
+            QcInspection.objects.get(pk=inspection.pk)])
+
+    def test_TC_QC_SLA_003_not_overdue_once_completed(self):
+        inspection = self._start_qc()
+        QcInspection.objects.filter(pk=inspection.pk).update(
+            started_at=timezone.now() - datetime.timedelta(hours=25))
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        self.assertEqual(overdue_inspections().count(), 0)
 
 
 class QcPassTransactionTest(QcServiceTestBase):
@@ -388,6 +442,65 @@ class QcResultViewTest(QcServiceTestBase):
         response = self.client.post(self._url(), self._payload(action='pass'))
         self.grn.refresh_from_db()
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
+
+
+class QcOverrideViewTest(QcServiceTestBase):
+    """QC approval override (BACKLOG mục 2b) — ``TC-QC-OVERRIDE-<seq>``.
+
+    Phạm vi đã chốt với user: CHỈ ghi ``override_note``/``overridden_by``/
+    ``overridden_at`` — KHÔNG đảo ngược Batch/Inventory (transaction gốc của
+    ``qc_pass`` đã có test riêng ở ``QcPassTransactionTest``); test ở đây xác
+    nhận đúng permission (Manager/Admin, không phải QC Inspector) và bất biến
+    "không đụng transaction gốc".
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.manager = User.objects.create_user(
+            username='qlk', password='qlk-pass-123', role=User.Role.MANAGER)
+        self.inspection = self._start_qc()
+        qc_pass(self.inspection, actor=self.qc_user, location=self.location)
+        self.client.force_login(self.manager)
+
+    def _url(self, inspection=None):
+        return reverse('quality:qc_override', args=[(inspection or self.inspection).pk])
+
+    def test_TC_QC_OVERRIDE_001_manager_can_submit_override_note(self):
+        inv_before = Inventory.objects.get(product=self.product, warehouse=self.warehouse).qty_on_hand
+        response = self.client.post(self._url(), {'override_note': 'Xem lại theo yêu cầu supplier.'})
+        self.inspection.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[self.grn.pk]))
+        self.assertEqual(self.inspection.override_note, 'Xem lại theo yêu cầu supplier.')
+        self.assertEqual(self.inspection.overridden_by, self.manager)
+        self.assertIsNotNone(self.inspection.overridden_at)
+        # Annotation-only: KHÔNG đảo ngược status/Batch/Inventory đã tạo bởi qc_pass.
+        self.assertEqual(self.inspection.status, QcInspection.Result.PASS)
+        inv_after = Inventory.objects.get(product=self.product, warehouse=self.warehouse).qty_on_hand
+        self.assertEqual(inv_after, inv_before)
+
+    def test_TC_QC_OVERRIDE_002_qc_inspector_forbidden(self):
+        self.client.force_login(self.qc_user)
+        response = self.client.post(self._url(), {'override_note': 'x'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_OVERRIDE_003_read_only_role_forbidden(self):
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_OVERRIDE_004_empty_note_rejected(self):
+        response = self.client.post(self._url(), {'override_note': ''})
+        self.assertEqual(response.status_code, 200)
+        self.inspection.refresh_from_db()
+        self.assertIsNone(self.inspection.overridden_at)
+
+    def test_TC_QC_OVERRIDE_005_pending_inspection_rejected(self):
+        grn2 = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        GrnItem.objects.create(
+            grn=grn2, product=self.product, qty_ordered=5, qty_received=5, unit_price=Decimal('15000.00'))
+        pending_inspection = start_qc(grn2, self.qc_user, actor=self.qc_user)
+        response = self.client.get(self._url(pending_inspection))
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn2.pk]))
 
 
 class QcInspectionItemResultViewTest(QcServiceTestBase):

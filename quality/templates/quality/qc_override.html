@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}Override QC — {{ inspection.qc_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'receiving:grn_list' %}">GRN</a> <span class="mx-1">/</span>
+  <a href="{% url 'receiving:grn_detail' inspection.grn_id %}">{{ inspection.grn.grn_no }}</a> <span class="mx-1">/</span>
+  <span class="current">Override QC</span>
+{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Override kết quả QC — {{ inspection.qc_no }}</h1>
+      </div>
+      <div class="card-body">
+        <div class="alert alert-warning py-2">
+          ⚠ Đây chỉ là ghi chú xem lại — KHÔNG đảo ngược Batch/Inventory đã tạo từ kết quả gốc.
+        </div>
+        <dl class="row mb-3">
+          <dt class="col-sm-4">Kết quả gốc</dt>
+          <dd class="col-sm-8"><span class="badge bg-secondary">{{ inspection.get_status_display }}</span></dd>
+          <dt class="col-sm-4">Người kiểm</dt>
+          <dd class="col-sm-8">{{ inspection.inspector.username }}</dd>
+          <dt class="col-sm-4">Hoàn thành lúc</dt>
+          <dd class="col-sm-8">{{ inspection.completed_at|date:'d/m/Y H:i'|default:'—' }}</dd>
+          {% if inspection.overridden_at %}
+          <dt class="col-sm-4">Đã override trước đó</dt>
+          <dd class="col-sm-8">{{ inspection.overridden_by.username|default:'—' }} lúc {{ inspection.overridden_at|date:'d/m/Y H:i' }}</dd>
+          {% endif %}
+        </dl>
+        <form method="post" novalidate>
+          {% csrf_token %}
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.override_note.id_for_label }}">{{ form.override_note.label }}</label>
+            {{ form.override_note }}
+            {% if form.override_note.help_text %}<div class="form-text">{{ form.override_note.help_text }}</div>{% endif %}
+            {% for error in form.override_note.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-warning"><i class="bi bi-arrow-counterclockwise"></i> Ghi override</button>
+            <a class="btn btn-link" href="{% url 'receiving:grn_detail' inspection.grn_id %}">Huỷ</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -3,11 +3,12 @@ QC_IN_PROGRESS. View chỉ thu thập input rồi gọi thẳng transaction atom
 ``quality.services`` (đã có unit test riêng từng nhánh) — không lặp lại logic
 nghiệp vụ ở đây.
 
-Phân quyền: chốt 1 permission duy nhất — ``user.can('approve', 'qc')``. Theo
-Permission Matrix (BACKLOG mục 1a), quyền 'approve' trên module 'qc' chỉ QC/
-MANAGER/ADMIN có (STAFF/PURCHASING/ACCOUNTANT chỉ Read) — khớp đúng nhóm được
-phép ra quyết định PASS/FAIL/PARTIAL_PASS, kể cả case "Supervisor override"
-(mục 2b QC Criteria & Sampling).
+Phân quyền: quyền 'approve' trên module 'qc' (``user.can('approve', 'qc')``)
+chỉ QC/MANAGER/ADMIN có (STAFF/PURCHASING/ACCOUNTANT chỉ Read) — khớp đúng
+nhóm được phép ra quyết định PASS/FAIL/PARTIAL_PASS. Riêng "QC approval
+override" (mục 2b, Supervisor xem lại 1 kết quả đã quyết định) dùng permission
+RIÊNG ``user.can('override', 'qc')`` — chỉ MANAGER/ADMIN, không phải QC
+Inspector (người đã ra quyết định ban đầu) — xem ``qc_override``.
 """
 from functools import wraps
 
@@ -16,15 +17,16 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
 from accounts.pagination import paginate_queryset
 from receiving.models import Grn
 
-from .forms import QcCriteriaForm, QcInspectionItemFormSet, QcItemResultFormSet, QcResultForm
+from .forms import QcCriteriaForm, QcInspectionItemFormSet, QcItemResultFormSet, QcOverrideForm, QcResultForm
 from .models import QcCriteria, QcInspection
-from .services import qc_fail, qc_partial_pass, qc_pass
+from .services import overdue_inspections, qc_fail, qc_partial_pass, qc_pass, suggested_sample_qty
 
 
 def qc_permission_required(action):
@@ -75,6 +77,9 @@ def qc_result(request, grn_pk):
 
     result_form = QcResultForm(request.POST if action else None)
     formset = QcItemResultFormSet(request.POST if action else None, instance=grn, prefix='items')
+    for form in formset.forms:
+        form.instance.suggested_sample_qty = suggested_sample_qty(
+            form.instance.product, form.instance.qty_received)
     item_formset = QcInspectionItemFormSet(
         request.POST if items_submit else None, request.FILES if items_submit else None,
         instance=inspection, prefix='qcitems', form_kwargs={'grn': grn},
@@ -115,10 +120,44 @@ def qc_result(request, grn_pk):
             except ValidationError as exc:
                 messages.error(request, ' '.join(exc.messages))
 
+    is_overdue = overdue_inspections().filter(pk=inspection.pk).exists()
     return render(request, 'quality/qc_result.html', {
         'grn': grn, 'inspection': inspection, 'result_form': result_form, 'formset': formset,
         'item_formset': item_formset, 'criteria_ref': QcCriteria.objects.filter(is_active=True),
+        'is_overdue': is_overdue,
     })
+
+
+@qc_permission_required('override')
+def qc_override(request, pk):
+    """QC approval override (BACKLOG mục 2b) — Supervisor (Manager/Admin) ghi
+    chú lý do xem lại 1 kết quả QC đã quyết định (PASS/FAIL/PARTIAL_PASS).
+
+    Phạm vi đã chốt với user: CHỈ ghi ``override_note``/``overridden_by``/
+    ``overridden_at`` lên ``QcInspection`` — KHÔNG đảo ngược Batch/Inventory
+    đã tạo bởi ``qc_pass``/``qc_fail``/``qc_partial_pass``. Chỉ áp dụng cho
+    inspection đã có kết quả; ``PENDING_QC`` nên sửa trực tiếp qua
+    ``qc_result`` thay vì override.
+    """
+    inspection = get_object_or_404(QcInspection, pk=pk)
+    if inspection.status == QcInspection.Result.PENDING_QC:
+        messages.error(request, f'"{inspection.qc_no}" chưa có kết quả — không có gì để override.')
+        return redirect('receiving:grn_detail', pk=inspection.grn_id)
+
+    form = QcOverrideForm(request.POST or None, initial={'override_note': inspection.override_note})
+    if request.method == 'POST' and form.is_valid():
+        inspection.override_note = form.cleaned_data['override_note']
+        inspection.overridden_by = request.user
+        inspection.overridden_at = timezone.now()
+        inspection.save(update_fields=['override_note', 'overridden_by', 'overridden_at'])
+        log_action(
+            request.user, AuditLog.Action.OVERRIDE, target=inspection.grn,
+            description=f'Override QC {inspection.qc_no} (kết quả: {inspection.get_status_display()}).',
+            reason=form.cleaned_data['override_note'], ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã ghi chú override cho "{inspection.qc_no}".')
+        return redirect('receiving:grn_detail', pk=inspection.grn_id)
+    return render(request, 'quality/qc_override.html', {'inspection': inspection, 'form': form})
 
 
 @qc_permission_required('read')

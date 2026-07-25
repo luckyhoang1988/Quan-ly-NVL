@@ -27,6 +27,7 @@ class ProductCrudTest(TestCase):
         payload = {
             'product_code': 'NVL-0001', 'name': 'Bột mì', 'category': 'Nguyên liệu',
             'uom': 'kg', 'min_level': 10, 'max_level': 100, 'is_active': True,
+            'qc_sampling_method': Product.SamplingMethod.PERCENT, 'qc_sampling_value': 10,
         }
         payload.update(overrides)
         return payload
