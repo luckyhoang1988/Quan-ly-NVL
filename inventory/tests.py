@@ -11,12 +11,14 @@ from accounts.models import AuditLog
 from catalog.models import Product
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem
+from quality.models import QcInspection
+from receiving.models import Grn
 from warehouse.models import Location, Warehouse
 
-from .models import Batch, Inventory, StockMovement, StockTransfer
+from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 from .services import (
-    calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, stale_quarantine_batches,
-    suggest_fifo_batches, sync_expired_batches, transfer_stock,
+    accept_handoff, calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, reject_handoff,
+    stale_quarantine_batches, suggest_fifo_batches, sync_expired_batches, transfer_stock,
 )
 
 User = get_user_model()
@@ -941,3 +943,133 @@ class EoqViewTest(TestCase):
         response = self.client.get(reverse('inventory:product_eoq', args=[self.product.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Chưa đủ dữ liệu')
+
+
+class WarehouseHandoffViewTest(TestCase):
+    """Trang "Phiếu chờ nhận hàng" (Phase D, mục 6) — Nhận/Từ chối +
+    phân quyền ``can_decide_handoff``. ``TC-INV-HANDOFF-VIEW-<seq>``.
+    """
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        Location.objects.create(warehouse=self.scrap_warehouse, code='A-01')
+
+        self.qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.qc_user)
+        self.inspection = QcInspection.objects.create(grn=self.grn, inspector=self.qc_user)
+
+        self.assigned_staff = User.objects.create_user(
+            username='nvk-a', password='nvk-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.other_staff = User.objects.create_user(
+            username='nvk-b', password='nvk-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.manager = User.objects.create_user(
+            username='qlk', password='qlk-pass-123', role=User.Role.MANAGER,
+            department=User.Department.WAREHOUSE, is_manager=True)
+        self.outsider = User.objects.create_user(
+            username='qc2', password='qc-pass-123', role=User.Role.QC, department=User.Department.QC)
+
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier, location=self.location,
+            qty_received=20, status=Batch.Status.PENDING_RECEIPT,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=20)
+        self.handoff = WarehouseHandoff.objects.create(
+            batch=self.batch, qc_inspection=self.inspection, destination_warehouse=self.warehouse,
+            assigned_to=self.assigned_staff,
+        )
+
+    def test_TC_INV_HANDOFF_VIEW_001_login_required(self):
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertEqual(response.status_code, 302)
+
+    def test_TC_INV_HANDOFF_VIEW_002_assigned_staff_sees_it_in_queue(self):
+        self.client.force_login(self.assigned_staff)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_003_unrelated_staff_does_not_see_it(self):
+        self.client.force_login(self.other_staff)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertNotContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_004_manager_sees_all_pending(self):
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_005_assigned_staff_can_accept(self):
+        self.client.force_login(self.assigned_staff)
+        response = self.client.post(reverse('inventory:handoff_accept', args=[self.handoff.pk]))
+        self.assertRedirects(response, reverse('inventory:handoff_list'))
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.ACTIVE)
+
+    def test_TC_INV_HANDOFF_VIEW_006_unrelated_staff_forbidden_to_accept(self):
+        self.client.force_login(self.other_staff)
+        response = self.client.post(reverse('inventory:handoff_accept', args=[self.handoff.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.PENDING_RECEIPT)
+
+    def test_TC_INV_HANDOFF_VIEW_007_manager_can_accept_even_if_not_assigned(self):
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('inventory:handoff_accept', args=[self.handoff.pk]))
+        self.assertRedirects(response, reverse('inventory:handoff_list'))
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.ACTIVE)
+
+    def test_TC_INV_HANDOFF_VIEW_008_outsider_department_forbidden(self):
+        self.client.force_login(self.outsider)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertNotContains(response, self.batch.batch_code)
+        response = self.client.post(reverse('inventory:handoff_accept', args=[self.handoff.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_INV_HANDOFF_VIEW_009_reject_to_scrap_via_view(self):
+        self.client.force_login(self.assigned_staff)
+        response = self.client.post(reverse('inventory:handoff_reject', args=[self.handoff.pk]), {
+            'reason': 'Hàng ẩm mốc', 'destination': WarehouseHandoff.RejectDestination.TO_SCRAP,
+        })
+        self.assertRedirects(response, reverse('inventory:handoff_list'))
+        self.handoff.refresh_from_db()
+        self.assertEqual(self.handoff.status, WarehouseHandoff.Status.REJECTED)
+
+    def test_TC_INV_HANDOFF_VIEW_010_reject_without_reason_shows_error_message(self):
+        self.client.force_login(self.assigned_staff)
+        response = self.client.post(reverse('inventory:handoff_reject', args=[self.handoff.pk]), {
+            'reason': '', 'destination': WarehouseHandoff.RejectDestination.TO_SCRAP,
+        }, follow=True)
+        self.handoff.refresh_from_db()
+        self.assertEqual(self.handoff.status, WarehouseHandoff.Status.PENDING)
+        messages = list(response.context['messages'])
+        self.assertTrue(any('Bắt buộc nhập lý do' in str(m) for m in messages))
+
+    def test_TC_INV_HANDOFF_VIEW_011_unassigned_handoff_visible_only_to_destination_warehouse_staff(self):
+        self.handoff.assigned_to = None
+        self.handoff.save(update_fields=['assigned_to'])
+        self.warehouse.staff.add(self.other_staff)
+
+        self.client.force_login(self.other_staff)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertContains(response, self.batch.batch_code)
+
+        # assigned_staff không thuộc Warehouse.staff của kho đích (đã gán cụ thể other_staff) -> không thấy.
+        self.client.force_login(self.assigned_staff)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertNotContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_012_unassigned_handoff_falls_back_to_department_when_warehouse_staff_empty(self):
+        self.handoff.assigned_to = None
+        self.handoff.save(update_fields=['assigned_to'])
+        # Warehouse.staff rỗng cho kho đích -> fallback toàn bộ department=WAREHOUSE.
+        self.client.force_login(self.other_staff)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertContains(response, self.batch.batch_code)

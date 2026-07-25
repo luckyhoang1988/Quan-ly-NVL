@@ -101,9 +101,13 @@ def qc_result(request, grn_pk):
             location = result_form.cleaned_data['location']
             reason = result_form.cleaned_data['reason'] or 'QC Fail'
             ip_address = client_ip(request)
+            assigned_to = result_form.cleaned_data['assigned_to']
             try:
                 if action == 'pass':
-                    qc_pass(inspection, actor=request.user, location=location, ip_address=ip_address)
+                    qc_pass(
+                        inspection, actor=request.user, location=location, ip_address=ip_address,
+                        assigned_to=assigned_to,
+                    )
                 elif action == 'fail':
                     qc_fail(inspection, actor=request.user, reason=reason, ip_address=ip_address)
                 else:
@@ -113,7 +117,7 @@ def qc_result(request, grn_pk):
                     }
                     qc_partial_pass(
                         inspection, item_results, actor=request.user,
-                        location=location, ip_address=ip_address,
+                        location=location, ip_address=ip_address, assigned_to=assigned_to,
                     )
                 messages.success(request, f'Đã ghi kết quả QC cho "{grn.grn_no}".')
                 return redirect('receiving:grn_detail', pk=grn.pk)

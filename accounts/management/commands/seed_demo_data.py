@@ -22,7 +22,7 @@ from django.utils import timezone
 from accounts.models import User
 from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
-from inventory.services import sync_expired_batches
+from inventory.services import accept_handoff, sync_expired_batches
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from purchasing.services import approve_po, close_po, send_po, sync_po_status
@@ -383,11 +383,17 @@ class Command(BaseCommand):
             elif group == 'PARTIAL':
                 qty_pass = int(qty_received * 0.6)
                 qc_partial_pass(inspection, {grn_item.pk: qty_pass}, actor=qc_user, location=location)
+                # Phase D: batch phần PASS dừng ở PENDING_RECEIPT chờ kho xác nhận —
+                # demo data giả lập kho đã Nhận ngay để available_batches dùng được cho GIN bên dưới.
+                for handoff in inspection.handoffs.filter(status='PENDING'):
+                    accept_handoff(handoff, actor=manager)
                 available_batches.append({
                     'product': product, 'warehouse': warehouse, 'qty': qty_pass,
                 })
             else:  # PASS hoặc SPLIT_RECEIVE
                 qc_pass(inspection, actor=qc_user, location=location)
+                for handoff in inspection.handoffs.filter(status='PENDING'):
+                    accept_handoff(handoff, actor=manager)
                 # Batch hết hạn (EXPIRED_PO_INDEX) không đưa vào kế hoạch GIN — FIFO
                 # sẽ tự loại nó (BR-GIN-007), cố xuất sẽ báo lỗi "không đủ tồn kho".
                 if i != EXPIRED_PO_INDEX:

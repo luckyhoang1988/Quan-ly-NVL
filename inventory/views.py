@@ -9,19 +9,21 @@ trong Permission Matrix).
 """
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip
+from accounts.models import User
 from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from warehouse.models import Warehouse
 
 from .forms import StockTransferForm
-from .models import Batch, Inventory, StockTransfer
+from .models import Batch, Inventory, StockTransfer, WarehouseHandoff
 from .services import (
-    calculate_eoq, expiring_soon_batches, stale_quarantine_batches, sync_expired_batches, transfer_stock,
+    accept_handoff, calculate_eoq, expiring_soon_batches, reject_handoff, stale_quarantine_batches,
+    sync_expired_batches, transfer_stock,
 )
 
 
@@ -227,3 +229,80 @@ def product_eoq(request, pk):
         'product': product,
         'result': calculate_eoq(product),
     })
+
+
+def can_decide_handoff(user, handoff):
+    """Ai được Nhận/Từ chối 1 ``WarehouseHandoff`` (Phase D, mục 6):
+
+    Quản lý phòng Kho luôn được (oversight); nếu handoff chỉ định
+    ``assigned_to`` cụ thể thì chỉ đúng người đó; nếu để trống thì bất kỳ
+    nhân viên nào thuộc ``destination_warehouse.staff``, fallback toàn bộ
+    ``department=WAREHOUSE`` nếu kho đích chưa gán ai (mirror
+    ``inventory.services._handoff_recipients``).
+    """
+    if user.is_department_manager(User.Department.WAREHOUSE):
+        return True
+    if handoff.assigned_to_id:
+        return user.pk == handoff.assigned_to_id
+    staff_ids = set(handoff.destination_warehouse.staff.filter(is_active=True).values_list('pk', flat=True))
+    if staff_ids:
+        return user.pk in staff_ids
+    return user.department == User.Department.WAREHOUSE
+
+
+@login_required
+def handoff_list(request):
+    """Phiếu chờ nhận hàng (Phase D, mục 6): danh sách ``WarehouseHandoff``
+    PENDING mà ``request.user`` có quyền quyết định (xem ``can_decide_handoff``)
+    — quản lý phòng Kho thấy toàn bộ, NV kho chỉ thấy phiếu liên quan tới mình.
+    """
+    pending = WarehouseHandoff.objects.select_related(
+        'batch__product', 'destination_warehouse', 'assigned_to', 'qc_inspection__grn',
+    ).filter(status=WarehouseHandoff.Status.PENDING)
+    if request.user.is_department_manager(User.Department.WAREHOUSE):
+        handoffs = list(pending)
+    else:
+        handoffs = [h for h in pending if can_decide_handoff(request.user, h)]
+
+    page_obj, page_size = paginate_queryset(request, handoffs)
+    return render(request, 'inventory/handoff_list.html', {
+        'handoffs': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'reject_destinations': WarehouseHandoff.RejectDestination.choices,
+    })
+
+
+@login_required
+def handoff_accept(request, pk):
+    """NV kho "Nhận" 1 phiếu bàn giao — batch PENDING_RECEIPT -> ACTIVE."""
+    handoff = get_object_or_404(WarehouseHandoff, pk=pk)
+    if not can_decide_handoff(request.user, handoff):
+        raise PermissionDenied('Không có quyền xác nhận nhận hàng cho phiếu này.')
+    if request.method == 'POST':
+        try:
+            accept_handoff(handoff, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã nhận hàng cho lô "{handoff.batch.batch_code}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('inventory:handoff_list')
+
+
+@login_required
+def handoff_reject(request, pk):
+    """NV kho "Từ chối" 1 phiếu bàn giao — bắt buộc lý do + chọn xử lý
+    (chuyển kho phế / trả về QC).
+    """
+    handoff = get_object_or_404(WarehouseHandoff, pk=pk)
+    if not can_decide_handoff(request.user, handoff):
+        raise PermissionDenied('Không có quyền xử lý phiếu này.')
+    if request.method == 'POST':
+        reason = request.POST.get('reason', '').strip()
+        destination = request.POST.get('destination', '')
+        try:
+            reject_handoff(
+                handoff, actor=request.user, reason=reason, destination=destination,
+                ip_address=client_ip(request),
+            )
+            messages.success(request, f'Đã từ chối nhận lô "{handoff.batch.batch_code}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('inventory:handoff_list')

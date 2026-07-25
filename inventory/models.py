@@ -55,9 +55,18 @@ class Batch(models.Model):
     ``status`` dùng enum đầy đủ ngay từ đầu vì Phase 2 (QC PASS/PARTIAL_PASS)
     và Phase 3 (FIFO) đều cần các state này tồn tại sẵn (CLAUDE.md: chỉ batch
     ACTIVE mới được FIFO chọn; QUARANTINE/EXPIRED phải bị loại dù qty còn > 0).
+
+    ``PENDING_RECEIPT`` (Phase D): batch phần PASS/PARTIAL_PASS của QC không
+    còn chuyển thẳng ACTIVE nữa — dừng ở đây chờ nhân viên kho xác nhận nhận
+    hàng qua ``WarehouseHandoff``/``inventory.services.accept_handoff()`` rồi
+    mới chuyển ACTIVE (khả dụng FIFO). ``qty_on_hand`` ở kho MAIN đích đã được
+    cộng ngay từ lúc QC PASS (phản ánh đúng thực tế vật lý — hàng đã dỡ xuống
+    kho) — chỉ status khác ACTIVE mới loại lô này khỏi FIFO/`qty_available`
+    cấp lô, không phải giấu khỏi ``Inventory.qty_on_hand``.
     """
 
     class Status(models.TextChoices):
+        PENDING_RECEIPT = 'PENDING_RECEIPT', 'Chờ kho xác nhận'
         ACTIVE = 'ACTIVE', 'Đang hoạt động'
         PARTIAL_USED = 'PARTIAL_USED', 'Đã dùng một phần'
         QUARANTINE = 'QUARANTINE', 'Chờ xử lý (QC fail/partial)'
@@ -98,6 +107,65 @@ class Batch(models.Model):
     @property
     def qty_available(self):
         return self.qty_received - self.qty_used
+
+
+class WarehouseHandoff(models.Model):
+    """Bàn giao 1 batch PASS/PARTIAL_PASS (``PENDING_RECEIPT``) cho nhân viên kho
+    xác nhận nhận hàng (Phase D) — tách rời "QC PASS" khỏi "khả dụng FIFO ngay".
+
+    Tạo bởi ``quality.services.qc_pass``/``qc_partial_pass`` qua
+    ``inventory.services.create_handoff()`` — 1 handoff / batch PENDING_RECEIPT
+    tạo ra. ``assigned_to`` chọn cụ thể (tuỳ chọn trên form QC) thì chỉ báo
+    người đó; để trống thì báo ``destination_warehouse.staff`` (fallback toàn
+    bộ ``department=WAREHOUSE`` nếu kho đích chưa gán ai — cùng convention với
+    GRN/GIN handoff notify). Đừng tạo/sửa trực tiếp — dùng
+    ``inventory.services.create_handoff()``/``accept_handoff()``/``reject_handoff()``.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Chờ xác nhận'
+        ACCEPTED = 'ACCEPTED', 'Đã nhận'
+        REJECTED = 'REJECTED', 'Đã từ chối'
+
+    class RejectDestination(models.TextChoices):
+        BACK_TO_QC = 'BACK_TO_QC', 'Trả về QC'
+        TO_SCRAP = 'TO_SCRAP', 'Chuyển kho phế'
+
+    batch = models.OneToOneField(
+        Batch, on_delete=models.PROTECT, related_name='handoff', verbose_name='Lô hàng')
+    qc_inspection = models.ForeignKey(
+        'quality.QcInspection', on_delete=models.PROTECT, related_name='handoffs',
+        verbose_name='Đợt kiểm QC',
+    )
+    destination_warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='handoffs', verbose_name='Kho đích')
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='warehouse_handoffs', verbose_name='Người nhận chỉ định',
+        help_text='Bỏ trống thì báo toàn bộ nhân viên phụ trách kho đích.',
+    )
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='warehouse_handoffs_decided', verbose_name='Người xử lý',
+    )
+    decided_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời gian xử lý')
+    reject_reason = models.CharField(max_length=255, blank=True, verbose_name='Lý do từ chối')
+    reject_destination = models.CharField(
+        max_length=20, choices=RejectDestination.choices, blank=True, verbose_name='Xử lý khi từ chối')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', 'assigned_to']),
+        ]
+        verbose_name = 'Phiếu chờ nhận hàng'
+        verbose_name_plural = 'Phiếu chờ nhận hàng'
+
+    def __str__(self):
+        return f'Bàn giao {self.batch.batch_code} — {self.get_status_display()}'
 
 
 class StockMovement(models.Model):

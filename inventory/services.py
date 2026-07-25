@@ -16,10 +16,12 @@ from django.db.models import Avg, Sum
 from django.utils import timezone
 
 from accounts.audit import log_action
-from accounts.models import AuditLog
+from accounts.models import AuditLog, User
+from accounts.notifications import notify
 from warehouse.models import Warehouse
+from warehouse.services import get_default_location, get_scrap_warehouse
 
-from .models import Batch, Inventory, StockMovement, StockTransfer
+from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 
 
 def sync_expired_batches():
@@ -123,15 +125,19 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
     MỚI tại ``to_location`` với ``new_status``, batch nguồn CLOSED/PARTIAL_USED
     tuỳ còn dư (batch bất biến về vị trí — không sửa tại chỗ).
 
-    Dùng bởi ``transfer_stock()`` (tạo thêm ``StockTransfer``, riêng dưới đây)
-    và bởi ``quality.services`` cho các quyết định QC (không tạo
-    ``StockTransfer`` — tự ghi ``log_action`` riêng ở tầng gọi). Khác kho thì
-    cập nhật ``Inventory`` 2 đầu qua ``StockMovement`` TRANSFER_OUT/TRANSFER_IN;
-    cùng kho thì Inventory không đổi. ``grn_item`` của batch mới copy từ
-    ``source_batch`` để giữ lineage qua nhiều lần tách (Kho chờ -> MAIN/SCRAP).
+    Dùng bởi ``transfer_stock()`` (tạo thêm ``StockTransfer``, riêng dưới đây),
+    bởi ``quality.services`` cho các quyết định QC, và bởi
+    ``reject_handoff(..., destination=TO_SCRAP)`` khi kho từ chối nhận 1 batch
+    ``PENDING_RECEIPT`` (không tạo ``StockTransfer`` — tự ghi ``log_action``
+    riêng ở tầng gọi). Khác kho thì cập nhật ``Inventory`` 2 đầu qua
+    ``StockMovement`` TRANSFER_OUT/TRANSFER_IN; cùng kho thì Inventory không
+    đổi. ``grn_item`` của batch mới copy từ ``source_batch`` để giữ lineage qua
+    nhiều lần tách (Kho chờ -> MAIN/SCRAP).
     """
     source_batch = Batch.objects.select_for_update().get(pk=source_batch.pk)
-    if source_batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
+    if source_batch.status not in (
+        Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
+    ):
         raise ValidationError(
             f'Không thể tách batch đang ở trạng thái {source_batch.get_status_display()}.'
         )
@@ -232,6 +238,118 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
         ip_address=ip_address,
     )
     return transfer
+
+
+def _handoff_recipients(warehouse):
+    """Nhân viên phụ trách ``warehouse`` (``Warehouse.staff``); fallback toàn
+    bộ ``department=WAREHOUSE`` nếu kho đích chưa gán ai — không để phiếu bàn
+    giao nào "mồ côi" không ai nhận được (BACKLOG mục 5).
+    """
+    staff = list(warehouse.staff.filter(is_active=True))
+    if staff:
+        return staff
+    return list(User.objects.filter(department=User.Department.WAREHOUSE, is_active=True))
+
+
+@transaction.atomic
+def create_handoff(*, batch, qc_inspection, destination_warehouse, assigned_to=None):
+    """Tạo ``WarehouseHandoff`` PENDING cho 1 batch ``PENDING_RECEIPT`` mới tạo
+    bởi ``qc_pass``/``qc_partial_pass`` + báo người nhận (mục 5): ``assigned_to``
+    cụ thể thì chỉ báo người đó; để trống thì báo ``_handoff_recipients()``.
+    """
+    handoff = WarehouseHandoff.objects.create(
+        batch=batch, qc_inspection=qc_inspection, destination_warehouse=destination_warehouse,
+        assigned_to=assigned_to,
+    )
+    recipients = [assigned_to] if assigned_to else _handoff_recipients(destination_warehouse)
+    notify(
+        recipients,
+        f'Có lô hàng "{batch.batch_code}" từ QC PASS chờ xác nhận nhận hàng tại '
+        f'{destination_warehouse.code}.',
+        target=handoff,
+    )
+    return handoff
+
+
+@transaction.atomic
+def accept_handoff(handoff, actor, ip_address=None):
+    """NV kho "Nhận" (mục 6): batch ``PENDING_RECEIPT`` -> ``ACTIVE`` (khả dụng
+    FIFO), báo lại QC inspector đã tạo đợt kiểm liên quan.
+    """
+    handoff = WarehouseHandoff.objects.select_for_update().get(pk=handoff.pk)
+    if handoff.status != WarehouseHandoff.Status.PENDING:
+        raise ValidationError(f'Phiếu bàn giao này đã được xử lý ({handoff.get_status_display()}).')
+    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
+    if batch.status != Batch.Status.PENDING_RECEIPT:
+        raise ValidationError(f'Batch "{batch.batch_code}" không ở trạng thái chờ xác nhận.')
+
+    batch.status = Batch.Status.ACTIVE
+    batch.save(update_fields=['status'])
+
+    handoff.status = WarehouseHandoff.Status.ACCEPTED
+    handoff.decided_by = actor
+    handoff.decided_at = timezone.now()
+    handoff.save(update_fields=['status', 'decided_by', 'decided_at'])
+
+    log_action(
+        actor, AuditLog.Action.APPROVE, target=handoff,
+        description=(
+            f'Kho đã nhận lô "{batch.batch_code}" tại {handoff.destination_warehouse.code} -> ACTIVE.'
+        ),
+        ip_address=ip_address,
+    )
+    notify(handoff.qc_inspection.inspector, f'Kho đã nhận lô hàng "{batch.batch_code}".', target=handoff)
+    return handoff
+
+
+@transaction.atomic
+def reject_handoff(handoff, actor, reason, destination, ip_address=None):
+    """NV kho "Từ chối" (mục 6, bắt buộc ``reason``) — 2 nhánh xử lý:
+
+    - ``TO_SCRAP``: tách toàn bộ batch sang Kho phế (QUARANTINE) qua
+      ``move_batch_qty`` — dùng guard đã mở rộng cho nguồn ``PENDING_RECEIPT``.
+    - ``BACK_TO_QC``: KHÔNG đảo ngược Batch/Inventory (``QcInspection`` PASS
+      không tự re-open — cùng boundary đã chốt cho QC override), chỉ đổi
+      ``status`` -> REJECTED + báo phòng QC xử lý thủ công (điều chuyển bằng
+      tay qua ``transfer_stock`` nếu cần).
+    """
+    if not reason:
+        raise ValidationError('Bắt buộc nhập lý do từ chối.')
+    if destination not in WarehouseHandoff.RejectDestination.values:
+        raise ValidationError('Lựa chọn xử lý khi từ chối không hợp lệ.')
+
+    handoff = WarehouseHandoff.objects.select_for_update().get(pk=handoff.pk)
+    if handoff.status != WarehouseHandoff.Status.PENDING:
+        raise ValidationError(f'Phiếu bàn giao này đã được xử lý ({handoff.get_status_display()}).')
+    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
+    if batch.status != Batch.Status.PENDING_RECEIPT:
+        raise ValidationError(f'Batch "{batch.batch_code}" không ở trạng thái chờ xác nhận.')
+
+    if destination == WarehouseHandoff.RejectDestination.TO_SCRAP:
+        scrap_location = get_default_location(get_scrap_warehouse())
+        move_batch_qty(
+            source_batch=batch, qty=batch.qty_available, to_location=scrap_location,
+            new_batch_code=f'{batch.batch_code}-REJ', new_status=Batch.Status.QUARANTINE,
+            actor=actor, reference=f'HANDOFF-{handoff.pk}',
+        )
+
+    handoff.status = WarehouseHandoff.Status.REJECTED
+    handoff.decided_by = actor
+    handoff.decided_at = timezone.now()
+    handoff.reject_reason = reason
+    handoff.reject_destination = destination
+    handoff.save(update_fields=[
+        'status', 'decided_by', 'decided_at', 'reject_reason', 'reject_destination',
+    ])
+
+    verb = (
+        f'Kho từ chối nhận lô "{batch.batch_code}" (lý do: {reason}) — đã chuyển kho phế.'
+        if destination == WarehouseHandoff.RejectDestination.TO_SCRAP
+        else f'Kho từ chối nhận lô "{batch.batch_code}" (lý do: {reason}) — trả về QC xử lý thủ công.'
+    )
+    log_action(actor, AuditLog.Action.REJECT, target=handoff, description=verb, reason=reason, ip_address=ip_address)
+    notify(User.objects.filter(department=User.Department.QC, is_active=True), verb, target=handoff)
+    return handoff
 
 
 def calculate_eoq(product):

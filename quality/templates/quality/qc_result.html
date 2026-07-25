@@ -34,6 +34,12 @@
             {{ result_form.reason }}
             {% for error in result_form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
           </div>
+          <div class="mb-3">
+            <label class="form-label" for="{{ result_form.assigned_to.id_for_label }}">{{ result_form.assigned_to.label }}</label>
+            {{ result_form.assigned_to }}
+            {% if result_form.assigned_to.help_text %}<div class="form-text">{{ result_form.assigned_to.help_text }}</div>{% endif %}
+            {% for error in result_form.assigned_to.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
 
           <h2 class="h5 mt-4 mb-2">Qty đạt QC từng item (dùng cho Partial Pass)</h2>
           {{ formset.management_form }}

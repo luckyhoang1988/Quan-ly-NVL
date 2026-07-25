@@ -11,8 +11,10 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from accounts.models import Notification
 from catalog.models import Product
-from inventory.models import Batch, Inventory, StockMovement
+from inventory.models import Batch, Inventory, StockMovement, WarehouseHandoff
+from inventory.services import accept_handoff, reject_handoff
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder
 from receiving.models import Grn, GrnItem, GrnReturn
@@ -223,7 +225,8 @@ class QcPassTransactionTest(QcServiceTestBase):
         self.assertEqual(grn.status, Grn.Status.RECEIVED)
         staging_batch.refresh_from_db()
         self.assertEqual(staging_batch.status, Batch.Status.CLOSED)
-        batch = Batch.objects.get(status=Batch.Status.ACTIVE)
+        # Phase D: batch đích PASS dừng ở PENDING_RECEIPT, chưa ACTIVE (chờ kho xác nhận).
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         self.assertEqual(batch.location, self.location)
         self.assertEqual(batch.qty_received, 10)
         self.assertEqual(batch.grn_item, self.grn_item)
@@ -241,6 +244,11 @@ class QcPassTransactionTest(QcServiceTestBase):
         inspection.refresh_from_db()
         self.assertEqual(inspection.status, QcInspection.Result.PASS)
         self.assertIsNotNone(inspection.completed_at)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.PENDING)
+        self.assertEqual(handoff.qc_inspection, inspection)
+        self.assertEqual(handoff.destination_warehouse, self.warehouse)
+        self.assertIsNone(handoff.assigned_to)
 
     def test_TC_QC_PASS_001_002_raises_when_inspection_already_resolved(self):
         inspection = self._start_qc()
@@ -306,7 +314,8 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
         self.assertEqual(grn.status, Grn.Status.RECEIVED)
         staging_batch.refresh_from_db()
         self.assertEqual(staging_batch.status, Batch.Status.CLOSED)
-        active = Batch.objects.get(status=Batch.Status.ACTIVE)
+        # Phase D: phần pass dừng ở PENDING_RECEIPT (chờ kho xác nhận) — chỉ phần fail vào QUARANTINE ngay.
+        active = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         quarantine = Batch.objects.get(status=Batch.Status.QUARANTINE)
         self.assertEqual(active.qty_received, 6)
         self.assertEqual(active.location, self.location)
@@ -324,6 +333,8 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
         self.assertEqual(self.grn_item.status, GrnItem.Status.PARTIAL_RECEIVED)
         inspection.refresh_from_db()
         self.assertEqual(inspection.status, QcInspection.Result.PARTIAL_PASS)
+        self.assertTrue(WarehouseHandoff.objects.filter(batch=active, status=WarehouseHandoff.Status.PENDING).exists())
+        self.assertFalse(WarehouseHandoff.objects.filter(batch=quarantine).exists())
 
     def test_TC_QC_PARTIAL_002_001_missing_item_result_raises(self):
         inspection = self._start_qc()
@@ -341,6 +352,137 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
         with self.assertRaises(ValidationError):
             qc_partial_pass(
                 inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.scrap_location)
+
+
+class WarehouseHandoffTest(QcServiceTestBase):
+    """Bàn giao batch PASS/PARTIAL_PASS (``PENDING_RECEIPT``) cho kho xác nhận
+    nhận hàng (Phase D, mục 5/6) — ``create_handoff``/``accept_handoff``/
+    ``reject_handoff``. ``TC-QC-HANDOFF-<seq>``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.warehouse_staff = User.objects.create_user(
+            username='nvk1', password='nvk-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.warehouse_manager = User.objects.create_user(
+            username='qlk-wh', password='qlk-pass-123', role=User.Role.MANAGER,
+            department=User.Department.WAREHOUSE, is_manager=True)
+        self.qc_dept_user = User.objects.create_user(
+            username='qc-dept', password='qc-pass-123', role=User.Role.QC,
+            department=User.Department.QC)
+
+    def test_TC_QC_HANDOFF_001_001_no_assigned_to_notifies_department_fallback(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        self.assertIsNone(handoff.assigned_to)
+        # Warehouse.staff rỗng cho kho đích -> fallback toàn bộ department=WAREHOUSE.
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.warehouse_staff, target_id=str(handoff.pk)).exists())
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.warehouse_manager, target_id=str(handoff.pk)).exists())
+
+    def test_TC_QC_HANDOFF_001_002_assigned_to_specific_staff_only_notifies_them(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location, assigned_to=self.warehouse_staff)
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        self.assertEqual(handoff.assigned_to, self.warehouse_staff)
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.warehouse_staff, target_id=str(handoff.pk)).exists())
+        self.assertFalse(
+            Notification.objects.filter(recipient=self.warehouse_manager, target_id=str(handoff.pk)).exists())
+
+    def test_TC_QC_HANDOFF_002_001_accept_transitions_batch_to_active_and_notifies_inspector(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        accept_handoff(handoff, actor=self.warehouse_staff)
+        batch.refresh_from_db()
+        handoff.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.ACCEPTED)
+        self.assertEqual(handoff.decided_by, self.warehouse_staff)
+        self.assertIsNotNone(handoff.decided_at)
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.qc_user, target_id=str(handoff.pk)).exists())
+
+    def test_TC_QC_HANDOFF_002_002_accept_already_decided_raises(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
+        accept_handoff(handoff, actor=self.warehouse_staff)
+        with self.assertRaises(ValidationError):
+            accept_handoff(handoff, actor=self.warehouse_staff)
+
+    def test_TC_QC_HANDOFF_003_001_reject_to_scrap_moves_batch_and_updates_inventory(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        reject_handoff(
+            handoff, actor=self.warehouse_staff, reason='Hàng bị ẩm khi kiểm tra lại',
+            destination=WarehouseHandoff.RejectDestination.TO_SCRAP,
+        )
+        handoff.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.REJECTED)
+        self.assertEqual(handoff.reject_destination, WarehouseHandoff.RejectDestination.TO_SCRAP)
+        self.assertEqual(handoff.reject_reason, 'Hàng bị ẩm khi kiểm tra lại')
+        # Batch PENDING_RECEIPT gốc bị đóng lại (đã tách hết qty sang Kho phế).
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        scrap_batch = Batch.objects.get(status=Batch.Status.QUARANTINE, batch_code__endswith='-REJ')
+        self.assertEqual(scrap_batch.qty_received, 10)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(inv.qty_on_hand, 0)
+        scrap_inv = Inventory.objects.get(product=self.product, warehouse=self.scrap_warehouse)
+        self.assertEqual(scrap_inv.qty_on_hand, 10)
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.qc_dept_user, target_id=str(handoff.pk)).exists())
+
+    def test_TC_QC_HANDOFF_003_002_reject_back_to_qc_leaves_batch_untouched(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.get(batch=batch)
+        reject_handoff(
+            handoff, actor=self.warehouse_staff, reason='Nghi ngờ sai lô, cần QC kiểm tra lại',
+            destination=WarehouseHandoff.RejectDestination.BACK_TO_QC,
+        )
+        handoff.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.REJECTED)
+        self.assertEqual(handoff.reject_destination, WarehouseHandoff.RejectDestination.BACK_TO_QC)
+        # KHÔNG đảo ngược Batch/Inventory — batch vẫn PENDING_RECEIPT tại kho MAIN, chờ xử lý thủ công.
+        self.assertEqual(batch.status, Batch.Status.PENDING_RECEIPT)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(inv.qty_on_hand, 10)
+        self.assertTrue(
+            Notification.objects.filter(recipient=self.qc_dept_user, target_id=str(handoff.pk)).exists())
+
+    def test_TC_QC_HANDOFF_003_003_reject_without_reason_raises(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
+        with self.assertRaises(ValidationError):
+            reject_handoff(
+                handoff, actor=self.warehouse_staff, reason='',
+                destination=WarehouseHandoff.RejectDestination.TO_SCRAP,
+            )
+
+    def test_TC_QC_HANDOFF_003_004_reject_already_decided_raises(self):
+        inspection = self._start_qc()
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
+        accept_handoff(handoff, actor=self.warehouse_staff)
+        with self.assertRaises(ValidationError):
+            reject_handoff(
+                handoff, actor=self.warehouse_staff, reason='quá trễ',
+                destination=WarehouseHandoff.RejectDestination.TO_SCRAP,
+            )
 
 
 class GetStagingBatchTest(QcServiceTestBase):
@@ -408,7 +550,7 @@ class QcResultViewTest(QcServiceTestBase):
         self.grn.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[self.grn.pk]))
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
-        self.assertTrue(Batch.objects.filter(product=self.product, status=Batch.Status.ACTIVE).exists())
+        self.assertTrue(Batch.objects.filter(product=self.product, status=Batch.Status.PENDING_RECEIPT).exists())
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
         self.assertEqual(inv.qty_on_hand, 10)
 
@@ -434,7 +576,7 @@ class QcResultViewTest(QcServiceTestBase):
         self.grn.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[self.grn.pk]))
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
-        self.assertTrue(Batch.objects.filter(status=Batch.Status.ACTIVE, qty_received=6).exists())
+        self.assertTrue(Batch.objects.filter(status=Batch.Status.PENDING_RECEIPT, qty_received=6).exists())
         self.assertTrue(Batch.objects.filter(status=Batch.Status.QUARANTINE, qty_received=4).exists())
 
     def test_TC_QC_VIEW_001_006_manager_can_also_submit_result(self):

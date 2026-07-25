@@ -69,6 +69,13 @@
             <i class="bi bi-bar-chart-line"></i> Tồn kho
           </a>
         </li>
+        {% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'handoff_list' %}active{% endif %}" href="{% url 'inventory:handoff_list' %}">
+            <i class="bi bi-truck-flatbed"></i> Phiếu chờ nhận hàng
+          </a>
+        </li>
+        {% endif %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'shipping' %}active{% endif %}" href="{% url 'shipping:gin_list' %}">
             <i class="bi bi-box-arrow-up"></i> GIN

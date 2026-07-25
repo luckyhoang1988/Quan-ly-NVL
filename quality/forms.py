@@ -5,6 +5,7 @@ QC_IN_PROGRESS. Transaction thật (Batch/Inventory/GRN) nằm ở ``quality.ser
 from django import forms
 from django.forms import inlineformset_factory
 
+from accounts.models import User
 from receiving.models import Grn, GrnItem
 from warehouse.models import Location, Warehouse
 
@@ -34,6 +35,11 @@ class QcResultForm(forms.Form):
     reason = forms.CharField(
         required=False, widget=forms.Textarea(attrs={'rows': 2}),
         label='Lý do (bắt buộc nếu Fail)',
+    )
+    assigned_to = forms.ModelChoiceField(
+        queryset=User.objects.filter(department=User.Department.WAREHOUSE, is_active=True),
+        label='Người nhận chỉ định (bàn giao kho)', required=False,
+        help_text='Chỉ áp dụng khi Pass/Partial Pass. Bỏ trống thì báo toàn bộ nhân viên phụ trách kho đích.',
     )
 
     def __init__(self, *args, **kwargs):

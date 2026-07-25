@@ -9,13 +9,17 @@ giữa lúc xác nhận Qty thực nhận và lúc có kết quả QC:
 - ``start_qc``: DRAFT/PENDING_QC -> QC_IN_PROGRESS, tạo ``QcInspection`` +
   1 Batch ACTIVE/item tại Kho chờ (RECEIPT thật — hàng đã nhận vật lý).
 - ``qc_pass``: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
-  ACTIVE tại kho MAIN (``move_batch_qty`` — TRANSFER_OUT/IN, không phải
-  RECEIPT nữa vì hàng đã có trong hệ thống từ ``start_qc``), GRN -> RECEIVED.
+  ``PENDING_RECEIPT`` tại kho MAIN (``move_batch_qty`` — TRANSFER_OUT/IN,
+  không phải RECEIPT nữa vì hàng đã có trong hệ thống từ ``start_qc``), GRN ->
+  RECEIVED, tạo ``WarehouseHandoff`` chờ NV kho xác nhận nhận hàng (Phase D —
+  xem ``inventory.services.create_handoff``/``accept_handoff``/``reject_handoff``)
+  trước khi batch thật sự ACTIVE (khả dụng FIFO).
 - ``qc_fail``: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
-  QUARANTINE tại Kho phế (SCRAP), GRN -> REJECTED, vẫn tạo ``GrnReturn``.
+  QUARANTINE tại Kho phế (SCRAP), GRN -> REJECTED, vẫn tạo ``GrnReturn`` —
+  KHÔNG qua bước bàn giao (hàng fail không cần NV kho xác nhận nhận).
 - ``qc_partial_pass``: mỗi item nhận ``qty_pass`` riêng (0 <= qty_pass <=
-  qty_received) -> tách batch Kho chờ làm 2 (ACTIVE phần pass tại kho MAIN +
-  QUARANTINE phần fail tại Kho phế).
+  qty_received) -> tách batch Kho chờ làm 2 (``PENDING_RECEIPT`` phần pass tại
+  kho MAIN, kèm ``WarehouseHandoff``, + QUARANTINE phần fail tại Kho phế).
 
 Mọi transition đều ghi ``AuditLog`` qua ``accounts.audit.log_action`` (hạ
 tầng có sẵn từ Phase 1) — một dòng log cho mỗi transaction nghiệp vụ (không
@@ -32,7 +36,7 @@ from accounts.audit import log_action
 from accounts.models import AuditLog
 from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
-from inventory.services import move_batch_qty, record_movement
+from inventory.services import create_handoff, move_batch_qty, record_movement
 from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Warehouse
 from warehouse.services import get_default_location, get_scrap_warehouse, get_staging_warehouse
@@ -150,9 +154,11 @@ def start_qc(grn, inspector, actor=None, ip_address=None):
 
 
 @transaction.atomic
-def qc_pass(inspection, actor=None, location=None, ip_address=None):
+def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=None):
     """QC PASS: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
-    ACTIVE tại ``location`` (phải thuộc kho loại MAIN), GRN -> RECEIVED.
+    ``PENDING_RECEIPT`` tại ``location`` (phải thuộc kho loại MAIN), GRN ->
+    RECEIVED, tạo ``WarehouseHandoff``/item chờ NV kho xác nhận nhận hàng
+    (Phase D — ``assigned_to`` tuỳ chọn, để trống thì báo cả kho đích).
     """
     _require_pending_inspection(inspection)
     if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
@@ -166,10 +172,14 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None):
         if item.qty_received <= 0:
             continue
         staging_batch = _get_staging_batch(item)
-        move_batch_qty(
+        new_batch = move_batch_qty(
             source_batch=staging_batch, qty=item.qty_received, to_location=location,
-            new_batch_code=_batch_code(item), new_status=Batch.Status.ACTIVE,
+            new_batch_code=_batch_code(item), new_status=Batch.Status.PENDING_RECEIPT,
             actor=actor, reference=grn.grn_no,
+        )
+        create_handoff(
+            batch=new_batch, qc_inspection=inspection, destination_warehouse=location.warehouse,
+            assigned_to=assigned_to,
         )
 
     grn.status = Grn.Status.RECEIVED
@@ -180,7 +190,8 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None):
 
     log_action(
         actor, AuditLog.Action.APPROVE, target=grn,
-        description=f'QC PASS: {grn.grn_no} -> RECEIVED, chuyển Kho chờ -> {location.warehouse.code}.',
+        description=f'QC PASS: {grn.grn_no} -> RECEIVED, chuyển Kho chờ -> {location.warehouse.code} '
+                    f'(chờ kho xác nhận nhận hàng).',
         ip_address=ip_address,
     )
     return grn
@@ -226,10 +237,11 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
 
 
 @transaction.atomic
-def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_address=None):
-    """PARTIAL_PASS: tiêu thụ batch Kho chờ, tách mỗi item thành Batch ACTIVE
-    (phần pass, tại ``location`` thuộc kho MAIN) + Batch QUARANTINE (phần
-    fail, tại Kho phế).
+def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_address=None, assigned_to=None):
+    """PARTIAL_PASS: tiêu thụ batch Kho chờ, tách mỗi item thành Batch
+    ``PENDING_RECEIPT`` (phần pass, tại ``location`` thuộc kho MAIN, kèm
+    ``WarehouseHandoff`` chờ NV kho xác nhận — Phase D) + Batch QUARANTINE
+    (phần fail, tại Kho phế, không qua bàn giao).
 
     ``item_results``: ``{grn_item_id: qty_pass}`` — bắt buộc có đủ mọi item
     của GRN, ``0 <= qty_pass <= qty_received``.
@@ -257,10 +269,14 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         if item.qty_received > 0:
             staging_batch = _get_staging_batch(item)
             if qty_pass > 0:
-                move_batch_qty(
+                pass_batch = move_batch_qty(
                     source_batch=staging_batch, qty=qty_pass, to_location=location,
                     new_batch_code=_batch_code(item, '-A' if has_both else ''),
-                    new_status=Batch.Status.ACTIVE, actor=actor, reference=grn.grn_no,
+                    new_status=Batch.Status.PENDING_RECEIPT, actor=actor, reference=grn.grn_no,
+                )
+                create_handoff(
+                    batch=pass_batch, qc_inspection=inspection, destination_warehouse=location.warehouse,
+                    assigned_to=assigned_to,
                 )
             if qty_fail > 0:
                 move_batch_qty(
@@ -285,7 +301,7 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
 
     log_action(
         actor, AuditLog.Action.APPROVE, target=grn,
-        description=f'QC PARTIAL_PASS: {grn.grn_no} -> RECEIVED, Kho chờ tách MAIN+SCRAP.',
+        description=f'QC PARTIAL_PASS: {grn.grn_no} -> RECEIVED, Kho chờ tách MAIN (chờ kho xác nhận)+SCRAP.',
         ip_address=ip_address,
     )
     return grn
