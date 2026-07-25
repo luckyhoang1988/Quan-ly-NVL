@@ -26,5 +26,13 @@ urlpatterns = [
     path('users/<int:pk>/password/', views.user_password_set, name='user_password_set'),
     path('users/<int:pk>/delete/', views.user_delete, name='user_delete'),
 
+    # Thông báo trong app.
+    path('notifications/', views.notification_list, name='notification_list'),
+    path('notifications/<int:pk>/read/', views.notification_mark_read, name='notification_mark_read'),
+    path('notifications/mark-all-read/', views.notification_mark_all_read, name='notification_mark_all_read'),
+
+    # Tra cứu Audit Log (quản lý phòng ban trở lên + Admin).
+    path('audit-log/', views.audit_log_list, name='audit_log_list'),
+
     path('', views.dashboard, name='dashboard'),
 ]

@@ -32,12 +32,38 @@ class User(AbstractUser):
         ACCOUNTANT = 'ACCOUNTANT', 'Kế toán'
         ADMIN = 'ADMIN', 'Quản trị viên'
 
+    class Department(models.TextChoices):
+        """Trục phân quyền MỚI, song song với ``role`` (không thay thế).
+
+        ``role`` tiếp tục quyết định ma trận CRUD (``ROLE_PERMISSIONS``) như cũ.
+        ``department`` + ``is_manager`` chỉ phục vụ luồng duyệt/hủy/thông báo
+        theo phòng ban (mỗi phòng ban có thể có quản lý riêng, không chỉ Kho).
+        """
+        WAREHOUSE = 'WAREHOUSE', 'Kho'
+        QC = 'QC', 'QC'
+        PURCHASING = 'PURCHASING', 'Mua hàng'
+        ACCOUNTING = 'ACCOUNTING', 'Kế toán'
+
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
         blank=True,
         verbose_name='Vai trò',
         help_text='Vai trò RBAC — quyết định permission matrix.',
+    )
+    department = models.CharField(
+        max_length=20,
+        choices=Department.choices,
+        blank=True,
+        verbose_name='Phòng ban',
+        help_text='Phòng ban để xác định người nộp/người duyệt trong luồng phê duyệt. '
+                   'Bỏ trống cho Admin (không thuộc phòng ban cụ thể).',
+    )
+    is_manager = models.BooleanField(
+        default=False,
+        verbose_name='Là quản lý phòng ban',
+        help_text='True nếu user là quản lý của "department" — được duyệt/hủy phiếu của '
+                   'nhân viên cùng phòng ban.',
     )
     is_deleted = models.BooleanField(
         default=False,
@@ -65,6 +91,14 @@ class User(AbstractUser):
         Superuser luôn trả về True (hành vi has_perm mặc định của Django).
         """
         return self.has_perm(f'accounts.can_{action}_{module}')
+
+    def is_department_manager(self, department):
+        """True nếu user là quản lý của đúng ``department`` được truyền vào.
+
+        Dùng cho luồng duyệt/hủy phiếu theo phòng ban (song song với ``can()``
+        — không thay thế permission matrix hiện có).
+        """
+        return self.is_manager and self.department == department
 
     def soft_delete(self):
         """Xoá mềm: đánh dấu đã xoá + khoá đăng nhập, giữ nguyên bản ghi cho audit."""
@@ -98,6 +132,7 @@ class AuditLog(models.Model):
         DELETE = 'DELETE', 'Xoá'
         APPROVE = 'APPROVE', 'Duyệt'
         REJECT = 'REJECT', 'Từ chối'
+        CANCEL = 'CANCEL', 'Hủy'
         OVERRIDE = 'OVERRIDE', 'Override'
         LOGIN = 'LOGIN', 'Đăng nhập'
         LOGOUT = 'LOGOUT', 'Đăng xuất'
@@ -151,3 +186,97 @@ class AuditLog(models.Model):
     def __str__(self):
         who = self.actor.username if self.actor else 'system'
         return f'[{self.created_at:%Y-%m-%d %H:%M}] {who} {self.action} {self.description}'.strip()
+
+
+class Notification(models.Model):
+    """Thông báo trong app cho luồng duyệt/bàn giao theo phòng ban.
+
+    Poll khi load trang (badge số chưa đọc trong navbar) — KHÔNG dùng
+    Celery/websocket, đúng convention ``⏸️`` của CLAUDE.md. Đừng tạo trực tiếp
+    — dùng ``accounts.notifications.notify()`` để gửi hàng loạt cho nhiều
+    người nhận cùng lúc.
+    """
+
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='notifications',
+        verbose_name='Người nhận',
+    )
+    verb = models.CharField(max_length=255, verbose_name='Nội dung thông báo')
+
+    # Đối tượng liên quan (GRN/GIN/GrnReturn/WarehouseHandoff...) — nullable,
+    # cùng pattern GenericFK với AuditLog.target ở trên.
+    target_type = models.ForeignKey(
+        ContentType, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='Loại đối tượng',
+    )
+    target_id = models.CharField(max_length=64, null=True, blank=True, verbose_name='Mã đối tượng')
+    target = GenericForeignKey('target_type', 'target_id')
+
+    is_read = models.BooleanField(default=False, verbose_name='Đã đọc')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Thời gian')
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['recipient', 'is_read', '-created_at']),
+        ]
+        verbose_name = 'Thông báo'
+        verbose_name_plural = 'Thông báo'
+
+    def __str__(self):
+        return f'{self.recipient.username}: {self.verb}'
+
+
+class Approval(models.Model):
+    """Yêu cầu duyệt "nhân viên nộp -> quản lý phòng ban duyệt" (Phase B/C).
+
+    Dùng chung cho GRN submit / GIN confirm / GrnReturn QC-confirm — ``target`` là
+    GenericFK trỏ tới đối tượng cần duyệt. Bản thân ``Approval`` KHÔNG biết và
+    không thực thi transition thật của đối tượng đó — transition thật truyền vào
+    qua callback ``on_approve``/``on_reject`` do app gọi cung cấp, xem
+    ``accounts.approvals.decide_approval()``. Đừng tạo/sửa trực tiếp — dùng
+    ``accounts.approvals.create_approval()``/``decide_approval()``.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Đang chờ duyệt'
+        APPROVED = 'APPROVED', 'Đã duyệt'
+        REJECTED = 'REJECTED', 'Đã từ chối'
+
+    target_type = models.ForeignKey(
+        ContentType, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='Loại đối tượng',
+    )
+    target_id = models.CharField(max_length=64, verbose_name='Mã đối tượng')
+    target = GenericForeignKey('target_type', 'target_id')
+
+    department = models.CharField(
+        max_length=20, choices=User.Department.choices, verbose_name='Phòng ban duyệt',
+        help_text='Chỉ quản lý (is_manager=True) của phòng ban này được quyết định.',
+    )
+    action_label = models.CharField(max_length=255, verbose_name='Nội dung yêu cầu duyệt')
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
+
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='approvals_submitted',
+        verbose_name='Người nộp',
+    )
+    submitted_at = models.DateTimeField(auto_now_add=True, verbose_name='Thời gian nộp')
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='approvals_decided', verbose_name='Người duyệt',
+    )
+    decided_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời gian duyệt')
+    decision_note = models.TextField(blank=True, verbose_name='Ghi chú quyết định')
+
+    class Meta:
+        ordering = ['-submitted_at', '-id']
+        indexes = [
+            models.Index(fields=['target_type', 'target_id']),
+            models.Index(fields=['department', 'status']),
+        ]
+        verbose_name = 'Yêu cầu duyệt'
+        verbose_name_plural = 'Yêu cầu duyệt'
+
+    def __str__(self):
+        return f'{self.action_label} — {self.get_status_display()}'

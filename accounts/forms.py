@@ -41,7 +41,7 @@ class UserCreateForm(forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ['username', 'email', 'first_name', 'last_name', 'role']
+        fields = ['username', 'email', 'first_name', 'last_name', 'role', 'department', 'is_manager']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -59,7 +59,7 @@ class UserUpdateForm(forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ['email', 'first_name', 'last_name', 'role', 'is_active']
+        fields = ['email', 'first_name', 'last_name', 'role', 'department', 'is_manager', 'is_active']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

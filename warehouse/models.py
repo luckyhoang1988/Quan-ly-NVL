@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 # BR-WM-005: tạo warehouse -> tối thiểu 10 vị trí lưu trữ. Thay vì bắt buộc admin
@@ -39,6 +40,12 @@ class Warehouse(models.Model):
     )
     is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
+    staff = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name='assigned_warehouses',
+        verbose_name='Nhân viên phụ trách',
+        help_text='Nhân viên kho được gán vào kho này — dùng để chọn/mặc định người nhận '
+                   'khi QC bàn giao lô hàng đã PASS về kho.',
+    )
 
     class Meta:
         ordering = ['code']

@@ -49,6 +49,18 @@
             {% endif %}
           </td>
         </tr>
+        <tr>
+          <th class="text-nowrap">Phòng ban</th>
+          <td>{{ obj.get_department_display|default:"—" }}</td>
+          <th class="text-nowrap">Quản lý phòng ban</th>
+          <td>
+            {% if obj.is_manager %}
+              <span class="badge bg-primary">Có</span>
+            {% else %}
+              <span class="text-muted">Không</span>
+            {% endif %}
+          </td>
+        </tr>
       </tbody>
     </table>
   </div>

@@ -1,7 +1,10 @@
 """Form của app warehouse (FR-WM-01, FR-WM-02)."""
 from django import forms
+from django.contrib.auth import get_user_model
 
 from .models import Location, Warehouse
+
+User = get_user_model()
 
 
 def _bootstrapify(fields):
@@ -28,11 +31,15 @@ class WarehouseForm(forms.ModelForm):
 
     class Meta:
         model = Warehouse
-        fields = ['code', 'name', 'address', 'capacity', 'warehouse_type']
+        fields = ['code', 'name', 'address', 'capacity', 'warehouse_type', 'staff']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _bootstrapify(self.fields)
+        self.fields['staff'].queryset = User.objects.filter(
+            department=User.Department.WAREHOUSE, is_active=True,
+        ).order_by('username')
+        self.fields['staff'].required = False
         if self.instance.pk:
             self.fields['warehouse_type'].disabled = True
 

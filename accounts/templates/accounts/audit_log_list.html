@@ -1,0 +1,99 @@
+{% extends 'base.html' %}
+{% block title %}Nhật ký hành động — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Nhật ký hành động</span>
+{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h1 class="panel-title">Nhật ký hành động</h1>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="module">Module</label>
+        <select name="module" id="module" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả --</option>
+          {% for value, label in module_choices %}
+            <option value="{{ value }}" {% if selected_module == value|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="actor">Người thực hiện</label>
+        <select name="actor" id="actor" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả --</option>
+          {% for u in actor_choices %}
+            <option value="{{ u.pk }}" {% if selected_actor == u.pk|stringformat:"s" %}selected{% endif %}>{{ u.username }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="department">Phòng ban</label>
+        <select name="department" id="department" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả --</option>
+          {% for value, label in department_choices %}
+            <option value="{{ value }}" {% if selected_department == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="action">Hành động</label>
+        <select name="action" id="action" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả --</option>
+          {% for value, label in action_choices %}
+            <option value="{{ value }}" {% if selected_action == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="date_from">Từ ngày</label>
+        <input type="date" name="date_from" id="date_from" class="form-control" value="{{ date_from }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="date_to">Đến ngày</label>
+        <input type="date" name="date_to" id="date_to" class="form-control" value="{{ date_to }}">
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mô tả, lý do..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Thời gian</th>
+            <th>Người thực hiện</th>
+            <th>Hành động</th>
+            <th>Đối tượng</th>
+            <th>Mô tả</th>
+            <th>Lý do</th>
+            <th>IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in logs %}
+          <tr>
+            <td class="text-nowrap">{{ log.created_at }}</td>
+            <td>{{ log.actor.username|default:"system" }}</td>
+            <td>{{ log.get_action_display|default:log.action }}</td>
+            <td>{% if log.target_type %}{{ log.target_type }} #{{ log.target_id }}{% else %}—{% endif %}</td>
+            <td>{{ log.description|default:"—" }}</td>
+            <td>{{ log.reason|default:"—" }}</td>
+            <td class="text-nowrap">{{ log.ip_address|default:"—" }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="7" class="text-center text-muted">Không có nhật ký nào khớp bộ lọc.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
+</div>
+{% endblock %}

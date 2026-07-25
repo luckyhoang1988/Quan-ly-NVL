@@ -49,6 +49,7 @@
             <th>Họ tên</th>
             <th>Email</th>
             <th>Vai trò</th>
+            <th>Phòng ban</th>
             <th>Trạng thái</th>
             <th class="text-end"></th>
           </tr>
@@ -60,6 +61,10 @@
             <td>{{ u.get_full_name|default:"—" }}</td>
             <td>{{ u.email|default:"—" }}</td>
             <td>{{ u.get_role_display|default:"—" }}</td>
+            <td>
+              {{ u.get_department_display|default:"—" }}
+              {% if u.is_manager %}<span class="badge bg-primary">Quản lý</span>{% endif %}
+            </td>
             <td>
               {% if u.is_deleted %}
                 <span class="badge bg-secondary">Đã xoá</span>
@@ -87,7 +92,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="6" class="text-center text-muted">Chưa có user nào.</td></tr>
+          <tr><td colspan="7" class="text-center text-muted">Chưa có user nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

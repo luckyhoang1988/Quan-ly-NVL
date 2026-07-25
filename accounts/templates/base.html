@@ -13,8 +13,16 @@
   <div class="d-flex layout-wrapper">
     {% if user.is_authenticated %}
     <nav class="sidebar d-flex flex-column p-3">
-      <div class="brand text-white d-flex align-items-center gap-2 mb-4">
-        <i class="bi bi-boxes"></i> NVL / WMS
+      <div class="brand text-white d-flex align-items-center justify-content-between gap-2 mb-4">
+        <span><i class="bi bi-boxes"></i> NVL / WMS</span>
+        <a href="{% url 'notification_list' %}" class="text-white position-relative" title="Thông báo">
+          <i class="bi bi-bell fs-5"></i>
+          {% if unread_notification_count %}
+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
+              {{ unread_notification_count }}
+            </span>
+          {% endif %}
+        </a>
       </div>
       <ul class="nav nav-pills flex-column mb-auto gap-1">
         <li class="sidebar-section-title">Danh mục</li>
@@ -81,11 +89,18 @@
           </a>
         </li>
 
-        {% if user.is_superuser or user.role == 'ADMIN' %}
+        {% if user.is_superuser or user.role == 'ADMIN' or user.is_manager %}
         <li class="sidebar-section-title">Quản trị</li>
+        {% if user.is_superuser or user.role == 'ADMIN' %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
             <i class="bi bi-people"></i> Quản lý user
+          </a>
+        </li>
+        {% endif %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'audit_log_list' %}active{% endif %}" href="{% url 'audit_log_list' %}">
+            <i class="bi bi-journal-text"></i> Nhật ký hành động
           </a>
         </li>
         {% endif %}

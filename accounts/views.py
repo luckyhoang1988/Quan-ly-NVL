@@ -20,9 +20,11 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.crypto import get_random_string
 
+from django.contrib.contenttypes.models import ContentType
+
 from .audit import client_ip, log_action
 from .forms import UserCreateForm, UserUpdateForm, WmsPasswordChangeForm, WmsSetPasswordForm
-from .models import AuditLog
+from .models import AuditLog, Notification
 from .pagination import paginate_queryset
 from .permissions import ACTIONS, MODULES, codenames_for_role
 from .rbac import sync_user_permissions
@@ -30,7 +32,7 @@ from .rbac import sync_user_permissions
 User = get_user_model()
 
 # Các field được theo dõi để ghi before/after khi UPDATE (audit "what changed").
-TRACKED_FIELDS = ['role', 'is_active', 'email', 'first_name', 'last_name']
+TRACKED_FIELDS = ['role', 'department', 'is_manager', 'is_active', 'email', 'first_name', 'last_name']
 
 
 @login_required
@@ -324,3 +326,108 @@ def user_delete(request, pk):
         messages.success(request, f'Đã xoá (mềm) user "{obj.username}".')
         return redirect('user_list')
     return render(request, 'accounts/user_confirm_delete.html', {'obj': obj})
+
+
+# --- Thông báo trong app (Phase A nền tảng cho luồng duyệt/bàn giao) ---
+
+@login_required
+def notification_list(request):
+    """READ — toàn bộ thông báo của user đang đăng nhập, mới nhất trước."""
+    qs = Notification.objects.filter(recipient=request.user).select_related('target_type')
+    page_obj, page_size = paginate_queryset(request, qs)
+    return render(request, 'accounts/notification_list.html', {
+        'notifications': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+    })
+
+
+@login_required
+def notification_mark_read(request, pk):
+    """Đánh dấu 1 thông báo đã đọc rồi chuyển tới đối tượng liên quan (nếu có
+    ``get_absolute_url``) hoặc quay lại danh sách thông báo."""
+    obj = get_object_or_404(Notification, pk=pk, recipient=request.user)
+    if not obj.is_read:
+        obj.is_read = True
+        obj.save(update_fields=['is_read'])
+    target = obj.target
+    if target is not None and hasattr(target, 'get_absolute_url'):
+        return redirect(target.get_absolute_url())
+    return redirect('notification_list')
+
+
+@login_required
+def notification_mark_all_read(request):
+    """POST-only: đánh dấu toàn bộ thông báo của user hiện tại là đã đọc."""
+    if request.method == 'POST':
+        Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+    return redirect(request.POST.get('next') or 'notification_list')
+
+
+# --- Tra cứu Audit Log (FR-USER-05) — quản lý phòng ban trở lên + Admin ---
+
+def can_view_audit_log(user):
+    """Quản lý phòng ban (``is_manager``) trở lên, hoặc Admin/superuser."""
+    return user.is_superuser or user.role == User.Role.ADMIN or user.is_manager
+
+
+def audit_log_required(view):
+    @wraps(view)
+    @login_required
+    def wrapper(request, *args, **kwargs):
+        if not can_view_audit_log(request.user):
+            raise PermissionDenied('Chỉ quản lý phòng ban hoặc Admin được tra cứu nhật ký hành động.')
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
+@audit_log_required
+def audit_log_list(request):
+    """READ — tra cứu ``AuditLog`` toàn hệ thống, lọc theo module/actor/phòng ban/
+    hành động/khoảng ngày (FR-USER-05: "quản lý trở lên tới admin đều tra cứu được").
+    """
+    logs = AuditLog.objects.select_related('actor', 'target_type')
+
+    module = request.GET.get('module', '')
+    if module:
+        logs = logs.filter(target_type_id=module)
+
+    actor_id = request.GET.get('actor', '')
+    if actor_id:
+        logs = logs.filter(actor_id=actor_id)
+
+    department = request.GET.get('department', '')
+    if department:
+        logs = logs.filter(actor__department=department)
+
+    action = request.GET.get('action', '')
+    if action:
+        logs = logs.filter(action=action)
+
+    date_from = request.GET.get('date_from', '')
+    if date_from:
+        logs = logs.filter(created_at__date__gte=date_from)
+    date_to = request.GET.get('date_to', '')
+    if date_to:
+        logs = logs.filter(created_at__date__lte=date_to)
+
+    q = request.GET.get('q', '').strip()
+    if q:
+        logs = logs.filter(Q(description__icontains=q) | Q(reason__icontains=q))
+
+    page_obj, page_size = paginate_queryset(request, logs)
+
+    module_choices = [
+        (ct.pk, str(ct)) for ct in
+        ContentType.objects.filter(pk__in=AuditLog.objects.values_list('target_type_id', flat=True).distinct())
+    ]
+    actor_choices = User.objects.filter(
+        pk__in=AuditLog.objects.exclude(actor__isnull=True).values_list('actor_id', flat=True).distinct(),
+    ).order_by('username')
+
+    return render(request, 'accounts/audit_log_list.html', {
+        'logs': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+        'module_choices': module_choices, 'actor_choices': actor_choices,
+        'department_choices': User.Department.choices, 'action_choices': AuditLog.Action.choices,
+        'selected_module': module, 'selected_actor': actor_id, 'selected_department': department,
+        'selected_action': action, 'date_from': date_from, 'date_to': date_to, 'q': q,
+    })

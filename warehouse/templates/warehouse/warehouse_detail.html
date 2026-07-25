@@ -57,6 +57,16 @@
             {% endif %}
           </td>
         </tr>
+        <tr>
+          <th class="text-nowrap">Nhân viên phụ trách</th>
+          <td>
+            {% for staff in obj.staff.all %}
+              <span class="badge bg-secondary">{{ staff.username }}</span>
+            {% empty %}
+              <span class="text-muted">Chưa gán — hệ thống sẽ báo cho toàn bộ phòng Kho.</span>
+            {% endfor %}
+          </td>
+        </tr>
       </tbody>
     </table>
   </div>
