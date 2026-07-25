@@ -33,22 +33,28 @@ class StocktakeSession(models.Model):
         ADJUSTMENT = 'ADJUSTMENT', 'Đã điều chỉnh (hoàn tất)'
 
     so_no = models.CharField(
-        max_length=30, unique=True, editable=False, help_text='Tự sinh: SO-YYYYMM-XXX.')
-    warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='stocktake_sessions')
+        max_length=30, unique=True, editable=False, verbose_name='Số phiếu kiểm kê',
+        help_text='Tự sinh: SO-YYYYMM-XXX.')
+    warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='stocktake_sessions', verbose_name='Kho')
     location = models.ForeignKey(
         'warehouse.Location', on_delete=models.PROTECT, null=True, blank=True,
-        related_name='stocktake_sessions',
+        related_name='stocktake_sessions', verbose_name='Vị trí',
         help_text='FR-SO-07: để trống = kiểm toàn kho, chọn = giới hạn theo vị trí.',
     )
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNING)
-    notes = models.TextField(blank=True)
-    created_by = models.ForeignKey('accounts.User', on_delete=models.PROTECT, related_name='stocktake_sessions_created')
-    reconciled_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNING, verbose_name='Trạng thái')
+    notes = models.TextField(blank=True, verbose_name='Ghi chú')
+    created_by = models.ForeignKey(
+        'accounts.User', on_delete=models.PROTECT, related_name='stocktake_sessions_created',
+        verbose_name='Người tạo')
+    reconciled_at = models.DateTimeField(null=True, blank=True, verbose_name='Ngày đối soát')
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name='Ngày hoàn tất')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu kiểm kê'
+        verbose_name_plural = 'Phiếu kiểm kê'
 
     def __str__(self):
         return self.so_no
@@ -85,22 +91,28 @@ class StocktakeItem(models.Model):
         COUNTING_ERROR = 'COUNTING_ERROR', 'Sai sót đếm/nhập liệu trước đó'
         EXPIRED = 'EXPIRED', 'Hết hạn sử dụng'
 
-    session = models.ForeignKey(StocktakeSession, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='stocktake_items')
-    qty_system = models.IntegerField(help_text='Snapshot Inventory.qty_on_hand lúc tạo phiếu.')
+    session = models.ForeignKey(
+        StocktakeSession, on_delete=models.CASCADE, related_name='items', verbose_name='Phiếu kiểm kê')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='stocktake_items', verbose_name='Sản phẩm')
+    qty_system = models.IntegerField(
+        verbose_name='Số lượng hệ thống', help_text='Snapshot Inventory.qty_on_hand lúc tạo phiếu.')
     qty_actual = models.IntegerField(
-        null=True, blank=True, validators=[MinValueValidator(0)],
+        null=True, blank=True, validators=[MinValueValidator(0)], verbose_name='Số lượng thực tế',
         help_text='FR-SO-02: Qty đếm thực tế, null = chưa quét/nhập.')
-    reason = models.CharField(max_length=20, choices=Reason.choices, blank=True)
+    reason = models.CharField(max_length=20, choices=Reason.choices, blank=True, verbose_name='Lý do chênh lệch')
     counted_by = models.ForeignKey(
-        'accounts.User', on_delete=models.PROTECT, null=True, blank=True, related_name='stocktake_items_counted')
-    counted_at = models.DateTimeField(null=True, blank=True)
+        'accounts.User', on_delete=models.PROTECT, null=True, blank=True, related_name='stocktake_items_counted',
+        verbose_name='Người đếm')
+    counted_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời điểm đếm')
 
     class Meta:
         ordering = ['product__product_code']
         constraints = [
             models.UniqueConstraint(fields=['session', 'product'], name='unique_stocktake_item_per_session'),
         ]
+        verbose_name = 'Dòng kiểm kê'
+        verbose_name_plural = 'Dòng kiểm kê'
 
     def __str__(self):
         return f'{self.session.so_no} - {self.product.product_code}'

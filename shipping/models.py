@@ -34,20 +34,26 @@ class Gin(models.Model):
         SALES = 'SALES', 'Bán hàng'
 
     gin_no = models.CharField(
-        max_length=30, unique=True, editable=False, help_text='Tự sinh: GIN-YYYYMM-XXX.')
-    warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='gins')
-    reference_type = models.CharField(max_length=20, choices=ReferenceType.choices)
+        max_length=30, unique=True, editable=False, verbose_name='Số phiếu GIN',
+        help_text='Tự sinh: GIN-YYYYMM-XXX.')
+    warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='gins', verbose_name='Kho')
+    reference_type = models.CharField(
+        max_length=20, choices=ReferenceType.choices, verbose_name='Loại tham chiếu')
     reference_no = models.CharField(
-        max_length=50, blank=True, help_text='Vd PO-0001 (khi PO), hoặc mã lệnh SX/đơn bán ngoài hệ thống.')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    notes = models.TextField(blank=True)
+        max_length=50, blank=True, verbose_name='Số tham chiếu',
+        help_text='Vd PO-0001 (khi PO), hoặc mã lệnh SX/đơn bán ngoài hệ thống.')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
+    notes = models.TextField(blank=True, verbose_name='Ghi chú')
     requested_by = models.ForeignKey(
-        'accounts.User', on_delete=models.PROTECT, related_name='gins_requested')
-    issued_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+        'accounts.User', on_delete=models.PROTECT, related_name='gins_requested', verbose_name='Người yêu cầu')
+    issued_at = models.DateTimeField(null=True, blank=True, verbose_name='Ngày xuất')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu xuất kho'
+        verbose_name_plural = 'Phiếu xuất kho'
 
     def __str__(self):
         return self.gin_no
@@ -78,10 +84,18 @@ class Gin(models.Model):
 
 
 class GinItem(models.Model):
-    gin = models.ForeignKey(Gin, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='gin_items')
-    qty_requested = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    qty_issued = models.PositiveIntegerField(default=0, help_text='FR-GIN-05: qty thực xuất, có thể khác qty_requested.')
+    gin = models.ForeignKey(Gin, on_delete=models.CASCADE, related_name='items', verbose_name='Phiếu GIN')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='gin_items', verbose_name='Sản phẩm')
+    qty_requested = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)], verbose_name='Số lượng yêu cầu')
+    qty_issued = models.PositiveIntegerField(
+        default=0, verbose_name='Số lượng thực xuất',
+        help_text='FR-GIN-05: qty thực xuất, có thể khác qty_requested.')
+
+    class Meta:
+        verbose_name = 'Dòng phiếu xuất kho'
+        verbose_name_plural = 'Dòng phiếu xuất kho'
 
     def __str__(self):
         return f'{self.gin.gin_no} - {self.product.product_code} x{self.qty_issued}/{self.qty_requested}'
@@ -92,12 +106,20 @@ class GinBatchAllocation(models.Model):
     override). Một ``GinItem`` có thể có nhiều dòng nếu FIFO phải tách nhiều batch.
     """
 
-    gin_item = models.ForeignKey(GinItem, on_delete=models.CASCADE, related_name='allocations')
-    batch = models.ForeignKey('inventory.Batch', on_delete=models.PROTECT, related_name='gin_allocations')
-    qty_allocated = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    gin_item = models.ForeignKey(
+        GinItem, on_delete=models.CASCADE, related_name='allocations', verbose_name='Dòng phiếu GIN')
+    batch = models.ForeignKey(
+        'inventory.Batch', on_delete=models.PROTECT, related_name='gin_allocations', verbose_name='Lô hàng')
+    qty_allocated = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)], verbose_name='Số lượng phân bổ')
     is_override = models.BooleanField(
-        default=False, help_text='True nếu người dùng đổi batch khác gợi ý FIFO (FR-GIN-03).')
-    override_reason = models.CharField(max_length=255, blank=True)
+        default=False, verbose_name='Đổi batch thủ công',
+        help_text='True nếu người dùng đổi batch khác gợi ý FIFO (FR-GIN-03).')
+    override_reason = models.CharField(max_length=255, blank=True, verbose_name='Lý do đổi batch')
+
+    class Meta:
+        verbose_name = 'Phân bổ lô cho phiếu xuất'
+        verbose_name_plural = 'Phân bổ lô cho phiếu xuất'
 
     def __str__(self):
         return f'{self.gin_item} - {self.batch.batch_code} x{self.qty_allocated}'

@@ -26,19 +26,22 @@ class PurchaseOrder(models.Model):
         RECEIVED = 'RECEIVED', 'Đã nhận đủ'
         CLOSED = 'CLOSED', 'Đã đóng'
 
-    po_no = models.CharField(max_length=30, unique=True, help_text='Mã PO, vd PO-0001.')
+    po_no = models.CharField(max_length=30, unique=True, verbose_name='Mã PO', help_text='Mã PO, vd PO-0001.')
     supplier = models.ForeignKey(
-        'partners.Supplier', on_delete=models.PROTECT, related_name='purchase_orders')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+        'partners.Supplier', on_delete=models.PROTECT, related_name='purchase_orders', verbose_name='Nhà cung cấp')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
     expected_delivery_date = models.DateField(
-        null=True, blank=True, help_text='Ngày giao hàng dự kiến — dùng để theo dõi On time/Delayed (FR-PO-06).')
+        null=True, blank=True, verbose_name='Ngày giao hàng dự kiến',
+        help_text='Ngày giao hàng dự kiến — dùng để theo dõi On time/Delayed (FR-PO-06).')
     received_at = models.DateField(
-        null=True, blank=True,
+        null=True, blank=True, verbose_name='Ngày nhận đủ',
         help_text='Ngày PO chuyển sang RECEIVED (set tự động 1 lần, dùng tính lead-time thực tế FR-PO-05).')
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Đơn mua hàng'
+        verbose_name_plural = 'Đơn mua hàng'
 
     def __str__(self):
         return self.po_no
@@ -68,10 +71,17 @@ class PurchaseOrder(models.Model):
 
 
 class PurchaseOrderItem(models.Model):
-    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='po_items')
-    qty_ordered = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    unit_price = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)])
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.CASCADE, related_name='items', verbose_name='Đơn mua hàng')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='po_items', verbose_name='Sản phẩm')
+    qty_ordered = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name='Số lượng đặt')
+    unit_price = models.DecimalField(
+        max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], verbose_name='Đơn giá')
+
+    class Meta:
+        verbose_name = 'Dòng đơn mua hàng'
+        verbose_name_plural = 'Dòng đơn mua hàng'
 
     def __str__(self):
         return f'{self.purchase_order.po_no} - {self.product.product_code} x{self.qty_ordered}'
@@ -88,24 +98,29 @@ class PurchaseRequest(models.Model):
         REJECTED = 'REJECTED', 'Từ chối'
 
     request_no = models.CharField(
-        max_length=30, unique=True, editable=False, help_text='Tự sinh: PR-YYYYMM-XXX.')
+        max_length=30, unique=True, editable=False, verbose_name='Số yêu cầu',
+        help_text='Tự sinh: PR-YYYYMM-XXX.')
     requested_by = models.ForeignKey(
-        'accounts.User', on_delete=models.PROTECT, related_name='purchase_requests')
+        'accounts.User', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Người yêu cầu')
     warehouse = models.ForeignKey(
-        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests',
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Kho',
         help_text='Kho đang thiếu hàng (chỉ kho loại MAIN).')
-    note = models.TextField(blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    note = models.TextField(blank=True, verbose_name='Ghi chú')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
     decided_by = models.ForeignKey(
-        'accounts.User', null=True, blank=True, on_delete=models.PROTECT, related_name='+')
-    decided_at = models.DateTimeField(null=True, blank=True)
-    reject_reason = models.CharField(max_length=255, blank=True)
+        'accounts.User', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
+        verbose_name='Người duyệt')
+    decided_at = models.DateTimeField(null=True, blank=True, verbose_name='Ngày duyệt')
+    reject_reason = models.CharField(max_length=255, blank=True, verbose_name='Lý do từ chối')
     linked_po = models.ForeignKey(
-        PurchaseOrder, null=True, blank=True, on_delete=models.SET_NULL, related_name='source_requests')
-    created_at = models.DateTimeField(auto_now_add=True)
+        PurchaseOrder, null=True, blank=True, on_delete=models.SET_NULL, related_name='source_requests',
+        verbose_name='PO liên kết')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Yêu cầu mua hàng'
+        verbose_name_plural = 'Yêu cầu mua hàng'
 
     def __str__(self):
         return self.request_no
@@ -131,9 +146,15 @@ class PurchaseRequest(models.Model):
 
 
 class PurchaseRequestItem(models.Model):
-    purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='pr_items')
-    qty_requested = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+    purchase_request = models.ForeignKey(
+        PurchaseRequest, on_delete=models.CASCADE, related_name='items', verbose_name='Yêu cầu mua hàng')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='pr_items', verbose_name='Sản phẩm')
+    qty_requested = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name='Số lượng yêu cầu')
+
+    class Meta:
+        verbose_name = 'Dòng yêu cầu mua hàng'
+        verbose_name_plural = 'Dòng yêu cầu mua hàng'
 
     def __str__(self):
         return f'{self.purchase_request.request_no} - {self.product.product_code} x{self.qty_requested}'

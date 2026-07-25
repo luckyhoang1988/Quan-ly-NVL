@@ -22,47 +22,59 @@ class Supplier(models.Model):
         OTHER = 'OTHER', 'Khác'
 
     # --- Nhóm định danh ---
-    supplier_code = models.CharField(max_length=30, unique=True, help_text='Mã NCC, vd NCC-0001.')
-    name = models.CharField(max_length=200)
+    supplier_code = models.CharField(
+        max_length=30, unique=True, verbose_name='Mã NCC', help_text='Mã NCC, vd NCC-0001.')
+    name = models.CharField(max_length=200, verbose_name='Tên nhà cung cấp')
     international_name = models.CharField(
-        max_length=200, blank=True, help_text='Tên quốc tế/viết tắt dùng để in chứng từ.')
+        max_length=200, blank=True, verbose_name='Tên quốc tế',
+        help_text='Tên quốc tế/viết tắt dùng để in chứng từ.')
     supplier_group = models.CharField(
-        max_length=100, blank=True,
+        max_length=100, blank=True, verbose_name='Nhóm NCC',
         help_text='Nhóm NCC (vd: vật tư phụ trợ, dịch vụ bảo trì, nhà thầu phụ...).')
 
     # --- Nhóm pháp lý & địa chỉ ---
-    tax_code = models.CharField(max_length=20, blank=True, help_text='Mã số thuế.')
-    registered_address = models.CharField(max_length=255, blank=True, help_text='Địa chỉ đăng ký kinh doanh.')
+    tax_code = models.CharField(max_length=20, blank=True, verbose_name='Mã số thuế', help_text='Mã số thuế.')
+    registered_address = models.CharField(
+        max_length=255, blank=True, verbose_name='Địa chỉ đăng ký', help_text='Địa chỉ đăng ký kinh doanh.')
     delivery_address = models.CharField(
-        max_length=255, blank=True, help_text='Địa chỉ kho/giao hàng thực tế, nếu khác trụ sở chính.')
-    website = models.URLField(blank=True)
+        max_length=255, blank=True, verbose_name='Địa chỉ giao hàng',
+        help_text='Địa chỉ kho/giao hàng thực tế, nếu khác trụ sở chính.')
+    website = models.URLField(blank=True, verbose_name='Website')
 
     # --- Nhóm người liên hệ ---
-    contact_name = models.CharField(max_length=150, blank=True, help_text='Họ tên người liên hệ.')
-    contact_title = models.CharField(max_length=100, blank=True, help_text='Chức vụ.')
-    contact_phone = models.CharField(max_length=30, blank=True)
-    contact_email = models.EmailField(blank=True)
+    contact_name = models.CharField(
+        max_length=150, blank=True, verbose_name='Người liên hệ', help_text='Họ tên người liên hệ.')
+    contact_title = models.CharField(max_length=100, blank=True, verbose_name='Chức vụ', help_text='Chức vụ.')
+    contact_phone = models.CharField(max_length=30, blank=True, verbose_name='Số điện thoại')
+    contact_email = models.EmailField(blank=True, verbose_name='Email liên hệ')
 
     # --- Nhóm vận hành & mua hàng ---
     lead_time_days = models.PositiveIntegerField(
-        null=True, blank=True, help_text='Thời gian giao hàng dự kiến (ngày) — dùng cho FR-PO-05.')
+        null=True, blank=True, verbose_name='Thời gian giao hàng (ngày)',
+        help_text='Thời gian giao hàng dự kiến (ngày) — dùng cho FR-PO-05.')
     qty_tolerance_percent = models.PositiveIntegerField(
-        default=5,
+        default=5, verbose_name='Ngưỡng chênh lệch Qty (%)',
         help_text='Ngưỡng % chênh lệch Qty nhận thực tế so với Qty đặt trước khi GRN cảnh báo (FR-GRN-07).')
     payment_terms = models.CharField(
-        max_length=200, blank=True, help_text='Điều khoản thanh toán (vd: Công nợ 30 ngày).')
+        max_length=200, blank=True, verbose_name='Điều khoản thanh toán',
+        help_text='Điều khoản thanh toán (vd: Công nợ 30 ngày).')
     credit_limit = models.DecimalField(
-        max_digits=14, decimal_places=2, null=True, blank=True, help_text='Hạn mức công nợ tối đa.')
-    currency = models.CharField(max_length=10, choices=Currency.choices, default=Currency.VND)
+        max_digits=14, decimal_places=2, null=True, blank=True, verbose_name='Hạn mức công nợ',
+        help_text='Hạn mức công nợ tối đa.')
+    currency = models.CharField(
+        max_length=10, choices=Currency.choices, default=Currency.VND, verbose_name='Đơn vị tiền tệ')
 
     # --- Nhóm hệ thống & quản trị ---
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
-    internal_note = models.TextField(blank=True, help_text='Ghi chú nội bộ (đánh giá, lưu ý đặc biệt...).')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, verbose_name='Trạng thái')
+    internal_note = models.TextField(
+        blank=True, verbose_name='Ghi chú nội bộ', help_text='Ghi chú nội bộ (đánh giá, lưu ý đặc biệt...).')
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['supplier_code']
+        verbose_name = 'Nhà cung cấp'
+        verbose_name_plural = 'Nhà cung cấp'
 
     def __str__(self):
         return f'{self.supplier_code} - {self.name}'

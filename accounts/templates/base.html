@@ -37,7 +37,7 @@
         <li class="sidebar-section-title">Mua hàng</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
-            <i class="bi bi-cart-check"></i> Purchase Order
+            <i class="bi bi-cart-check"></i> Đơn mua hàng
           </a>
         </li>
 
@@ -117,7 +117,7 @@
           <div class="alert {% if message.tags == 'error' %}alert-danger{% elif message.tags %}alert-{{ message.tags }}{% else %}alert-info{% endif %} alert-dismissible fade show d-flex align-items-center gap-2" role="alert">
             <i class="bi {% if message.tags == 'success' %}bi-check-circle{% elif message.tags == 'error' %}bi-exclamation-triangle{% elif message.tags == 'warning' %}bi-exclamation-triangle{% else %}bi-info-circle{% endif %}"></i>
             <div>{{ message }}</div>
-            <button type="button" class="btn-close ms-auto" data-bs-dismiss="alert" aria-label="Close"></button>
+            <button type="button" class="btn-close ms-auto" data-bs-dismiss="alert" aria-label="Đóng"></button>
           </div>
         {% endfor %}
       {% endif %}

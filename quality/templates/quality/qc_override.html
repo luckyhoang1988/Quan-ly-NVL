@@ -1,10 +1,10 @@
 {% extends 'base.html' %}
-{% block title %}Override QC — {{ inspection.qc_no }} — NVL/WMS{% endblock %}
+{% block title %}Override kết quả QC — {{ inspection.qc_no }} — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
   <a href="{% url 'receiving:grn_list' %}">GRN</a> <span class="mx-1">/</span>
   <a href="{% url 'receiving:grn_detail' inspection.grn_id %}">{{ inspection.grn.grn_no }}</a> <span class="mx-1">/</span>
-  <span class="current">Override QC</span>
+  <span class="current">Override kết quả QC</span>
 {% endblock %}
 {% block content %}
 <div class="row justify-content-center">

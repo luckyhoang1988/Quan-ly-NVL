@@ -25,20 +25,25 @@ class Grn(models.Model):
         CLOSED = 'CLOSED', 'Đã đóng'
 
     grn_no = models.CharField(
-        max_length=30, unique=True, editable=False, help_text='Tự sinh: GRN-YYYYMM-XXX.')
-    po = models.ForeignKey('purchasing.PurchaseOrder', on_delete=models.PROTECT, related_name='grns')
-    supplier = models.ForeignKey('partners.Supplier', on_delete=models.PROTECT, related_name='grns')
-    grn_date = models.DateField(default=timezone.localdate)
-    expected_arrival_date = models.DateField(null=True, blank=True)
-    actual_arrival_date = models.DateField(null=True, blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    notes = models.TextField(blank=True)
+        max_length=30, unique=True, editable=False, verbose_name='Số phiếu GRN',
+        help_text='Tự sinh: GRN-YYYYMM-XXX.')
+    po = models.ForeignKey(
+        'purchasing.PurchaseOrder', on_delete=models.PROTECT, related_name='grns', verbose_name='Đơn mua hàng')
+    supplier = models.ForeignKey(
+        'partners.Supplier', on_delete=models.PROTECT, related_name='grns', verbose_name='Nhà cung cấp')
+    grn_date = models.DateField(default=timezone.localdate, verbose_name='Ngày lập phiếu')
+    expected_arrival_date = models.DateField(null=True, blank=True, verbose_name='Ngày dự kiến nhận')
+    actual_arrival_date = models.DateField(null=True, blank=True, verbose_name='Ngày nhận thực tế')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
+    notes = models.TextField(blank=True, verbose_name='Ghi chú')
     created_by = models.ForeignKey(
-        'accounts.User', on_delete=models.PROTECT, related_name='grns_created')
-    created_at = models.DateTimeField(auto_now_add=True)
+        'accounts.User', on_delete=models.PROTECT, related_name='grns_created', verbose_name='Người tạo')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu nhập kho'
+        verbose_name_plural = 'Phiếu nhập kho'
 
     def __str__(self):
         return self.grn_no
@@ -74,17 +79,25 @@ class GrnItem(models.Model):
         PARTIAL_RECEIVED = 'PARTIAL_RECEIVED', 'Nhận một phần'
         REJECTED = 'REJECTED', 'Từ chối'
 
-    grn = models.ForeignKey(Grn, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='grn_items')
-    qty_ordered = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    qty_received = models.PositiveIntegerField(default=0)
+    grn = models.ForeignKey(Grn, on_delete=models.CASCADE, related_name='items', verbose_name='Phiếu GRN')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='grn_items', verbose_name='Sản phẩm')
+    qty_ordered = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)], verbose_name='Số lượng đặt')
+    qty_received = models.PositiveIntegerField(default=0, verbose_name='Số lượng nhận')
     qty_pass = models.PositiveIntegerField(
-        null=True, blank=True, help_text='Số lượng đạt QC — null nghĩa là chưa QC (mục 2c).')
+        null=True, blank=True, verbose_name='Số lượng đạt QC',
+        help_text='Số lượng đạt QC — null nghĩa là chưa QC (mục 2c).')
     mfg_date = models.DateField(null=True, blank=True, verbose_name='Ngày sản xuất')
     exp_date = models.DateField(null=True, blank=True, verbose_name='Hạn sử dụng')
-    batch_code = models.CharField(max_length=40, blank=True, help_text='Mã lô từ NCC.')
-    unit_price = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(0)])
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    batch_code = models.CharField(max_length=40, blank=True, verbose_name='Mã lô NCC', help_text='Mã lô từ NCC.')
+    unit_price = models.DecimalField(
+        max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], verbose_name='Đơn giá')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
+
+    class Meta:
+        verbose_name = 'Dòng phiếu nhập kho'
+        verbose_name_plural = 'Dòng phiếu nhập kho'
 
     def __str__(self):
         return f'{self.grn.grn_no} - {self.product.product_code} x{self.qty_received}/{self.qty_ordered}'
@@ -119,13 +132,15 @@ class GrnReturn(models.Model):
         RETURNED = 'RETURNED', 'Đã trả hàng'
         CLOSED = 'CLOSED', 'Đã đóng'
 
-    grn = models.ForeignKey(Grn, on_delete=models.PROTECT, related_name='returns')
-    reason = models.TextField(default='QC Fail')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    created_at = models.DateTimeField(auto_now_add=True)
+    grn = models.ForeignKey(Grn, on_delete=models.PROTECT, related_name='returns', verbose_name='Phiếu GRN')
+    reason = models.TextField(default='QC Fail', verbose_name='Lý do trả hàng')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu trả hàng NCC'
+        verbose_name_plural = 'Phiếu trả hàng NCC'
 
     def __str__(self):
         return f'RETURN-{self.grn.grn_no}'

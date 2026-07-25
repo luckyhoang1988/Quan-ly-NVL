@@ -25,24 +25,26 @@ class User(AbstractUser):
     """
 
     class Role(models.TextChoices):
-        MANAGER = 'MANAGER', 'Warehouse Manager'
-        STAFF = 'STAFF', 'Staff'
-        QC = 'QC', 'QC Inspector'
-        PURCHASING = 'PURCHASING', 'Purchasing'
-        ACCOUNTANT = 'ACCOUNTANT', 'Accountant'
-        ADMIN = 'ADMIN', 'Admin'
+        MANAGER = 'MANAGER', 'Quản lý kho'
+        STAFF = 'STAFF', 'Nhân viên kho'
+        QC = 'QC', 'Nhân viên QC'
+        PURCHASING = 'PURCHASING', 'Nhân viên mua hàng'
+        ACCOUNTANT = 'ACCOUNTANT', 'Kế toán'
+        ADMIN = 'ADMIN', 'Quản trị viên'
 
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
         blank=True,
+        verbose_name='Vai trò',
         help_text='Vai trò RBAC — quyết định permission matrix.',
     )
     is_deleted = models.BooleanField(
         default=False,
+        verbose_name='Đã xoá',
         help_text='Soft delete (FR-USER-01): đánh dấu đã xoá nhưng giữ lại để audit.',
     )
-    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời điểm xoá')
 
     # LƯU Ý: FK tới warehouse ("gán warehouse" ở bước UPDATE) sẽ được thêm ở mục 1b,
     # sau khi app `warehouse` tồn tại — thêm qua migration lúc đó (đúng thứ tự build).
@@ -51,7 +53,7 @@ class User(AbstractUser):
         # 30 custom permission cấp module (MODULES × ACTIONS) làm vocabulary RBAC.
         # rbac.sync_roles() gán chúng cho 6 Group theo ROLE_PERMISSIONS.
         permissions = [
-            (f'can_{action}_{module}', f'Can {ACTIONS[action]} {label}')
+            (f'can_{action}_{module}', f'{ACTIONS[action]} {label}')
             for module, label in MODULES.items()
             for action in ACTIONS
         ]
@@ -109,10 +111,11 @@ class AuditLog(models.Model):
         null=True,
         blank=True,
         related_name='audit_logs',
+        verbose_name='Người thực hiện',
     )
     # WHAT — mã hành động ngắn (free text) + mô tả người-đọc-được.
-    action = models.CharField(max_length=30)
-    description = models.CharField(max_length=255, blank=True)
+    action = models.CharField(max_length=30, verbose_name='Hành động')
+    description = models.CharField(max_length=255, blank=True, verbose_name='Mô tả')
 
     # Đối tượng bị tác động — GenericFK, có thể null (vd sự kiện LOGIN không có target).
     target_type = models.ForeignKey(
@@ -120,17 +123,18 @@ class AuditLog(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
+        verbose_name='Loại đối tượng',
     )
-    target_id = models.CharField(max_length=64, null=True, blank=True)
+    target_id = models.CharField(max_length=64, null=True, blank=True, verbose_name='Mã đối tượng')
     target = GenericForeignKey('target_type', 'target_id')
 
     # WHY + dữ liệu thay đổi (before/after) — tuỳ chọn.
-    reason = models.TextField(blank=True)
-    changes = models.JSONField(null=True, blank=True)
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    reason = models.TextField(blank=True, verbose_name='Lý do')
+    changes = models.JSONField(null=True, blank=True, verbose_name='Thay đổi')
+    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name='Địa chỉ IP')
 
     # WHEN
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Thời gian')
 
     class Meta:
         # -id làm tiebreaker: khi hai bản ghi trùng created_at (cùng micro-giây),
@@ -141,6 +145,8 @@ class AuditLog(models.Model):
             models.Index(fields=['target_type', 'target_id']),
             models.Index(fields=['actor', '-created_at']),
         ]
+        verbose_name = 'Nhật ký hành động'
+        verbose_name_plural = 'Nhật ký hành động'
 
     def __str__(self):
         who = self.actor.username if self.actor else 'system'

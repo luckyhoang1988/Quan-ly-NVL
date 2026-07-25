@@ -22,19 +22,23 @@ class Inventory(models.Model):
     Batch (``location_id``), Inventory chỉ tổng hợp theo kho.
     """
 
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='inventories')
-    warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='inventories')
-    qty_on_hand = models.PositiveIntegerField(default=0, help_text='BR-WM-001: không cho âm.')
-    qty_reserved = models.PositiveIntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='inventories', verbose_name='Sản phẩm')
+    warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='inventories', verbose_name='Kho')
+    qty_on_hand = models.PositiveIntegerField(
+        default=0, verbose_name='Tồn kho thực tế', help_text='BR-WM-001: không cho âm.')
+    qty_reserved = models.PositiveIntegerField(default=0, verbose_name='Số lượng đã giữ chỗ')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Cập nhật lần cuối')
 
     class Meta:
         ordering = ['warehouse__code', 'product__product_code']
         constraints = [
             models.UniqueConstraint(fields=['product', 'warehouse'], name='unique_inventory_product_warehouse'),
         ]
-        verbose_name_plural = 'Inventories'
+        verbose_name = 'Tồn kho'
+        verbose_name_plural = 'Tồn kho'
 
     def __str__(self):
         return f'{self.product.product_code} @ {self.warehouse.code}'
@@ -60,25 +64,33 @@ class Batch(models.Model):
         EXPIRED = 'EXPIRED', 'Hết hạn'
         CLOSED = 'CLOSED', 'Đã đóng (dùng hết)'
 
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='batches')
-    batch_code = models.CharField(max_length=40, unique=True, help_text='Mã lô, vd LOT-0001.')
-    supplier = models.ForeignKey('partners.Supplier', on_delete=models.PROTECT, related_name='batches')
-    location = models.ForeignKey('warehouse.Location', on_delete=models.PROTECT, related_name='batches')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='batches', verbose_name='Sản phẩm')
+    batch_code = models.CharField(
+        max_length=40, unique=True, verbose_name='Mã lô', help_text='Mã lô, vd LOT-0001.')
+    supplier = models.ForeignKey(
+        'partners.Supplier', on_delete=models.PROTECT, related_name='batches', verbose_name='Nhà cung cấp')
+    location = models.ForeignKey(
+        'warehouse.Location', on_delete=models.PROTECT, related_name='batches', verbose_name='Vị trí')
     grn_item = models.ForeignKey(
         'receiving.GrnItem', on_delete=models.PROTECT, null=True, blank=True, related_name='batches',
+        verbose_name='Dòng GRN nguồn',
         help_text='Nguồn gốc GRN item (lineage) — null cho batch không sinh trực tiếp từ GRN. '
                    'Batch con tách ra qua move_batch_qty copy lại field này từ batch nguồn.',
     )
     mfg_date = models.DateField(null=True, blank=True, verbose_name='Ngày sản xuất')
     exp_date = models.DateField(null=True, blank=True, verbose_name='Hạn sử dụng')
-    qty_received = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    qty_used = models.PositiveIntegerField(default=0)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
-    created_at = models.DateTimeField(auto_now_add=True)
+    qty_received = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)], verbose_name='Số lượng nhận')
+    qty_used = models.PositiveIntegerField(default=0, verbose_name='Số lượng đã dùng')
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.ACTIVE, verbose_name='Trạng thái')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['exp_date', 'created_at']
-        verbose_name_plural = 'Batches'
+        verbose_name = 'Lô hàng'
+        verbose_name_plural = 'Lô hàng'
 
     def __str__(self):
         return self.batch_code
@@ -104,21 +116,28 @@ class StockMovement(models.Model):
         TRANSFER_OUT = 'TRANSFER_OUT', 'Điều chuyển (xuất)'
         TRANSFER_IN = 'TRANSFER_IN', 'Điều chuyển (nhập)'
 
-    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='stock_movements')
-    warehouse = models.ForeignKey('warehouse.Warehouse', on_delete=models.PROTECT, related_name='stock_movements')
-    batch = models.ForeignKey(Batch, on_delete=models.PROTECT, null=True, blank=True, related_name='movements')
-    movement_type = models.CharField(max_length=20, choices=MovementType.choices)
-    qty = models.IntegerField(help_text='Dương = nhập, âm = xuất.')
-    qty_on_hand_after = models.PositiveIntegerField()
-    reference = models.CharField(max_length=50, blank=True, help_text='Vd GRN-2607-0001, GIN-2607-0001.')
+    product = models.ForeignKey(
+        'catalog.Product', on_delete=models.PROTECT, related_name='stock_movements', verbose_name='Sản phẩm')
+    warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='stock_movements', verbose_name='Kho')
+    batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT, null=True, blank=True, related_name='movements', verbose_name='Lô hàng')
+    movement_type = models.CharField(max_length=20, choices=MovementType.choices, verbose_name='Loại giao dịch')
+    qty = models.IntegerField(verbose_name='Số lượng', help_text='Dương = nhập, âm = xuất.')
+    qty_on_hand_after = models.PositiveIntegerField(verbose_name='Tồn sau giao dịch')
+    reference = models.CharField(
+        max_length=50, blank=True, verbose_name='Chứng từ tham chiếu',
+        help_text='Vd GRN-2607-0001, GIN-2607-0001.')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='stock_movements',
+        related_name='stock_movements', verbose_name='Người tạo',
     )
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Thời gian')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Lịch sử tồn kho'
+        verbose_name_plural = 'Lịch sử tồn kho'
 
     def __str__(self):
         return f'{self.get_movement_type_display()} {self.qty} — {self.product.product_code}'
@@ -137,26 +156,32 @@ class StockTransfer(models.Model):
     """
 
     transfer_no = models.CharField(
-        max_length=30, unique=True, editable=False, help_text='Tự sinh: TRF-YYYYMM-XXX.')
-    batch = models.ForeignKey(Batch, on_delete=models.PROTECT, related_name='transfers_from')
+        max_length=30, unique=True, editable=False, verbose_name='Số phiếu điều chuyển',
+        help_text='Tự sinh: TRF-YYYYMM-XXX.')
+    batch = models.ForeignKey(
+        Batch, on_delete=models.PROTECT, related_name='transfers_from', verbose_name='Lô hàng')
     new_batch = models.ForeignKey(
         Batch, on_delete=models.PROTECT, null=True, blank=True, related_name='transferred_from',
-        help_text='Batch mới tách ra tại vị trí đích.',
+        verbose_name='Lô mới tại vị trí đích', help_text='Batch mới tách ra tại vị trí đích.',
     )
     from_location = models.ForeignKey(
-        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_out')
+        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_out',
+        verbose_name='Vị trí nguồn')
     to_location = models.ForeignKey(
-        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_in')
-    qty = models.PositiveIntegerField(validators=[MinValueValidator(1)])
-    note = models.CharField(max_length=255, blank=True)
+        'warehouse.Location', on_delete=models.PROTECT, related_name='stock_transfers_in',
+        verbose_name='Vị trí đích')
+    qty = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name='Số lượng')
+    note = models.CharField(max_length=255, blank=True, verbose_name='Ghi chú')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='stock_transfers',
+        related_name='stock_transfers', verbose_name='Người tạo',
     )
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu điều chuyển'
+        verbose_name_plural = 'Phiếu điều chuyển'
 
     def __str__(self):
         return self.transfer_no

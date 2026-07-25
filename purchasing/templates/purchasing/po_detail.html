@@ -2,7 +2,7 @@
 {% block title %}{{ po.po_no }} — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
-  <a href="{% url 'purchasing:po_list' %}">Purchase Order</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:po_list' %}">Đơn mua hàng</a> <span class="mx-1">/</span>
   <span class="current">{{ po.po_no }}</span>
 {% endblock %}
 {% block content %}

@@ -18,7 +18,7 @@
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end mb-3">
       <div class="col-auto">
-        <label class="form-label" for="category">Category</label>
+        <label class="form-label" for="category">Danh mục</label>
         <select name="category" id="category" class="form-select" onchange="this.form.submit()">
           <option value="">-- Tất cả category --</option>
           {% for cat in categories %}
@@ -47,10 +47,10 @@
       <table class="table table-striped align-middle table-accent">
         <thead>
           <tr>
-            <th>Category</th>
+            <th>Danh mục</th>
             <th>Tiêu chuẩn</th>
-            <th>Pass rule</th>
-            <th>Fail rule</th>
+            <th>Điều kiện đạt</th>
+            <th>Điều kiện không đạt</th>
             <th>Ảnh mẫu</th>
             <th>Trạng thái</th>
             <th></th>
@@ -65,7 +65,7 @@
             <td>{{ c.fail_rule|default:"—" }}</td>
             <td>
               {% if c.reference_image %}
-              <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:32px;"></a>
+              <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ảnh tham chiếu" style="max-height:32px;"></a>
               {% else %}—{% endif %}
             </td>
             <td>

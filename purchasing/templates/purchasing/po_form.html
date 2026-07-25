@@ -2,7 +2,7 @@
 {% block title %}{% if mode == 'create' %}Tạo PO{% else %}Sửa PO{% endif %} — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
-  <a href="{% url 'purchasing:po_list' %}">Purchase Order</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:po_list' %}">Đơn mua hàng</a> <span class="mx-1">/</span>
   <span class="current">{% if mode == 'create' %}Tạo mới{% else %}Sửa: {{ obj.po_no }}{% endif %}</span>
 {% endblock %}
 {% block content %}
@@ -27,14 +27,16 @@
             <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
           {% endif %}
 
-          {% for field in form %}
-            <div class="mb-3">
-              <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
-              {{ field }}
-              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-              {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
-            </div>
-          {% endfor %}
+          <div class="row">
+            {% for field in form %}
+              <div class="col-md-6 mb-3">
+                <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+              </div>
+            {% endfor %}
+          </div>
 
           <h2 class="h5 mt-4 mb-2">Chi tiết đơn hàng</h2>
           {{ formset.management_form }}

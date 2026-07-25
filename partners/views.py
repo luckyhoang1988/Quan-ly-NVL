@@ -78,10 +78,10 @@ def supplier_create(request):
         obj = form.save()
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
-            description=f'Tạo Supplier {obj.supplier_code}',
+            description=f'Tạo Nhà cung cấp {obj.supplier_code}',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã tạo Supplier "{obj.supplier_code}".')
+        messages.success(request, f'Đã tạo Nhà cung cấp "{obj.supplier_code}".')
         return redirect('partners:supplier_list')
     return render(request, 'partners/supplier_form.html', {'form': form, 'mode': 'create'})
 
@@ -95,9 +95,9 @@ def supplier_update(request, pk):
         obj = form.save()
         log_action(
             request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Cập nhật Supplier {obj.supplier_code}',
+            description=f'Cập nhật Nhà cung cấp {obj.supplier_code}',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã cập nhật Supplier "{obj.supplier_code}".')
+        messages.success(request, f'Đã cập nhật Nhà cung cấp "{obj.supplier_code}".')
         return redirect('partners:supplier_list')
     return render(request, 'partners/supplier_form.html', {'form': form, 'mode': 'update', 'obj': obj})

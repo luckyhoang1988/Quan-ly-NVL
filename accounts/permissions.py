@@ -23,11 +23,11 @@ Codename quy ước: ``can_<action>_<module>`` (vd ``can_approve_grn``).
 MODULES = {
     'grn': 'GRN (phiếu nhập)',
     'gin': 'GIN (phiếu xuất)',
-    'opname': 'Stock Opname (kiểm kê)',
-    'qc': 'Quality Control',
+    'opname': 'Kiểm kê kho (Stock Opname)',
+    'qc': 'Kiểm tra chất lượng (QC)',
     'pr': 'Yêu cầu mua hàng (PR)',
-    'po': 'Purchase Order',
-    'reports': 'Reports',
+    'po': 'Đơn mua hàng (PO)',
+    'reports': 'Báo cáo',
 }
 
 # Hành động (FR-USER-04: Create / Read / Update / Delete / Approve).
@@ -36,11 +36,11 @@ MODULES = {
 # với 'approve' (mà QC Inspector cũng có) vì override đúng nghĩa là "người
 # khác xem lại quyết định", không phải người ra quyết định ban đầu.
 ACTIONS = {
-    'create': 'Create',
-    'read': 'Read',
-    'update': 'Update',
-    'delete': 'Delete',
-    'approve': 'Approve',
+    'create': 'Tạo',
+    'read': 'Xem',
+    'update': 'Sửa',
+    'delete': 'Xoá',
+    'approve': 'Duyệt',
     'override': 'Override',
 }
 

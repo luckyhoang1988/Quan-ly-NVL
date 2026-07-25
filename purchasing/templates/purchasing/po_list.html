@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
-{% block title %}Purchase Order — NVL/WMS{% endblock %}
+{% block title %}Đơn mua hàng — NVL/WMS{% endblock %}
 {% block breadcrumb %}
-  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Purchase Order</span>
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Đơn mua hàng</span>
 {% endblock %}
 {% block content %}
 <ul class="nav nav-pills mb-3">
@@ -21,7 +21,7 @@
 </ul>
 <div class="card shadow-sm">
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
-    <h1 class="panel-title">Purchase Order</h1>
+    <h1 class="panel-title">Đơn mua hàng</h1>
     <div class="page-toolbar">
       <a href="{% url 'purchasing:po_price_comparison' %}" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-bar-chart"></i> So sánh giá NCC

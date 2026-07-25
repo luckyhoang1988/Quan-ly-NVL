@@ -2,7 +2,7 @@
 {% block title %}So sánh giá NCC — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
-  <a href="{% url 'purchasing:po_list' %}">Purchase Order</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:po_list' %}">Đơn mua hàng</a> <span class="mx-1">/</span>
   <span class="current">So Sánh Giá NCC</span>
 {% endblock %}
 {% block content %}
@@ -10,7 +10,7 @@
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
     <h1 class="panel-title">So Sánh Giá Nhà Cung Cấp</h1>
     <div class="page-toolbar">
-      <a href="{% url 'purchasing:po_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Purchase Order</a>
+      <a href="{% url 'purchasing:po_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Đơn mua hàng</a>
     </div>
   </div>
   <div class="card-body">

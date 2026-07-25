@@ -68,9 +68,9 @@
           </div>
 
           <div class="d-flex gap-2 mt-4">
-            <button type="submit" name="action" value="pass" class="btn btn-success">QC Pass</button>
-            <button type="submit" name="action" value="partial" class="btn btn-warning">QC Partial Pass</button>
-            <button type="submit" name="action" value="fail" class="btn btn-danger">QC Fail</button>
+            <button type="submit" name="action" value="pass" class="btn btn-success">QC Đạt</button>
+            <button type="submit" name="action" value="partial" class="btn btn-warning">QC Đạt một phần</button>
+            <button type="submit" name="action" value="fail" class="btn btn-danger">QC Không đạt</button>
             <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
           </div>
         </form>
@@ -86,7 +86,7 @@
         <div class="table-responsive">
           <table class="table table-sm table-bordered table-accent">
             <thead>
-              <tr><th>Category</th><th>Tiêu chuẩn</th><th>Pass rule</th><th>Fail rule</th><th>Ảnh mẫu</th></tr>
+              <tr><th>Danh mục</th><th>Tiêu chuẩn</th><th>Điều kiện đạt</th><th>Điều kiện không đạt</th><th>Ảnh mẫu</th></tr>
             </thead>
             <tbody>
               {% for c in criteria_ref %}
@@ -94,7 +94,7 @@
                 <td>{{ c.category }}</td><td>{{ c.name }}</td><td>{{ c.pass_rule|default:"—" }}</td><td>{{ c.fail_rule|default:"—" }}</td>
                 <td>
                   {% if c.reference_image %}
-                  <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:40px;"></a>
+                  <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ảnh tham chiếu" style="max-height:40px;"></a>
                   {% else %}—{% endif %}
                 </td>
               </tr>
@@ -148,7 +148,7 @@
                   <td>
                     {% if item_form.instance.image %}
                       <a href="{{ item_form.instance.image.url }}" target="_blank">
-                        <img src="{{ item_form.instance.image.url }}" alt="Evidence" style="max-height:40px;">
+                        <img src="{{ item_form.instance.image.url }}" alt="Ảnh evidence" style="max-height:40px;">
                       </a>
                     {% endif %}
                     {{ item_form.image }}

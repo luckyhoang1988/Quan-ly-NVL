@@ -16,16 +16,17 @@ from django.utils import timezone
 class QcCriteria(models.Model):
     """Tiêu chuẩn QC master data (FR-QC-02), định nghĩa theo category sản phẩm."""
 
-    category = models.CharField(max_length=100, help_text='Vd: Bột mì, Đường...')
-    name = models.CharField(max_length=100, help_text='Vd: Ngoại hình, Trọng lượng, Seal integrity.')
-    pass_rule = models.CharField(max_length=255, blank=True)
-    fail_rule = models.CharField(max_length=255, blank=True)
+    category = models.CharField(max_length=100, verbose_name='Danh mục', help_text='Vd: Bột mì, Đường...')
+    name = models.CharField(
+        max_length=100, verbose_name='Tên tiêu chuẩn', help_text='Vd: Ngoại hình, Trọng lượng, Seal integrity.')
+    pass_rule = models.CharField(max_length=255, blank=True, verbose_name='Điều kiện đạt')
+    fail_rule = models.CharField(max_length=255, blank=True, verbose_name='Điều kiện không đạt')
     reference_image = models.ImageField(
-        upload_to='qc_criteria_ref/%Y/%m/', blank=True, null=True,
+        upload_to='qc_criteria_ref/%Y/%m/', blank=True, null=True, verbose_name='Ảnh tham chiếu',
         help_text='Ảnh mẫu minh hoạ tiêu chuẩn (vd: màu sắc đạt, seal integrity đạt).',
     )
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['category', 'name']
@@ -45,27 +46,35 @@ class QcInspection(models.Model):
         FAIL = 'FAIL', 'Không đạt'
         PARTIAL_PASS = 'PARTIAL_PASS', 'Đạt một phần'
 
-    qc_no = models.CharField(max_length=30, unique=True, editable=False, help_text='Tự sinh: QC-YYYYMM-XXX.')
-    grn = models.ForeignKey('receiving.Grn', on_delete=models.PROTECT, related_name='qc_inspections')
-    inspector = models.ForeignKey('accounts.User', on_delete=models.PROTECT, related_name='qc_inspections')
-    status = models.CharField(max_length=20, choices=Result.choices, default=Result.PENDING_QC)
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    qc_no = models.CharField(
+        max_length=30, unique=True, editable=False, verbose_name='Số phiếu QC',
+        help_text='Tự sinh: QC-YYYYMM-XXX.')
+    grn = models.ForeignKey(
+        'receiving.Grn', on_delete=models.PROTECT, related_name='qc_inspections', verbose_name='Phiếu GRN')
+    inspector = models.ForeignKey(
+        'accounts.User', on_delete=models.PROTECT, related_name='qc_inspections', verbose_name='Người kiểm tra')
+    status = models.CharField(
+        max_length=20, choices=Result.choices, default=Result.PENDING_QC, verbose_name='Kết quả')
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='Bắt đầu lúc')
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name='Hoàn tất lúc')
+    notes = models.TextField(blank=True, verbose_name='Ghi chú')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     # QC approval override (BACKLOG mục 2b) — Supervisor (Manager/Admin) ghi
     # chú lý do xem lại 1 kết quả đã quyết định. Phạm vi đã chốt với user:
     # CHỈ annotation, KHÔNG đảo ngược Batch/Inventory đã tạo bởi
     # qc_pass/qc_fail/qc_partial_pass.
-    override_note = models.TextField(blank=True)
+    override_note = models.TextField(blank=True, verbose_name='Ghi chú override')
     overridden_by = models.ForeignKey(
         'accounts.User', on_delete=models.PROTECT, null=True, blank=True, related_name='qc_overrides',
+        verbose_name='Người override',
     )
-    overridden_at = models.DateTimeField(null=True, blank=True)
+    overridden_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời điểm override')
 
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'Phiếu kiểm tra QC'
+        verbose_name_plural = 'Phiếu kiểm tra QC'
 
     def __str__(self):
         return self.qc_no
@@ -94,17 +103,23 @@ class QcInspectionItem(models.Model):
         PASS = 'PASS', 'Đạt'
         FAIL = 'FAIL', 'Không đạt'
 
-    inspection = models.ForeignKey(QcInspection, on_delete=models.CASCADE, related_name='items')
-    grn_item = models.ForeignKey('receiving.GrnItem', on_delete=models.PROTECT, related_name='qc_items')
-    criteria_name = models.CharField(max_length=100)
-    expected_value = models.CharField(max_length=100, blank=True)
-    actual_value = models.CharField(max_length=100, blank=True)
-    result = models.CharField(max_length=10, choices=Result.choices)
-    notes = models.TextField(blank=True)
+    inspection = models.ForeignKey(
+        QcInspection, on_delete=models.CASCADE, related_name='items', verbose_name='Phiếu QC')
+    grn_item = models.ForeignKey(
+        'receiving.GrnItem', on_delete=models.PROTECT, related_name='qc_items', verbose_name='Dòng GRN')
+    criteria_name = models.CharField(max_length=100, verbose_name='Tiêu chuẩn')
+    expected_value = models.CharField(max_length=100, blank=True, verbose_name='Giá trị chuẩn')
+    actual_value = models.CharField(max_length=100, blank=True, verbose_name='Giá trị thực tế')
+    result = models.CharField(max_length=10, choices=Result.choices, verbose_name='Kết quả')
+    notes = models.TextField(blank=True, verbose_name='Ghi chú')
     image = models.ImageField(
-        upload_to='qc_evidence/%Y/%m/', blank=True, null=True,
+        upload_to='qc_evidence/%Y/%m/', blank=True, null=True, verbose_name='Ảnh evidence',
         help_text='Ảnh evidence thực tế lúc kiểm (FR-QC-06).',
     )
+
+    class Meta:
+        verbose_name = 'Dòng kiểm tra QC'
+        verbose_name_plural = 'Dòng kiểm tra QC'
 
     def __str__(self):
         return f'{self.inspection.qc_no} - {self.criteria_name}: {self.result}'

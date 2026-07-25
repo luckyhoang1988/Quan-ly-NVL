@@ -52,6 +52,40 @@ leads to unfocused code.
   not a Jira/Trello substitute.
 - Phụ Lục B test case naming convention: `TC-<MODULE>-<FR#>-<seq>` (e.g. `TC-GIN-002-001`).
 
+## Frontend language convention
+
+**The entire UI is Vietnamese — always, by default, no exceptions to call out per task.** This was fixed
+project-wide on 2026-07-25 (every model field across all 10 apps was missing an explicit `verbose_name`, so
+Django auto-generated English labels like "Code"/"Name"/"Warehouse type" from the field name — visible on
+every create/edit form even though surrounding template text was already Vietnamese). Apply automatically to
+all new/changed code, without being asked again:
+
+- `LANGUAGE_CODE = 'vi'` in `config/settings.py` (not `'en-us'`) — this makes Django's own built-in strings
+  Vietnamese for free: `AbstractUser` field labels (username, email, first/last name, is_active), built-in
+  validation messages ("This field is required." → "Trường này là bắt buộc."), and Django admin chrome.
+  It does **not** translate custom field labels — those still need an explicit `verbose_name`.
+- **Every model field must have an explicit Vietnamese `verbose_name`.** Django auto-generates a label from
+  the field name (`warehouse_type` → "Warehouse type") when `verbose_name` is omitted, and that auto-label is
+  plain string formatting, not run through gettext — `LANGUAGE_CODE` alone does not fix it. Add
+  `verbose_name='...'` to every `CharField`/`ForeignKey`/etc. when writing a new model or field, and add
+  `Meta.verbose_name` / `verbose_name_plural` too (both in Vietnamese).
+- **`TextChoices` display labels** (the second element of each choice tuple) must be Vietnamese
+  (`PASS = 'PASS', 'Đạt'`, not `'Pass'`) — this is already the convention everywhere except it was missed for
+  `accounts.User.Role` (fixed: `'Warehouse Manager'/'Staff'/'QC Inspector'/...` → `'Quản lý kho'/'Nhân viên
+  kho'/'Nhân viên QC'/...`).
+- **Standalone form fields, template text, button labels, table headers, flash messages
+  (`messages.success/error`), and `AuditLog.description` strings** must be Vietnamese — these don't come from
+  `verbose_name` and are easy to leave in English by habit (e.g. `f'Đã tạo Supplier "{code}"'` should say
+  `f'Đã tạo Nhà cung cấp "{code}"'`).
+- **Established exceptions — keep these as-is, they are not violations**: domain/document abbreviations
+  already used throughout `BACKLOG.md` and the BRD/SRS/FSD source docs — `GRN`, `GIN`, `PO`, `PR`, `SO`,
+  `QC`, `SKU`, `FIFO`, `EOQ`, `ABC Analysis`, `Dashboard`, `Override` — and common IT loanwords already
+  written untranslated elsewhere in the project's own Vietnamese text (`Email`, `Website`). Don't force these
+  into stiffer pure-Vietnamese phrasing; match the terminology `BACKLOG.md` already uses.
+- After adding/changing any `verbose_name` or `Meta` options, run `manage.py makemigrations` — this generates
+  a state-only migration (no `ALTER TABLE`, since `verbose_name` isn't a DB column property) but Django still
+  needs it to keep migration history in sync. Run `manage.py migrate` after.
+
 ## Planned architecture (not yet implemented)
 
 Tech stack deliberately deviates from the original SRS (React 18 + DRF + Celery/Redis + Docker-from-day-1,

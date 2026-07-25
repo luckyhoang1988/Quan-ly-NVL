@@ -71,10 +71,10 @@ def product_create(request):
         obj = form.save()
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
-            description=f'Tạo Product {obj.product_code}',
+            description=f'Tạo Sản phẩm {obj.product_code}',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã tạo Product "{obj.product_code}".')
+        messages.success(request, f'Đã tạo Sản phẩm "{obj.product_code}".')
         return redirect('catalog:product_list')
     return render(request, 'catalog/product_form.html', {'form': form, 'mode': 'create'})
 
@@ -88,9 +88,9 @@ def product_update(request, pk):
         obj = form.save()
         log_action(
             request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Cập nhật Product {obj.product_code}',
+            description=f'Cập nhật Sản phẩm {obj.product_code}',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã cập nhật Product "{obj.product_code}".')
+        messages.success(request, f'Đã cập nhật Sản phẩm "{obj.product_code}".')
         return redirect('catalog:product_list')
     return render(request, 'catalog/product_form.html', {'form': form, 'mode': 'update', 'obj': obj})

@@ -24,19 +24,21 @@ class Warehouse(models.Model):
         STAGING = 'STAGING', 'Kho chờ'
         SCRAP = 'SCRAP', 'Kho phế'
 
-    code = models.CharField(max_length=20, unique=True, help_text='Mã kho, vd KHO-HN.')
-    name = models.CharField(max_length=150)
-    address = models.CharField(max_length=255, blank=True)
+    code = models.CharField(max_length=20, unique=True, verbose_name='Mã kho', help_text='Mã kho, vd KHO-HN.')
+    name = models.CharField(max_length=150, verbose_name='Tên kho')
+    address = models.CharField(max_length=255, blank=True, verbose_name='Địa chỉ')
     capacity = models.PositiveIntegerField(
-        null=True, blank=True, help_text='Dung tích kho (đơn vị tuỳ chọn, vd m3/pallet).',
+        null=True, blank=True, verbose_name='Dung tích',
+        help_text='Dung tích kho (đơn vị tuỳ chọn, vd m3/pallet).',
     )
     warehouse_type = models.CharField(
         max_length=20, choices=WarehouseType.choices, default=WarehouseType.MAIN,
+        verbose_name='Loại kho',
         help_text='MAIN: kho thường (GIN/FIFO được phép xuất). STAGING/SCRAP: kho hệ '
                    'thống, tối đa 1 kho hoạt động/loại.',
     )
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['code']
@@ -47,6 +49,8 @@ class Warehouse(models.Model):
                 name='unique_active_staging_scrap_warehouse',
             ),
         ]
+        verbose_name = 'Kho'
+        verbose_name_plural = 'Kho'
 
     def __str__(self):
         return f'{self.code} - {self.name}'
@@ -60,17 +64,20 @@ class Location(models.Model):
     deactivate (soft), không có xoá cứng.
     """
 
-    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name='locations')
-    code = models.CharField(max_length=30, help_text='Mã vị trí, vd Giá-A-01.')
-    capacity = models.PositiveIntegerField(null=True, blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name='locations', verbose_name='Kho')
+    code = models.CharField(max_length=30, verbose_name='Mã vị trí', help_text='Mã vị trí, vd Giá-A-01.')
+    capacity = models.PositiveIntegerField(null=True, blank=True, verbose_name='Dung tích')
+    is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
         ordering = ['warehouse__code', 'code']
         constraints = [
             models.UniqueConstraint(fields=['warehouse', 'code'], name='unique_location_code_per_warehouse'),
         ]
+        verbose_name = 'Vị trí lưu trữ'
+        verbose_name_plural = 'Vị trí lưu trữ'
 
     def __str__(self):
         return f'{self.warehouse.code} / {self.code}'

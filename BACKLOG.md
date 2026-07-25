@@ -407,6 +407,10 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [ ] Đối chiếu lại **BRD Success Criteria** (xem Phụ lục C) — có đang đúng hướng không?
 - [ ] Review lại Unit test cho các phần logic quan trọng: FIFO, `qty_available` calculation, QC pass/fail flow (KHÔNG cần chạy theo coverage 80% như SRS gốc ghi — không thực tế cho solo)
 - [ ] Polish UI/UX các màn hình dùng nhiều nhất: GRN, QC, GIN
+- [x] Audit toàn bộ UI tiếng Việt (2026-07-25, làm sớm hơn lịch Phase 8 vì phát hiện qua bug report): `LANGUAGE_CODE='vi'` +
+  `verbose_name` tiếng Việt cho mọi field model (10 app) + dịch nốt `User.Role`/`ACTIONS`/`MODULES`/button/breadcrumb/flash
+  message còn sót tiếng Anh. Quy ước bắt buộc cho code mới ghi ở `CLAUDE.md` § "Frontend language convention" — không cần
+  nhắc lại mỗi lần.
 
 ## PHASE 9 — Deploy Production + Buffer (Tuần 23-24)
 
