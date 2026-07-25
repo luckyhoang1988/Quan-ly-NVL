@@ -5,9 +5,15 @@ Phase 2 cần po_id FK hợp lệ trước khi PO workflow đầy đủ tồn t�
 Workflow: DRAFT -> APPROVED (Manager/Admin duyệt) -> SENT (gửi NCC, khoá sửa) ->
 PARTIAL_RECEIVED/RECEIVED (tự động theo Qty GRN thực nhận, xem
 ``services.sync_po_status``) -> CLOSED (archive).
+
+``PurchaseRequest``/``PurchaseRequestItem`` (bổ sung ngoài FR, không có mã FR
+riêng) là "Yêu cầu mua hàng" nhân viên kho gửi lên trước khi có PO — tách biệt
+với PO thật: PENDING -> APPROVED/REJECTED, và 1 PR đã duyệt convert thành đúng
+1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``. Không
+tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
 """
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -69,3 +75,65 @@ class PurchaseOrderItem(models.Model):
 
     def __str__(self):
         return f'{self.purchase_order.po_no} - {self.product.product_code} x{self.qty_ordered}'
+
+
+class PurchaseRequest(models.Model):
+    """Yêu cầu mua hàng (PR) — nhân viên kho đề nghị mua, Purchasing/Manager
+    duyệt rồi tạo PO thật từ đây (xem ``purchasing.views.po_create``).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Chờ duyệt'
+        APPROVED = 'APPROVED', 'Đã duyệt'
+        REJECTED = 'REJECTED', 'Từ chối'
+
+    request_no = models.CharField(
+        max_length=30, unique=True, editable=False, help_text='Tự sinh: PR-YYYYMM-XXX.')
+    requested_by = models.ForeignKey(
+        'accounts.User', on_delete=models.PROTECT, related_name='purchase_requests')
+    warehouse = models.ForeignKey(
+        'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests',
+        help_text='Kho đang thiếu hàng (chỉ kho loại MAIN).')
+    note = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    decided_by = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.PROTECT, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    reject_reason = models.CharField(max_length=255, blank=True)
+    linked_po = models.ForeignKey(
+        PurchaseOrder, null=True, blank=True, on_delete=models.SET_NULL, related_name='source_requests')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return self.request_no
+
+    @classmethod
+    def generate_request_no(cls):
+        """PR-YYYYMM-XXX, XXX = sequence trong tháng hiện tại (mirror ``Grn.generate_grn_no``)."""
+        prefix = f'PR-{timezone.localdate():%Y%m}-'
+        with transaction.atomic():
+            last = (
+                cls.objects.select_for_update()
+                .filter(request_no__startswith=prefix)
+                .order_by('-request_no')
+                .first()
+            )
+            seq = int(last.request_no.rsplit('-', 1)[-1]) + 1 if last else 1
+        return f'{prefix}{seq:03d}'
+
+    def save(self, *args, **kwargs):
+        if not self.request_no:
+            self.request_no = self.generate_request_no()
+        super().save(*args, **kwargs)
+
+
+class PurchaseRequestItem(models.Model):
+    purchase_request = models.ForeignKey(PurchaseRequest, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey('catalog.Product', on_delete=models.PROTECT, related_name='pr_items')
+    qty_requested = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+
+    def __str__(self):
+        return f'{self.purchase_request.request_no} - {self.product.product_code} x{self.qty_requested}'

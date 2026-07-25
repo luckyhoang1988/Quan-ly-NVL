@@ -47,17 +47,26 @@ def supplier_list(request):
     """READ — danh sách Supplier (mọi user đã đăng nhập đều xem được)."""
     suppliers = Supplier.objects.all()
     status = request.GET.get('status', '')
-    if status == 'active':
-        suppliers = suppliers.filter(is_active=True)
-    elif status == 'inactive':
-        suppliers = suppliers.filter(is_active=False)
+    if status:
+        suppliers = suppliers.filter(status=status)
     q = request.GET.get('q', '').strip()
     if q:
         suppliers = suppliers.filter(Q(supplier_code__icontains=q) | Q(name__icontains=q))
     page_obj, page_size = paginate_queryset(request, suppliers)
     return render(request, 'partners/supplier_list.html', {
         'suppliers': page_obj, 'page_obj': page_obj, 'page_size': page_size,
-        'selected_status': status, 'q': q,
+        'statuses': Supplier.Status.choices, 'selected_status': status, 'q': q,
+    })
+
+
+@login_required
+def supplier_detail(request, pk):
+    """READ — chi tiết Supplier theo 5 nhóm field, kèm PO gần đây tham chiếu NCC này."""
+    obj = get_object_or_404(Supplier, pk=pk)
+    return render(request, 'partners/supplier_detail.html', {
+        'obj': obj,
+        'purchase_orders': obj.purchase_orders.order_by('-created_at')[:20],
+        'can_manage': can_manage_partners(request.user),
     })
 
 

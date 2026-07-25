@@ -11,8 +11,9 @@ from accounts.models import AuditLog
 from catalog.models import Product
 from partners.models import Supplier
 from receiving.models import Grn, GrnItem
+from warehouse.models import Warehouse
 
-from .models import PurchaseOrder, PurchaseOrderItem
+from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
     close_po,
@@ -450,3 +451,161 @@ class PoListPaginationFilterTest(TestCase):
         response = self.client.get(reverse('purchasing:po_list'), {'q': 'PO-TEST-0001'})
         po_nos = [po.po_no for po in response.context['orders']]
         self.assertEqual(po_nos, ['PO-TEST-0001'])
+
+
+class PurchaseRequestCrudTest(TestCase):
+    """PR (Yêu cầu mua hàng, bổ sung ngoài FR) — Tab 1 của Purchasing. STAFF tạo
+    được (không tự duyệt); PURCHASING/MANAGER duyệt hoặc từ chối, giữ tách biệt
+    với quyền duyệt PO thật. ``TC-PR-001-<seq>``.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.client.force_login(self.staff)
+
+    def _payload(self, **overrides):
+        payload = {
+            'warehouse': self.warehouse.pk,
+            'note': 'Thiếu hàng gấp',
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk,
+            'items-0-qty_requested': 20,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_TC_PR_001_001_staff_can_create(self):
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.requested_by, self.staff)
+        self.assertEqual(pr.items.count(), 1)
+        self.assertTrue(pr.request_no.startswith('PR-'))
+        log = AuditLog.objects.filter(action=AuditLog.Action.CREATE, target_id=str(pr.pk)).first()
+        self.assertIsNotNone(log)
+
+    def test_TC_PR_001_002_anonymous_redirected_to_login(self):
+        self.client.logout()
+        response = self.client.get(reverse('purchasing:pr_create'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('login'), response.url)
+
+    def test_TC_PR_001_003_requires_at_least_one_item(self):
+        payload = self._payload(**{'items-0-product': '', 'items-0-qty_requested': ''})
+        response = self.client.post(reverse('purchasing:pr_create'), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PurchaseRequest.objects.exists())
+
+    def test_TC_PR_001_004_staff_cannot_approve(self):
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_001_005_staff_cannot_reject(self):
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        response = self.client.post(
+            reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'Không đủ ngân sách'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_001_006_purchasing_can_approve(self):
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+        self.assertEqual(pr.decided_by, self.purchasing_user)
+        self.assertIsNotNone(pr.decided_at)
+
+    def test_TC_PR_001_007_manager_can_reject_with_reason(self):
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'Không đủ ngân sách'})
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.REJECTED)
+        self.assertEqual(pr.reject_reason, 'Không đủ ngân sách')
+
+    def test_TC_PR_001_008_purchasing_still_forbidden_from_po_approve(self):
+        """Giữ 2 lớp kiểm soát tách biệt: duyệt PR khác duyệt PO thật."""
+        supplier = Supplier.objects.create(supplier_code='NCC-0001', name='NCC A')
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=supplier)
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:po_approve', args=[po.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_001_009_reject_wrong_state_shows_error(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'x'})
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+
+
+class PoCreateFromPrTest(TestCase):
+    """PR APPROVED -> tạo PO qua ``?from_pr=<pk>`` -> ``linked_po`` được gán.
+    ``TC-PR-PO-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='NCC A')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
+        PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=30)
+        self.client.force_login(self.purchasing_user)
+
+    def test_TC_PR_PO_001_get_prefills_items_from_pr(self):
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        formset = response.context['formset']
+        self.assertEqual(str(formset.forms[0].initial.get('product')), str(self.product.pk))
+        self.assertEqual(str(formset.forms[0].initial.get('qty_ordered')), '30')
+        self.assertEqual(response.context['source_pr'], self.pr)
+
+    def test_TC_PR_PO_002_post_creates_po_and_links_back(self):
+        payload = {
+            'po_no': 'PO-0001',
+            'supplier': self.supplier.pk,
+            'from_pr': self.pr.pk,
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk,
+            'items-0-qty_ordered': 30,
+            'items-0-unit_price': '15000.00',
+        }
+        response = self.client.post(reverse('purchasing:po_create'), payload)
+        po = PurchaseOrder.objects.get(po_no='PO-0001')
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.linked_po, po)
+
+    def test_TC_PR_PO_003_pending_pr_cannot_be_used(self):
+        self.pr.status = PurchaseRequest.Status.PENDING
+        self.pr.save(update_fields=['status'])
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        self.assertEqual(response.status_code, 404)

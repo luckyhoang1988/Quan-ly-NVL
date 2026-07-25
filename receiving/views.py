@@ -80,7 +80,7 @@ def grn_list(request):
         'page_size': page_size,
         'can_create': request.user.can('create', 'grn'),
         'statuses': Grn.Status.choices,
-        'suppliers': Supplier.objects.filter(is_active=True),
+        'suppliers': Supplier.objects.filter(status=Supplier.Status.ACTIVE),
         'selected_status': selected_status,
         'selected_supplier': selected_supplier,
         'q': q,

@@ -1,0 +1,112 @@
+{% extends 'base.html' %}
+{% block title %}{{ obj.request_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:pr_list' %}">Yêu cầu mua hàng</a> <span class="mx-1">/</span>
+  <span class="current">{{ obj.request_no }}</span>
+{% endblock %}
+{% block content %}
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">
+      {{ obj.request_no }}
+      {% if obj.status == 'PENDING' %}
+        <span class="badge bg-warning text-dark">{{ obj.get_status_display }}</span>
+      {% elif obj.status == 'APPROVED' %}
+        <span class="badge bg-success">{{ obj.get_status_display }}</span>
+      {% else %}
+        <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
+      {% endif %}
+    </h1>
+    <div class="page-toolbar">
+      <a href="{% url 'purchasing:pr_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
+      {% if can_create_po %}
+        <a href="{% url 'purchasing:po_create' %}?from_pr={{ obj.pk }}" class="btn btn-primary btn-sm">
+          <i class="bi bi-cart-plus"></i> Tạo PO từ yêu cầu này
+        </a>
+      {% endif %}
+      {% if can_approve %}
+        <form method="post" action="{% url 'purchasing:pr_approve' obj.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg"></i> Duyệt</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-2">Kho yêu cầu</dt>
+      <dd class="col-sm-4">{{ obj.warehouse.name }}</dd>
+      <dt class="col-sm-2">Người yêu cầu</dt>
+      <dd class="col-sm-4">{{ obj.requested_by.get_full_name|default:obj.requested_by.username }}</dd>
+      <dt class="col-sm-2">Ngày tạo</dt>
+      <dd class="col-sm-4">{{ obj.created_at|date:'d/m/Y H:i' }}</dd>
+      {% if obj.note %}
+        <dt class="col-sm-2">Ghi chú</dt>
+        <dd class="col-sm-10">{{ obj.note }}</dd>
+      {% endif %}
+      {% if obj.decided_by %}
+        <dt class="col-sm-2">Người duyệt/từ chối</dt>
+        <dd class="col-sm-4">{{ obj.decided_by.get_full_name|default:obj.decided_by.username }}</dd>
+        <dt class="col-sm-2">Ngày quyết định</dt>
+        <dd class="col-sm-4">{{ obj.decided_at|date:'d/m/Y H:i' }}</dd>
+      {% endif %}
+      {% if obj.reject_reason %}
+        <dt class="col-sm-2">Lý do từ chối</dt>
+        <dd class="col-sm-10">{{ obj.reject_reason }}</dd>
+      {% endif %}
+      {% if obj.linked_po %}
+        <dt class="col-sm-2">PO liên kết</dt>
+        <dd class="col-sm-10"><a href="{% url 'purchasing:po_detail' obj.linked_po.pk %}">{{ obj.linked_po.po_no }}</a></dd>
+      {% endif %}
+    </dl>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Chi tiết yêu cầu</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Sản phẩm</th>
+            <th>Số lượng yêu cầu</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in obj.items.all %}
+          <tr>
+            <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
+            <td>{{ item.qty_requested }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="2" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if can_approve %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <details>
+      <summary class="text-danger">Từ chối yêu cầu này</summary>
+      <form method="post" action="{% url 'purchasing:pr_reject' obj.pk %}" class="mt-2">
+        {% csrf_token %}
+        <div class="mb-2">
+          <label class="form-label" for="{{ reject_form.reject_reason.id_for_label }}">{{ reject_form.reject_reason.label }}</label>
+          {{ reject_form.reject_reason }}
+          {% for error in reject_form.reject_reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-x-lg"></i> Xác nhận từ chối</button>
+      </form>
+    </details>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

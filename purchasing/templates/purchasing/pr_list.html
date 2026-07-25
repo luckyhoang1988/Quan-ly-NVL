@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+{% block title %}Yêu cầu mua hàng — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Yêu cầu mua hàng</span>
+{% endblock %}
+{% block content %}
+<ul class="nav nav-pills mb-3">
+  <li class="nav-item">
+    <a class="nav-link {% if request.resolver_match.url_name == 'pr_list' %}active{% endif %}"
+       href="{% url 'purchasing:pr_list' %}">
+      <i class="bi bi-inbox"></i> Yêu cầu mua hàng
+      {% if pr_pending_count %}<span class="badge bg-danger ms-1">{{ pr_pending_count }}</span>{% endif %}
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link {% if request.resolver_match.url_name == 'po_list' %}active{% endif %}"
+       href="{% url 'purchasing:po_list' %}">
+      <i class="bi bi-cart-check"></i> Đơn mua hàng (PO)
+    </a>
+  </li>
+</ul>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Yêu cầu mua hàng (PR)</h1>
+    <div class="page-toolbar">
+      {% if can_create %}
+        <a href="{% url 'purchasing:pr_create' %}" class="btn btn-primary btn-sm">
+          <i class="bi bi-plus-lg"></i> Tạo yêu cầu
+        </a>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã PR..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã PR</th>
+            <th>Kho yêu cầu</th>
+            <th>Người yêu cầu</th>
+            <th>Trạng thái</th>
+            <th>Số dòng</th>
+            <th>Ngày tạo</th>
+            <th>PO liên kết</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pr in prs %}
+          <tr>
+            <td><a href="{% url 'purchasing:pr_detail' pr.pk %}">{{ pr.request_no }}</a></td>
+            <td>{{ pr.warehouse.name }}</td>
+            <td>{{ pr.requested_by.get_full_name|default:pr.requested_by.username }}</td>
+            <td>
+              {% if pr.status == 'PENDING' %}
+                <span class="badge bg-warning text-dark">{{ pr.get_status_display }}</span>
+              {% elif pr.status == 'APPROVED' %}
+                <span class="badge bg-success">{{ pr.get_status_display }}</span>
+              {% else %}
+                <span class="badge bg-secondary">{{ pr.get_status_display }}</span>
+              {% endif %}
+            </td>
+            <td>{{ pr.items.count }}</td>
+            <td>{{ pr.created_at|date:'d/m/Y H:i' }}</td>
+            <td>
+              {% if pr.linked_po %}
+                <a href="{% url 'purchasing:po_detail' pr.linked_po.pk %}">{{ pr.linked_po.po_no }}</a>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              <a href="{% url 'purchasing:pr_detail' pr.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Chi tiết</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="8" class="text-center text-muted">Chưa có yêu cầu mua hàng nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
+</div>
+{% endblock %}

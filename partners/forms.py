@@ -23,7 +23,13 @@ class SupplierForm(forms.ModelForm):
 
     class Meta:
         model = Supplier
-        fields = ['supplier_code', 'name', 'contact', 'lead_time_days', 'is_active']
+        fields = [
+            'supplier_code', 'name', 'international_name', 'supplier_group',
+            'tax_code', 'registered_address', 'delivery_address', 'website',
+            'contact_name', 'contact_title', 'contact_phone', 'contact_email',
+            'lead_time_days', 'qty_tolerance_percent', 'payment_terms', 'credit_limit', 'currency',
+            'status', 'internal_note',
+        ]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

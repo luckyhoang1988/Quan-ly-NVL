@@ -134,6 +134,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 - [x] Supplier model tối thiểu: `supplier_code`, `name`, `contact`, `lead_time_days` (cần cho FR-PO-05 sau này)
 - [x] CRUD cơ bản — role MANAGER/ADMIN tạo/sửa, mọi user đã đăng nhập xem được (đồng nhất với catalog); `is_active` sửa trực tiếp trên form
+- [x] **Mở rộng field (theo yêu cầu người dùng, không thuộc FR gốc)**: Supplier nâng từ 4 field tối thiểu lên đủ 5 nhóm nghiệp vụ — định danh (`international_name`, `supplier_group`), pháp lý & địa chỉ (`tax_code`, `registered_address`, `delivery_address`, `website`), người liên hệ (`contact_name`/`contact_title`/`contact_phone`/`contact_email`, thay cho field `contact` gộp cũ), vận hành mua hàng (thêm `payment_terms`, `credit_limit`, `currency`), hệ thống & quản trị (`status` 3 giá trị ACTIVE/INACTIVE/SUSPENDED thay cho `is_active` Boolean cũ, `internal_note`). Đã cập nhật mọi nơi filter `Supplier.is_active=True` sang `status=ACTIVE` (`purchasing/views.py`, `purchasing/services.py`, `receiving/views.py`). Có trang `supplier_detail` mới (`partners/views.py`), xếp 5 nhóm thành các card riêng theo đúng pattern `warehouse_detail.html`, kèm bảng "PO gần đây" tham chiếu NCC.
 
 ### 1e. [Bổ sung] PO Stub — `purchasing` app (tối thiểu, để GRN tham chiếu)
 
@@ -141,6 +142,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 - [x] PO model tối thiểu: `po_no`, `supplier_id` (FK), `status` (mặc định `SENT` để test được), `items` (`product_id`, `qty_ordered`, `unit_price`) — CRUD qua inline formset; phân quyền dùng RBAC thật (`user.can(action, 'po')`) vì 'po' có trong Permission Matrix: MANAGER/PURCHASING/ADMIN Create+Update, STAFF/QC/ACCOUNTANT chỉ Read
 - [x] **Chưa làm ở đây:** workflow DRAFT→APPROVED, so sánh giá NCC, auto-suggestion, lead-time tracking — tất cả dời qua Phase 5
+- [x] **[Bổ sung theo yêu cầu người dùng, không thuộc FR gốc] Yêu cầu mua hàng (PR) + 2 tab Purchasing**: thêm `PurchaseRequest`/`PurchaseRequestItem` (`request_no` tự sinh `PR-YYYYMM-XXX`, mirror `Grn.generate_grn_no()`) — nhân viên kho (STAFF) tạo PR nhiều dòng SKU, Purchasing/Manager duyệt (`approve`)/từ chối (kèm `reject_reason`); PR `APPROVED` mới convert được thành đúng 1 PO qua `po_create(?from_pr=<pk>)` (prefill toàn bộ dòng item từ PR, set `linked_po` sau khi tạo xong). Thêm module RBAC mới `pr` (`accounts/permissions.py`): STAFF chỉ Create+Read; PURCHASING có thêm `approve` (duyệt PR) nhưng vẫn **không** có `approve` trên module `po` (duyệt PO thật/gửi NCC vẫn chỉ Manager/Admin) — giữ 2 lớp kiểm soát tách biệt. Trang `purchasing/po_list.html` và `pr_list.html` (mới) có chung 1 thanh tab điều hướng (2 URL riêng `purchasing:pr_list`/`purchasing:po_list`, không dùng Bootstrap JS tabs) kèm badge số PR đang chờ duyệt tính on-the-fly.
 
 ### 1f. [Bổ sung] Inventory & Batch — `inventory` app (chỉ tạo schema, chưa làm logic)
 
@@ -354,6 +356,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 ### ✅ Definition of Done — Phase 5
 - [x] Test: tạo PO → gửi → nhận GRN partial 2 lần → PO tự chuyển RECEIVED khi đủ qty — `SyncPoStatusTest` (`purchasing/tests.py`, đã có từ Phase 2, verify lại không đổi)
 - [x] Test: GRN reject không làm giảm `qty_remaining` của PO — `test_TC_PUR_SYNC_004_rejected_item_excluded_from_total` (`purchasing/tests.py`)
+- [x] PR/PO tabs (bổ sung, xem mục 1e): `PurchaseRequestCrudTest` + `PoCreateFromPrTest` (`purchasing/tests.py`, 12 test) — verify sống qua `runserver` (2026-07-25): STAFF tạo PR 2 dòng → không thấy nút Duyệt/Từ chối, `pr_approve` trả 403; PURCHASING duyệt PR (302) → thấy nút "Tạo PO từ yêu cầu này" → `po_create?from_pr=` prefill đúng 2 dòng → tạo PO xong, `PurchaseRequest.linked_po` gán đúng, `pr_detail` hiện link PO; nhánh Từ chối (Manager, kèm lý do) hiển thị đúng, ẩn nút "Tạo PO"; PURCHASING vẫn bị chặn 403 ở `po_approve` (giữ 2 lớp kiểm soát PR/PO tách biệt). Dữ liệu test đã xoá sau khi verify. Full suite: 480 test, tất cả pass.
 
 ---
 

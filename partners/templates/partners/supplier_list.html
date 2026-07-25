@@ -21,8 +21,9 @@
         <label class="form-label" for="status">Trạng thái</label>
         <select name="status" id="status" class="form-select" onchange="this.form.submit()">
           <option value="">-- Tất cả trạng thái --</option>
-          <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
-          <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
         </select>
       </div>
       <div class="col-auto">
@@ -48,19 +49,22 @@
         </thead>
         <tbody>
           {% for s in suppliers %}
-          <tr class="{% if not s.is_active %}table-secondary text-muted{% endif %}">
-            <td>{{ s.supplier_code }}</td>
-            <td>{{ s.name }}</td>
-            <td>{{ s.contact|default:"—" }}</td>
+          <tr class="{% if s.status != 'ACTIVE' %}table-secondary text-muted{% endif %}">
+            <td><a href="{% url 'partners:supplier_detail' s.pk %}">{{ s.supplier_code }}</a></td>
+            <td><a href="{% url 'partners:supplier_detail' s.pk %}">{{ s.name }}</a></td>
+            <td>{{ s.contact_name|default:"—" }}</td>
             <td>{{ s.lead_time_days|default:"—" }}</td>
             <td>
-              {% if s.is_active %}
-                <span class="badge bg-success">Hoạt động</span>
+              {% if s.status == 'ACTIVE' %}
+                <span class="badge bg-success">{{ s.get_status_display }}</span>
+              {% elif s.status == 'SUSPENDED' %}
+                <span class="badge bg-warning text-dark">{{ s.get_status_display }}</span>
               {% else %}
-                <span class="badge bg-warning text-dark">Khoá</span>
+                <span class="badge bg-secondary">{{ s.get_status_display }}</span>
               {% endif %}
             </td>
             <td>
+              <a href="{% url 'partners:supplier_detail' s.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Chi tiết</a>
               {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
                 <a href="{% url 'partners:supplier_update' s.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
               {% endif %}

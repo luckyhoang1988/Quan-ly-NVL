@@ -163,7 +163,7 @@ def supplier_lead_time_stats():
     Tính on-the-fly khi load trang (⏸️ không cron/Celery, theo CLAUDE.md).
     """
     results = []
-    for supplier in Supplier.objects.filter(is_active=True):
+    for supplier in Supplier.objects.filter(status=Supplier.Status.ACTIVE):
         received_pos = PurchaseOrder.objects.filter(supplier=supplier, received_at__isnull=False)
         lead_times = [
             (po.received_at - po.created_at.date()).days for po in received_pos

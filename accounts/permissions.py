@@ -18,6 +18,7 @@ MODULES = {
     'gin': 'GIN (phiếu xuất)',
     'opname': 'Stock Opname (kiểm kê)',
     'qc': 'Quality Control',
+    'pr': 'Yêu cầu mua hàng (PR)',
     'po': 'Purchase Order',
     'reports': 'Reports',
 }
@@ -49,6 +50,7 @@ ROLE_PERMISSIONS = {
         'gin': {'create', 'read', 'update', 'delete', 'approve'},    # CRUD + approve
         'opname': {'create', 'read', 'update', 'delete', 'approve'}, # CRUD + approve
         'qc': {'read', 'approve', 'override'},                       # R + approve + override
+        'pr': {'create', 'read', 'update', 'delete', 'approve'},     # CRUD + approve
         'po': {'create', 'read', 'update', 'delete', 'approve'},     # CRUD + approve
         'reports': {'read', 'approve'},                              # R + approve
     },
@@ -57,6 +59,7 @@ ROLE_PERMISSIONS = {
         'gin': {'create', 'read'},                 # CR
         'opname': {'create', 'read', 'update'},    # CRU
         'qc': set(),                               # –
+        'pr': {'create', 'read'},                  # CR (tự tạo PR, không tự duyệt)
         'po': {'read'},                            # R
         'reports': {'read'},                       # R
     },
@@ -65,6 +68,7 @@ ROLE_PERMISSIONS = {
         'gin': {'read'},                                    # R
         'opname': set(),                                    # –
         'qc': {'create', 'read', 'update', 'approve'},      # CRU + approve
+        'pr': {'read'},                                     # R
         'po': {'read'},                                     # R
         'reports': {'read'},                                # R
     },
@@ -73,6 +77,10 @@ ROLE_PERMISSIONS = {
         'gin': {'read'},                                    # R
         'opname': set(),                                    # –
         'qc': {'read'},                                     # R
+        # 'approve' ở đây là duyệt PR (bước "đồng ý mua" nội bộ, Purchasing tự
+        # quyết); duyệt PO thật (approve_po, gửi NCC) vẫn giữ riêng cho
+        # Manager/Admin — 2 lớp kiểm soát tách biệt, không hạ guard PO hiện có.
+        'pr': {'read', 'update', 'approve'},                # R + duyệt/từ chối PR
         'po': {'create', 'read', 'update', 'delete'},       # CRUD (approve -> Manager/Admin)
         'reports': {'read'},                                # R
     },
@@ -81,6 +89,7 @@ ROLE_PERMISSIONS = {
         'gin': {'read'},                                    # R
         'opname': set(),                                    # –
         'qc': {'read'},                                     # R
+        'pr': {'read'},                                     # R
         'po': {'read'},                                     # R
         'reports': {'create', 'read', 'update', 'delete'},  # CRUD (approve -> Manager/Admin)
     },

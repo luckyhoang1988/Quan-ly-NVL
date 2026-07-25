@@ -26,7 +26,8 @@ class SupplierCrudTest(TestCase):
     def _create_payload(self, **overrides):
         payload = {
             'supplier_code': 'NCC-0001', 'name': 'Công ty TNHH ABC',
-            'contact': '0901234567', 'lead_time_days': 7, 'is_active': True,
+            'contact_phone': '0901234567', 'lead_time_days': 7,
+            'qty_tolerance_percent': 5, 'currency': 'VND', 'status': 'ACTIVE',
         }
         payload.update(overrides)
         return payload
@@ -66,12 +67,12 @@ class SupplierCrudTest(TestCase):
         supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         response = self.client.post(
             reverse('partners:supplier_update', args=[supplier.pk]),
-            self._create_payload(name='Công ty TNHH ABC (đổi tên)', is_active=False),
+            self._create_payload(name='Công ty TNHH ABC (đổi tên)', status='INACTIVE'),
         )
         supplier.refresh_from_db()
         self.assertRedirects(response, reverse('partners:supplier_list'))
         self.assertEqual(supplier.name, 'Công ty TNHH ABC (đổi tên)')
-        self.assertFalse(supplier.is_active)
+        self.assertEqual(supplier.status, Supplier.Status.INACTIVE)
         self.assertTrue(AuditLog.objects.filter(
             action=AuditLog.Action.UPDATE, target_id=str(supplier.pk)).exists())
 
@@ -84,7 +85,10 @@ class SupplierListPaginationFilterTest(TestCase):
             username='staff', password='staff-pass-123', role=User.Role.STAFF)
         self.client.force_login(self.staff)
         Supplier.objects.bulk_create([
-            Supplier(supplier_code=f'NCC-{i:04d}', name=f'NCC {i}', is_active=(i % 2 == 0))
+            Supplier(
+                supplier_code=f'NCC-{i:04d}', name=f'NCC {i}',
+                status=Supplier.Status.ACTIVE if i % 2 == 0 else Supplier.Status.INACTIVE,
+            )
             for i in range(1, 36)
         ])
 
@@ -98,8 +102,8 @@ class SupplierListPaginationFilterTest(TestCase):
 
     def test_filter_status_inactive(self):
         response = self.client.get(
-            reverse('partners:supplier_list'), {'status': 'inactive', 'page_size': 50})
-        self.assertTrue(all(not s.is_active for s in response.context['suppliers']))
+            reverse('partners:supplier_list'), {'status': 'INACTIVE', 'page_size': 50})
+        self.assertTrue(all(s.status == 'INACTIVE' for s in response.context['suppliers']))
 
     def test_filter_search_by_code(self):
         response = self.client.get(reverse('partners:supplier_list'), {'q': 'NCC-0001'})
