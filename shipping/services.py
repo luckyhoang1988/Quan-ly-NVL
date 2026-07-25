@@ -5,22 +5,29 @@ không viết lại thuật toán FIFO ở đây (đã có unit test riêng ở 
 chuyển state là 1 transaction atomic, ghi ``AuditLog`` qua ``accounts.audit.
 log_action`` — cùng convention với ``quality.services``/``receiving.services``.
 
-- ``start_picking``: DRAFT -> PICKING, tạo ``GinBatchAllocation`` theo gợi ý
-  FIFO cho từng ``GinItem`` (mục 3b Workflow State DRAFT: "hệ thống suggest lô
-  FIFO").
+- ``request_confirmation``/``decide_gin_confirmation``: luồng "nhân viên xác
+  nhận yêu cầu xuất -> quản lý Kho duyệt" (DRAFT -> PENDING_APPROVAL -> PICKING),
+  mirror ``receiving.services.request_submission``/``decide_grn_submission``
+  (Phase B) qua ``accounts.approvals``.
+- ``start_picking``: PENDING_APPROVAL/DRAFT -> PICKING, tạo ``GinBatchAllocation``
+  theo gợi ý FIFO cho từng ``GinItem`` (mục 3b Workflow State DRAFT: "hệ thống
+  suggest lô FIFO").
 - ``override_allocation``: FR-GIN-03, đổi batch khác gợi ý FIFO cho 1 dòng
   allocation, bắt buộc ghi lý do (mục 3b Workflow State PICKING).
 - ``issue_gin``: PICKING -> ISSUED (FR-GIN-04/FR-GIN-05) — trừ
   ``Inventory.qty_on_hand``, cộng ``Batch.qty_used``, BR-GIN-006 (batch hết
   hàng -> CLOSED), ghi ``GinItem.qty_issued`` và ``StockMovement`` ISSUE.
 - ``close_gin``: ISSUED -> CLOSED (archive).
+- ``cancel_gin``: hủy GIN trước khi ISSUED (mirror ``receiving.services.cancel_grn``).
 """
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from accounts.approvals import create_approval, decide_approval
 from accounts.audit import log_action
-from accounts.models import AuditLog
+from accounts.models import Approval, AuditLog, User
 from inventory.models import Batch, Inventory, StockMovement
 from inventory.services import record_movement, suggest_fifo_batches
 
@@ -28,13 +35,96 @@ from .models import Gin, GinBatchAllocation
 
 
 @transaction.atomic
-def start_picking(gin, actor=None, ip_address=None):
-    """DRAFT -> PICKING: gợi ý FIFO cho từng ``GinItem``, lưu thành
-    ``GinBatchAllocation`` (is_override=False). Xoá allocation cũ trước khi
-    tạo lại, phòng trường hợp gọi lại (vd sau khi sửa qty_requested ở DRAFT).
-    """
+def request_confirmation(gin, actor, ip_address=None):
+    """DRAFT -> PENDING_APPROVAL: nhân viên xác nhận yêu cầu xuất, chờ quản lý
+    Kho duyệt trước khi thật sự gợi ý FIFO và chuyển PICKING (luồng nộp/duyệt
+    2 cấp, mirror ``receiving.services.request_submission``)."""
     gin = Gin.objects.select_for_update().get(pk=gin.pk)
     if gin.status != Gin.Status.DRAFT:
+        raise ValidationError(f'Không thể xác nhận yêu cầu xuất khi GIN đang ở trạng thái {gin.status}.')
+    if not gin.items.exists():
+        raise ValidationError('GIN chưa có dòng hàng nào.')
+
+    gin.status = Gin.Status.PENDING_APPROVAL
+    gin.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=gin,
+        description=f'Xác nhận yêu cầu xuất GIN {gin.gin_no}: DRAFT -> PENDING_APPROVAL (chờ duyệt).',
+        ip_address=ip_address,
+    )
+    create_approval(
+        gin, department=User.Department.WAREHOUSE, action_label=f'Xác nhận yêu cầu xuất GIN {gin.gin_no}',
+        submitted_by=actor, ip_address=ip_address,
+    )
+    return gin
+
+
+@transaction.atomic
+def decide_gin_confirmation(approval, approved, actor, note='', ip_address=None):
+    """Quản lý Kho duyệt/từ chối yêu cầu xác nhận xuất (``request_confirmation``)
+    — duyệt thì thật sự chạy ``start_picking`` (gợi ý FIFO); từ chối thì trả GIN
+    về DRAFT."""
+    gin = Gin.objects.select_for_update().get(pk=approval.target_id)
+    if gin.status != Gin.Status.PENDING_APPROVAL:
+        raise ValidationError(f'GIN "{gin.gin_no}" không ở trạng thái chờ duyệt xác nhận.')
+
+    def on_approve():
+        start_picking(gin, actor=actor, ip_address=ip_address)
+
+    def on_reject():
+        gin.status = Gin.Status.DRAFT
+        gin.save(update_fields=['status'])
+        log_action(
+            actor, AuditLog.Action.REJECT, target=gin,
+            description=f'Từ chối xác nhận yêu cầu xuất GIN {gin.gin_no}: PENDING_APPROVAL -> DRAFT.',
+            reason=note, ip_address=ip_address,
+        )
+
+    decide_approval(
+        approval, approved, actor=actor, note=note,
+        on_approve=on_approve, on_reject=on_reject, ip_address=ip_address,
+    )
+    return gin
+
+
+@transaction.atomic
+def cancel_gin(gin, actor=None, note='', ip_address=None):
+    """Hủy GIN (mọi state trừ ISSUED/CANCELLED/CLOSED — sau ISSUED đã trừ thật
+    Inventory/Batch, không thể hủy đơn giản). Mọi yêu cầu duyệt PENDING còn treo
+    trên GIN này bị tự động từ chối (tránh mồ côi khi GIN đã hủy)."""
+    gin = Gin.objects.select_for_update().get(pk=gin.pk)
+    if gin.status in (Gin.Status.ISSUED, Gin.Status.CANCELLED, Gin.Status.CLOSED):
+        raise ValidationError(f'Không thể hủy GIN khi đang ở trạng thái {gin.status}.')
+
+    Approval.objects.filter(
+        target_type=ContentType.objects.get_for_model(Gin), target_id=str(gin.pk),
+        status=Approval.Status.PENDING,
+    ).update(
+        status=Approval.Status.REJECTED, decided_by=actor, decided_at=timezone.now(),
+        decision_note='GIN đã bị hủy.',
+    )
+
+    gin.status = Gin.Status.CANCELLED
+    gin.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.CANCEL, target=gin,
+        description=f'Hủy GIN {gin.gin_no}.', reason=note, ip_address=ip_address,
+    )
+    return gin
+
+
+@transaction.atomic
+def start_picking(gin, actor=None, ip_address=None):
+    """PENDING_APPROVAL -> PICKING (quản lý Kho đã duyệt xác nhận, gọi từ
+    ``decide_gin_confirmation``) — hoặc DRAFT -> PICKING trực tiếp khi gọi lập
+    trình (vd seed demo data) hoặc khi Manager/Admin tự bấm "Bắt đầu soạn hàng"
+    (đã có quyền ``update`` sẵn, không cần qua duyệt), bỏ qua bước duyệt. Gợi ý
+    FIFO cho từng ``GinItem``, lưu thành ``GinBatchAllocation`` (is_override=False).
+    Xoá allocation cũ trước khi tạo lại, phòng trường hợp gọi lại (vd sau khi sửa
+    qty_requested ở DRAFT).
+    """
+    gin = Gin.objects.select_for_update().get(pk=gin.pk)
+    if gin.status not in (Gin.Status.DRAFT, Gin.Status.PENDING_APPROVAL):
         raise ValidationError(f'Không thể bắt đầu soạn hàng khi GIN đang ở trạng thái {gin.status}.')
     if not gin.items.exists():
         raise ValidationError('GIN chưa có dòng hàng nào.')
@@ -51,7 +141,7 @@ def start_picking(gin, actor=None, ip_address=None):
     gin.save(update_fields=['status'])
     log_action(
         actor, AuditLog.Action.UPDATE, target=gin,
-        description=f'GIN {gin.gin_no}: DRAFT -> PICKING, đã gợi ý FIFO.',
+        description=f'GIN {gin.gin_no}: -> PICKING, đã gợi ý FIFO.',
         ip_address=ip_address,
     )
     return gin

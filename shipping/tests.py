@@ -14,7 +14,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import AuditLog
+from accounts.models import Approval, AuditLog
 from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
 from partners.models import Supplier
@@ -512,6 +512,69 @@ class GinViewTest(TestCase):
         gin.refresh_from_db()
         self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
         self.assertEqual(gin.status, Gin.Status.PICKING)
+
+    def test_TC_GIN_VIEW_002_003_staff_can_confirm_request(self):
+        """Phase C: STAFF không có 'update' nhưng dùng 'create' để xác nhận yêu
+        cầu xuất, chờ quản lý Kho duyệt (DRAFT -> PENDING_APPROVAL)."""
+        self.client.force_login(self.staff)
+        gin = self._gin_with_batch()
+        response = self.client.post(reverse('shipping:gin_confirm_request', args=[gin.pk]))
+        gin.refresh_from_db()
+        self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertEqual(gin.status, Gin.Status.PENDING_APPROVAL)
+        self.assertTrue(
+            Approval.objects.filter(target_id=str(gin.pk), status=Approval.Status.PENDING).exists())
+
+    def test_TC_GIN_VIEW_002_004_manager_approves_confirmation_transitions_to_picking(self):
+        self.client.force_login(self.staff)
+        gin = self._gin_with_batch()
+        self.client.post(reverse('shipping:gin_confirm_request', args=[gin.pk]))
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('shipping:gin_approve_confirmation', args=[gin.pk]))
+        gin.refresh_from_db()
+        self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertTrue(gin.items.first().allocations.exists())
+
+    def test_TC_GIN_VIEW_002_005_manager_rejects_confirmation_returns_to_draft(self):
+        self.client.force_login(self.staff)
+        gin = self._gin_with_batch()
+        self.client.post(reverse('shipping:gin_confirm_request', args=[gin.pk]))
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse('shipping:gin_reject_confirmation', args=[gin.pk]), {'note': 'thiếu thông tin'})
+        gin.refresh_from_db()
+        self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertEqual(gin.status, Gin.Status.DRAFT)
+
+    def test_TC_GIN_VIEW_002_006_staff_forbidden_to_approve_confirmation(self):
+        self.client.force_login(self.staff)
+        gin = self._gin_with_batch()
+        self.client.post(reverse('shipping:gin_confirm_request', args=[gin.pk]))
+        response = self.client.post(reverse('shipping:gin_approve_confirmation', args=[gin.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GIN_VIEW_008_001_manager_cancels_draft_gin(self):
+        self.client.force_login(self.manager)
+        gin = self._gin_with_batch()
+        response = self.client.post(reverse('shipping:gin_cancel', args=[gin.pk]), {'note': 'trùng đơn'})
+        gin.refresh_from_db()
+        self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertEqual(gin.status, Gin.Status.CANCELLED)
+
+    def test_TC_GIN_VIEW_008_002_staff_forbidden_to_cancel(self):
+        self.client.force_login(self.staff)
+        gin = self._gin_with_batch()
+        response = self.client.post(reverse('shipping:gin_cancel', args=[gin.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GIN_VIEW_008_003_cancel_rejected_when_issued(self):
+        self.client.force_login(self.manager)
+        gin = self._gin_with_batch(status=Gin.Status.ISSUED)
+        response = self.client.post(reverse('shipping:gin_cancel', args=[gin.pk]))
+        gin.refresh_from_db()
+        self.assertRedirects(response, reverse('shipping:gin_detail', args=[gin.pk]))
+        self.assertEqual(gin.status, Gin.Status.ISSUED)
 
     def test_TC_GIN_VIEW_003_001_staff_forbidden_to_issue(self):
         self.client.force_login(self.staff)

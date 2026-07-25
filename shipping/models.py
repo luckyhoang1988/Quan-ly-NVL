@@ -24,8 +24,10 @@ from warehouse.models import Warehouse
 class Gin(models.Model):
     class Status(models.TextChoices):
         DRAFT = 'DRAFT', 'Nháp'
+        PENDING_APPROVAL = 'PENDING_APPROVAL', 'Chờ duyệt xác nhận'
         PICKING = 'PICKING', 'Đang soạn hàng'
         ISSUED = 'ISSUED', 'Đã xuất'
+        CANCELLED = 'CANCELLED', 'Đã hủy'
         CLOSED = 'CLOSED', 'Đã đóng'
 
     class ReferenceType(models.TextChoices):

@@ -19,6 +19,22 @@
           {% csrf_token %}
           <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-box-seam"></i> Bắt đầu soạn hàng (FIFO)</button>
         </form>
+      {% elif can_confirm_request and gin.status == 'DRAFT' %}
+        <form method="post" action="{% url 'shipping:gin_confirm_request' gin.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-send"></i> Xác nhận yêu cầu xuất</button>
+        </form>
+      {% endif %}
+      {% if can_decide_confirmation and gin.status == 'PENDING_APPROVAL' %}
+        <form method="post" action="{% url 'shipping:gin_approve_confirmation' gin.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg"></i> Duyệt xác nhận</button>
+        </form>
+        <form method="post" action="{% url 'shipping:gin_reject_confirmation' gin.pk %}" class="d-inline-flex align-items-center gap-1">
+          {% csrf_token %}
+          <input type="text" name="note" class="form-control form-control-sm" placeholder="Lý do từ chối" style="width:170px;">
+          <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-x-lg"></i> Từ chối</button>
+        </form>
       {% endif %}
       {% if can_update and gin.status == 'PICKING' %}
         <a href="{% url 'shipping:gin_picking' gin.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-pencil"></i> Xem / Đổi batch</a>
@@ -33,6 +49,13 @@
         <form method="post" action="{% url 'shipping:gin_close' gin.pk %}" class="d-inline">
           {% csrf_token %}
           <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock"></i> Đóng GIN</button>
+        </form>
+      {% endif %}
+      {% if can_cancel %}
+        <form method="post" action="{% url 'shipping:gin_cancel' gin.pk %}" class="d-inline-flex align-items-center gap-1">
+          {% csrf_token %}
+          <input type="text" name="note" class="form-control form-control-sm" placeholder="Lý do hủy" style="width:150px;">
+          <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Hủy GIN</button>
         </form>
       {% endif %}
     </div>
@@ -58,6 +81,21 @@
           <th class="text-nowrap">Ghi chú</th>
           <td>{{ gin.notes|default:"—" }}</td>
         </tr>
+        {% if latest_confirmation_approval %}
+        <tr>
+          <th class="text-nowrap">Yêu cầu duyệt xác nhận</th>
+          <td colspan="3">
+            <span class="badge {% if latest_confirmation_approval.status == 'PENDING' %}bg-warning text-dark{% elif latest_confirmation_approval.status == 'APPROVED' %}bg-success{% else %}bg-danger{% endif %}">
+              {{ latest_confirmation_approval.get_status_display }}
+            </span>
+            — xác nhận bởi {{ latest_confirmation_approval.submitted_by.username }} lúc {{ latest_confirmation_approval.submitted_at|date:'d/m/Y H:i' }}
+            {% if latest_confirmation_approval.decided_at %}
+              ; quyết định bởi {{ latest_confirmation_approval.decided_by.username|default:'—' }} lúc {{ latest_confirmation_approval.decided_at|date:'d/m/Y H:i' }}
+              {% if latest_confirmation_approval.decision_note %}(<em>{{ latest_confirmation_approval.decision_note }}</em>){% endif %}
+            {% endif %}
+          </td>
+        </tr>
+        {% endif %}
       </tbody>
     </table>
   </div>
