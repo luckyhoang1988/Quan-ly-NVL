@@ -24,7 +24,7 @@ from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
 from inventory.services import sync_expired_batches
 from partners.models import Supplier
-from purchasing.models import PurchaseOrder, PurchaseOrderItem
+from purchasing.models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from purchasing.services import approve_po, close_po, send_po, sync_po_status
 from quality.models import QcCriteria, QcInspection, QcInspectionItem
 from quality.services import qc_fail, qc_partial_pass, qc_pass, start_qc
@@ -109,6 +109,21 @@ EXPIRED_PO_INDEX = 18  # hạn đã qua -> sync_expired_batches() sẽ chuyển 
 NEVER_ISSUED_PRODUCT_INDEX = 19  # Sữa đặc: có tồn nhưng không GIN nào xuất -> tồn lỏng
 ISSUED_LONG_AGO_PRODUCT_INDEX = 7  # Muối tinh: GIN xuất rồi nhưng backdate StockMovement > 180 ngày
 
+PR_NOTES = [
+    'Sắp hết hàng, cần bổ sung gấp.',
+    'Chuẩn bị cho đơn hàng lớn tháng tới.',
+    'Bổ sung tồn kho định kỳ.',
+    'Khách yêu cầu gấp, cần nhập sớm.',
+    '',
+]
+
+PR_REJECT_REASONS = [
+    'Ngân sách quý này đã hết.',
+    'Tồn kho hiện tại vẫn đủ dùng.',
+    'Chờ đàm phán lại giá với NCC.',
+    'Trùng với yêu cầu đã duyệt trước đó.',
+]
+
 
 class Command(BaseCommand):
     help = 'Tạo dữ liệu mẫu đầy đủ workflow (PO/GRN/QC/Inventory/GIN/Stocktake) để test UI thủ công.'
@@ -134,6 +149,7 @@ class Command(BaseCommand):
             suppliers = self._create_suppliers()
             products = self._create_products()
             self._create_qc_criteria()
+            self._create_purchase_requests(users, warehouses, products, suppliers)
             available_batches = self._run_po_to_qc_workflow(
                 users, warehouses, locations, suppliers, products,
             )
@@ -142,7 +158,8 @@ class Command(BaseCommand):
             sync_expired_batches()
 
         self.stdout.write(self.style.SUCCESS(
-            'Đã tạo dữ liệu mẫu: 5 kho thành phẩm + Kho chờ + Kho phế, 12 NCC, 28 sản phẩm, 45 PO, GIN, kiểm kê.'
+            'Đã tạo dữ liệu mẫu: 5 kho thành phẩm + Kho chờ + Kho phế, 12 NCC, 28 sản phẩm, '
+            '45 PO, 20 yêu cầu mua hàng (PR), GIN, kiểm kê.'
         ))
         self.stdout.write('Đăng nhập demo (password chung): ' + DEMO_PASSWORD)
         for username, role in [
@@ -235,6 +252,71 @@ class Command(BaseCommand):
         for category, name, pass_rule, fail_rule in criteria:
             QcCriteria.objects.create(category=category, name=name, pass_rule=pass_rule, fail_rule=fail_rule)
         self.stdout.write(f'Tiêu chuẩn QC: {len(criteria)}.')
+
+    # -------------------------------------------------------- purchase requests
+    def _create_purchase_requests(self, users, warehouses, products, suppliers):
+        staff = users[User.Role.STAFF]
+        purchasing_user = users[User.Role.PURCHASING]
+        manager = users[User.Role.MANAGER]
+        now = timezone.now()
+
+        # 20 PR: 10 chờ duyệt, 6 đã duyệt (4 chưa tạo PO, 2 đã tạo PO), 4 từ chối.
+        plan = (
+            ['PENDING'] * 10 + ['APPROVED_NOT_CONVERTED'] * 4
+            + ['APPROVED_CONVERTED'] * 2 + ['REJECTED'] * 4
+        )
+        prs = []
+        for i, state in enumerate(plan):
+            warehouse = warehouses[i % len(warehouses)]
+            pr = PurchaseRequest.objects.create(
+                requested_by=staff, warehouse=warehouse, note=PR_NOTES[i % len(PR_NOTES)],
+            )
+            item_count = (i % 3) + 1
+            for j in range(item_count):
+                product = products[(i * 3 + j) % len(products)]
+                PurchaseRequestItem.objects.create(
+                    purchase_request=pr, product=product, qty_requested=20 + (i * 7 + j * 11) % 180,
+                )
+
+            if state == 'PENDING':
+                prs.append(pr)
+                continue
+
+            if state == 'REJECTED':
+                pr.status = PurchaseRequest.Status.REJECTED
+                pr.decided_by = manager
+                pr.decided_at = now - datetime.timedelta(days=(i % 10) + 1)
+                pr.reject_reason = PR_REJECT_REASONS[i % len(PR_REJECT_REASONS)]
+                pr.save(update_fields=['status', 'decided_by', 'decided_at', 'reject_reason'])
+                prs.append(pr)
+                continue
+
+            pr.status = PurchaseRequest.Status.APPROVED
+            pr.decided_by = purchasing_user
+            pr.decided_at = now - datetime.timedelta(days=(i % 10) + 1)
+            pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+
+            if state == 'APPROVED_CONVERTED':
+                po = PurchaseOrder.objects.create(
+                    po_no=f'DEMO-PR-PO-{i + 1:03d}', supplier=suppliers[i % len(suppliers)],
+                )
+                for item in pr.items.all():
+                    PurchaseOrderItem.objects.create(
+                        purchase_order=po, product=item.product, qty_ordered=item.qty_requested,
+                        unit_price=Decimal('15000'),
+                    )
+                pr.linked_po = po
+                pr.save(update_fields=['linked_po'])
+
+            prs.append(pr)
+
+        self.stdout.write(
+            f'Yêu cầu mua hàng (PR): {len(prs)} '
+            f'({plan.count("PENDING")} chờ duyệt, '
+            f'{plan.count("APPROVED_NOT_CONVERTED") + plan.count("APPROVED_CONVERTED")} đã duyệt, '
+            f'{plan.count("REJECTED")} từ chối).'
+        )
+        return prs
 
     # ------------------------------------------------------- PO -> GRN -> QC
     def _run_po_to_qc_workflow(self, users, warehouses, locations, suppliers, products):
@@ -458,6 +540,11 @@ class Command(BaseCommand):
 
         PurchaseOrderItem.objects.filter(purchase_order__in=demo_pos).delete()
         demo_pos.delete()
+
+        # PurchaseRequest.warehouse la PROTECT -> phai xoa truoc demo_warehouses;
+        # linked_po la SET_NULL nen khong phu thuoc thu tu voi demo_pos.delete() o tren.
+        PurchaseRequestItem.objects.filter(purchase_request__warehouse__in=demo_warehouses).delete()
+        PurchaseRequest.objects.filter(warehouse__in=demo_warehouses).delete()
 
         Location.objects.filter(warehouse__in=demo_warehouses).delete()
         demo_warehouses.delete()
