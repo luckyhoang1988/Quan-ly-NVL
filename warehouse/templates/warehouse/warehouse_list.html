@@ -1,64 +1,74 @@
 {% extends 'base.html' %}
 {% block title %}Kho hàng — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Kho hàng</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Kho hàng</h1>
-  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
-    <a href="{% url 'warehouse:warehouse_create' %}" class="btn btn-primary">+ Tạo kho</a>
-  {% endif %}
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Kho hàng</h1>
+    {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <div class="page-toolbar">
+      <a href="{% url 'warehouse:warehouse_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo kho
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
+          <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã kho, tên kho..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
-      <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã kho</th>
+            <th>Tên kho</th>
+            <th>Địa chỉ</th>
+            <th>Dung tích</th>
+            <th>Số vị trí</th>
+            <th>Trạng thái</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for w in warehouses %}
+          <tr class="{% if not w.is_active %}table-secondary text-muted{% endif %}">
+            <td><a href="{% url 'warehouse:warehouse_detail' w.pk %}">{{ w.code }}</a></td>
+            <td>{{ w.name }}</td>
+            <td>{{ w.address|default:"—" }}</td>
+            <td>{{ w.capacity|default:"—" }}</td>
+            <td>{{ w.locations.count }}</td>
+            <td>
+              {% if w.is_active %}
+                <span class="badge bg-success">Hoạt động</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Khoá</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-muted">Chưa có kho nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã kho, tên kho..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã kho</th>
-        <th>Tên kho</th>
-        <th>Địa chỉ</th>
-        <th>Dung tích</th>
-        <th>Số vị trí</th>
-        <th>Trạng thái</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for w in warehouses %}
-      <tr class="{% if not w.is_active %}table-secondary text-muted{% endif %}">
-        <td><a href="{% url 'warehouse:warehouse_detail' w.pk %}">{{ w.code }}</a></td>
-        <td>{{ w.name }}</td>
-        <td>{{ w.address|default:"—" }}</td>
-        <td>{{ w.capacity|default:"—" }}</td>
-        <td>{{ w.locations.count }}</td>
-        <td>
-          {% if w.is_active %}
-            <span class="badge bg-success">Hoạt động</span>
-          {% else %}
-            <span class="badge bg-warning text-dark">Khoá</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="6" class="text-center text-muted">Chưa có kho nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

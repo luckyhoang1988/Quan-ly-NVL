@@ -5,7 +5,7 @@ Context bắt buộc: page_obj (Page), page_size (int, 30/40/50) — xem
 accounts/pagination.py::paginate_queryset(). Dùng {% querystring %} (Django
 5.1+) để giữ nguyên mọi filter query-param khác khi đổi page/page_size.
 {% endcomment %}
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-3">
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 px-1 py-2 border-top mt-3">
   <div class="text-muted small">
     {% if page_obj.paginator.count %}
       Hiển thị {{ page_obj.start_index }}–{{ page_obj.end_index }} / {{ page_obj.paginator.count }} dòng

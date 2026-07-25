@@ -1,91 +1,103 @@
 {% extends 'base.html' %}
 {% block title %}Purchase Order — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Purchase Order</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Purchase Order</h1>
-  <div class="d-flex gap-2">
-    <a href="{% url 'purchasing:po_price_comparison' %}" class="btn btn-outline-secondary btn-sm">So sánh giá NCC</a>
-    <a href="{% url 'purchasing:po_supplier_performance' %}" class="btn btn-outline-secondary btn-sm">Hiệu suất NCC</a>
-    {% if can_create %}
-      <a href="{% url 'purchasing:po_create' %}" class="btn btn-primary">+ Tạo PO</a>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Purchase Order</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'purchasing:po_price_comparison' %}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-bar-chart"></i> So sánh giá NCC
+      </a>
+      <a href="{% url 'purchasing:po_supplier_performance' %}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-graph-up-arrow"></i> Hiệu suất NCC
+      </a>
+      {% if can_create %}
+        <a href="{% url 'purchasing:po_create' %}" class="btn btn-primary btn-sm">
+          <i class="bi bi-plus-lg"></i> Tạo PO
+        </a>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    {% if overdue_count %}
+      <div class="alert alert-danger py-2">⚠ {{ overdue_count }} PO đang trễ hạn giao hàng.</div>
     {% endif %}
+
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="supplier">NCC</label>
+        <select name="supplier" id="supplier" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả NCC --</option>
+          {% for s in suppliers %}
+            <option value="{{ s.pk }}" {% if selected_supplier == s.pk %}selected{% endif %}>{{ s.supplier_code }} - {{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã PO..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã PO</th>
+            <th>NCC</th>
+            <th>Trạng thái</th>
+            <th>Giao hàng</th>
+            <th>Số dòng</th>
+            <th>Ngày tạo</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for po in orders %}
+          {% with delivery=po.delivery_status %}
+          <tr>
+            <td><a href="{% url 'purchasing:po_detail' po.pk %}">{{ po.po_no }}</a></td>
+            <td>{{ po.supplier.name }}</td>
+            <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
+            <td>
+              {% if delivery %}
+                <span class="badge bg-{{ delivery.css }}{% if delivery.css == 'warning' %} text-dark{% endif %}">{{ delivery.label }}</span>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>{{ po.items.count }}</td>
+            <td>{{ po.created_at|date:'d/m/Y H:i' }}</td>
+            <td>
+              <a href="{% url 'purchasing:po_detail' po.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Chi tiết</a>
+              {% if can_update and po.status == 'DRAFT' %}
+                <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endwith %}
+          {% empty %}
+          <tr><td colspan="7" class="text-center text-muted">Chưa có PO nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
 </div>
-
-{% if overdue_count %}
-  <div class="alert alert-danger py-2">⚠ {{ overdue_count }} PO đang trễ hạn giao hàng.</div>
-{% endif %}
-
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      {% for value, label in statuses %}
-        <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="supplier">NCC</label>
-    <select name="supplier" id="supplier" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả NCC --</option>
-      {% for s in suppliers %}
-        <option value="{{ s.pk }}" {% if selected_supplier == s.pk %}selected{% endif %}>{{ s.supplier_code }} - {{ s.name }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã PO..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã PO</th>
-        <th>NCC</th>
-        <th>Trạng thái</th>
-        <th>Giao hàng</th>
-        <th>Số dòng</th>
-        <th>Ngày tạo</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for po in orders %}
-      {% with delivery=po.delivery_status %}
-      <tr>
-        <td><a href="{% url 'purchasing:po_detail' po.pk %}">{{ po.po_no }}</a></td>
-        <td>{{ po.supplier.name }}</td>
-        <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
-        <td>
-          {% if delivery %}
-            <span class="badge bg-{{ delivery.css }}{% if delivery.css == 'warning' %} text-dark{% endif %}">{{ delivery.label }}</span>
-          {% else %}
-            —
-          {% endif %}
-        </td>
-        <td>{{ po.items.count }}</td>
-        <td>{{ po.created_at|date:'d/m/Y H:i' }}</td>
-        <td>
-          <a href="{% url 'purchasing:po_detail' po.pk %}" class="btn btn-sm btn-outline-secondary">Chi tiết</a>
-          {% if can_update and po.status == 'DRAFT' %}
-            <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
-          {% endif %}
-        </td>
-      </tr>
-      {% endwith %}
-      {% empty %}
-      <tr><td colspan="7" class="text-center text-muted">Chưa có PO nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

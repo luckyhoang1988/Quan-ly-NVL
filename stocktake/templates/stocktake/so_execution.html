@@ -1,13 +1,20 @@
 {% extends 'base.html' %}
 {% block title %}Đếm hàng — {{ session.so_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'stocktake:so_list' %}">Kiểm Kê</a> <span class="mx-1">/</span>
+  <a href="{% url 'stocktake:so_detail' session.pk %}">{{ session.so_no }}</a> <span class="mx-1">/</span>
+  <span class="current">Đếm hàng</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Đếm hàng — {{ session.so_no }}</h1>
-  <a href="{% url 'stocktake:so_detail' session.pk %}" class="btn btn-outline-secondary">← Chi tiết phiếu</a>
-</div>
-
-<div class="row justify-content-center mb-4">
-  <div class="col-lg-9">
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Đếm hàng — {{ session.so_no }}</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'stocktake:so_detail' session.pk %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Chi tiết phiếu</a>
+    </div>
+  </div>
+  <div class="card-body">
     <form method="post" novalidate>
       {% csrf_token %}
       {% if form.non_field_errors %}
@@ -37,35 +44,41 @@
   </div>
 </div>
 
-<h2 class="h5 mt-4">Danh sách SKU</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã SKU</th>
-        <th>Tên sản phẩm</th>
-        <th>Qty hệ thống</th>
-        <th>Qty thực tế</th>
-        <th>Chênh lệch</th>
-        <th>Lý do</th>
-        <th>Người đếm</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in session.items.all %}
-      <tr class="{% if item.qty_actual == None %}{% elif item.variance == 0 %}table-success{% elif item.variance >= -5 and item.variance <= 5 %}table-warning{% else %}table-danger{% endif %}">
-        <td>{{ item.product.product_code }}</td>
-        <td>{{ item.product.name }}</td>
-        <td>{{ item.qty_system }}</td>
-        <td>{{ item.qty_actual|default:"—" }}</td>
-        <td>{% if item.variance != None %}{{ item.variance }}{% else %}—{% endif %}</td>
-        <td>{{ item.get_reason_display|default:"—" }}</td>
-        <td>{{ item.counted_by.username|default:"—" }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="7" class="text-center text-muted">Không có SKU nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Danh sách SKU</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã SKU</th>
+            <th>Tên sản phẩm</th>
+            <th>Qty hệ thống</th>
+            <th>Qty thực tế</th>
+            <th>Chênh lệch</th>
+            <th>Lý do</th>
+            <th>Người đếm</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in session.items.all %}
+          <tr class="{% if item.qty_actual == None %}{% elif item.variance == 0 %}table-success{% elif item.variance >= -5 and item.variance <= 5 %}table-warning{% else %}table-danger{% endif %}">
+            <td>{{ item.product.product_code }}</td>
+            <td>{{ item.product.name }}</td>
+            <td>{{ item.qty_system }}</td>
+            <td>{{ item.qty_actual|default:"—" }}</td>
+            <td>{% if item.variance != None %}{{ item.variance }}{% else %}—{% endif %}</td>
+            <td>{{ item.get_reason_display|default:"—" }}</td>
+            <td>{{ item.counted_by.username|default:"—" }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="7" class="text-center text-muted">Không có SKU nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 {% endblock %}

@@ -1,35 +1,41 @@
 {% extends 'base.html' %}
 {% block title %}EOQ {{ product.product_code }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'inventory:inventory_list' %}">Tồn kho</a> <span class="mx-1">/</span>
+  <span class="current">EOQ — {{ product.product_code }}</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">EOQ — {{ product.product_code }} · {{ product.name }}</h1>
-  <div class="d-flex gap-2">
-    <a href="{% url 'catalog:product_update' product.pk %}" class="btn btn-outline-secondary btn-sm">Sửa thông tin SKU</a>
-    <a href="{% url 'inventory:inventory_list' %}" class="btn btn-outline-secondary btn-sm">« Tồn kho</a>
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">EOQ — {{ product.product_code }} · {{ product.name }}</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'catalog:product_update' product.pk %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-pencil"></i> Sửa thông tin SKU</a>
+      <a href="{% url 'inventory:inventory_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Tồn kho</a>
+    </div>
+  </div>
+  <div class="card-body">
+    {% if result.eoq is not None %}
+      <p class="mb-2">Số lượng đặt hàng tối ưu (EOQ):</p>
+      <p class="display-6 mb-0">{{ result.eoq }} {{ product.uom }} / lần đặt</p>
+    {% else %}
+      <div class="alert alert-warning mb-0">
+        <strong>Chưa đủ dữ liệu để tính EOQ.</strong>
+        <ul class="mb-0">
+          {% for reason in result.missing %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
   </div>
 </div>
 
-{% if result.eoq is not None %}
-  <div class="card mb-3">
-    <div class="card-body">
-      <p class="mb-2">Số lượng đặt hàng tối ưu (EOQ):</p>
-      <p class="display-6 mb-0">{{ result.eoq }} {{ product.uom }} / lần đặt</p>
-    </div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Dữ liệu đầu vào</h2>
   </div>
-{% else %}
-  <div class="alert alert-warning">
-    <strong>Chưa đủ dữ liệu để tính EOQ.</strong>
-    <ul class="mb-0">
-      {% for reason in result.missing %}
-        <li>{{ reason }}</li>
-      {% endfor %}
-    </ul>
-  </div>
-{% endif %}
-
-<div class="card">
   <div class="card-body">
-    <h2 class="h6">Dữ liệu đầu vào</h2>
     <dl class="row mb-0">
       <dt class="col-sm-5">Nhu cầu năm (D) — 365 ngày qua</dt>
       <dd class="col-sm-7">{{ result.annual_demand }} {{ product.uom }}</dd>

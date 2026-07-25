@@ -1,29 +1,40 @@
 {% extends 'base.html' %}
 {% block title %}Sửa vị trí — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'warehouse:warehouse_list' %}">Kho hàng</a> <span class="mx-1">/</span>
+  <a href="{% url 'warehouse:warehouse_detail' warehouse.pk %}">{{ warehouse.code }}</a> <span class="mx-1">/</span>
+  <span class="current">Sửa vị trí {{ obj.code }}</span>
+{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-7 col-lg-6">
-    <h1 class="h3 mb-3">Sửa vị trí: {{ warehouse.code }} / {{ obj.code }}</h1>
-
-    <form method="post" novalidate>
-      {% csrf_token %}
-      {% if form.non_field_errors %}
-        <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
-      {% endif %}
-
-      {% for field in form %}
-        <div class="mb-3">
-          <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
-          {{ field }}
-        </div>
-        {% for error in field.errors %}<div class="text-danger small mb-2">{{ error }}</div>{% endfor %}
-      {% endfor %}
-
-      <div class="d-flex gap-2 mt-4">
-        <button type="submit" class="btn btn-primary">Lưu</button>
-        <a class="btn btn-link" href="{% url 'warehouse:warehouse_detail' warehouse.pk %}">Huỷ</a>
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Sửa vị trí: {{ warehouse.code }} / {{ obj.code }}</h1>
       </div>
-    </form>
+      <div class="card-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
+          {% endif %}
+
+          {% for field in form %}
+            <div class="mb-3">
+              <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+              {{ field }}
+            </div>
+            {% for error in field.errors %}<div class="text-danger small mb-2">{{ error }}</div>{% endfor %}
+          {% endfor %}
+
+          <div class="d-flex gap-2 mt-4">
+            <button type="submit" class="btn btn-primary">Lưu</button>
+            <a class="btn btn-link" href="{% url 'warehouse:warehouse_detail' warehouse.pk %}">Huỷ</a>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

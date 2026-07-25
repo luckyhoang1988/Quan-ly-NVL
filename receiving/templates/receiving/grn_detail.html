@@ -1,146 +1,172 @@
 {% extends 'base.html' %}
 {% block title %}{{ grn.grn_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'receiving:grn_list' %}">GRN</a> <span class="mx-1">/</span>
+  <span class="current">{{ grn.grn_no }}</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">{{ grn.grn_no }}</h1>
-  <div class="d-flex gap-2">
-    <a href="{% url 'receiving:grn_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
-    {% if can_update and grn.status == 'DRAFT' %}
-      <a href="{% url 'receiving:grn_update' grn.pk %}" class="btn btn-outline-primary">Sửa</a>
-      <form method="post" action="{% url 'receiving:grn_submit' grn.pk %}" class="d-inline">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-primary">Submit</button>
-      </form>
-    {% endif %}
-    {% if can_update and grn.status == 'PENDING_QC' %}
-      <a href="{% url 'receiving:grn_receive_qty' grn.pk %}" class="btn btn-primary">Nhập Qty &amp; Submit to QC</a>
-    {% endif %}
-    {% if can_qc and grn.status == 'QC_IN_PROGRESS' %}
-      <a href="{% url 'quality:qc_result' grn.pk %}" class="btn btn-primary">Nhập kết quả QC</a>
-    {% endif %}
-    {% if grn.status == 'RECEIVED' %}
-      <a href="{% url 'receiving:grn_print' grn.pk %}" class="btn btn-outline-primary" target="_blank">In phiếu GRN</a>
-    {% endif %}
-    {% if can_close %}
-      <form method="post" action="{% url 'receiving:grn_close' grn.pk %}" class="d-inline">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-outline-secondary">Đóng GRN</button>
-      </form>
-    {% endif %}
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">{{ grn.grn_no }}</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'receiving:grn_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
+      {% if can_update and grn.status == 'DRAFT' %}
+        <a href="{% url 'receiving:grn_update' grn.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+        <form method="post" action="{% url 'receiving:grn_submit' grn.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-send"></i> Submit</button>
+        </form>
+      {% endif %}
+      {% if can_update and grn.status == 'PENDING_QC' %}
+        <a href="{% url 'receiving:grn_receive_qty' grn.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-clipboard-check"></i> Nhập Qty &amp; Submit to QC</a>
+      {% endif %}
+      {% if can_qc and grn.status == 'QC_IN_PROGRESS' %}
+        <a href="{% url 'quality:qc_result' grn.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-clipboard-data"></i> Nhập kết quả QC</a>
+      {% endif %}
+      {% if grn.status == 'RECEIVED' %}
+        <a href="{% url 'receiving:grn_print' grn.pk %}" class="btn btn-outline-primary btn-sm" target="_blank"><i class="bi bi-printer"></i> In phiếu GRN</a>
+      {% endif %}
+      {% if can_close %}
+        <form method="post" action="{% url 'receiving:grn_close' grn.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock"></i> Đóng GRN</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-2">Trạng thái</dt>
+      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></dd>
+      <dt class="col-sm-2">NCC</dt>
+      <dd class="col-sm-4">{{ grn.supplier.name }}</dd>
+      <dt class="col-sm-2">PO</dt>
+      <dd class="col-sm-4">{{ grn.po.po_no }}</dd>
+      <dt class="col-sm-2">Ngày GRN</dt>
+      <dd class="col-sm-4">{{ grn.grn_date }}</dd>
+      <dt class="col-sm-2">Ghi chú</dt>
+      <dd class="col-sm-4">{{ grn.notes|default:"—" }}</dd>
+    </dl>
   </div>
 </div>
 
-<dl class="row">
-  <dt class="col-sm-2">Trạng thái</dt>
-  <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ grn.get_status_display }}</span></dd>
-  <dt class="col-sm-2">NCC</dt>
-  <dd class="col-sm-4">{{ grn.supplier.name }}</dd>
-  <dt class="col-sm-2">PO</dt>
-  <dd class="col-sm-4">{{ grn.po.po_no }}</dd>
-  <dt class="col-sm-2">Ngày GRN</dt>
-  <dd class="col-sm-4">{{ grn.grn_date }}</dd>
-  <dt class="col-sm-2">Ghi chú</dt>
-  <dd class="col-sm-4">{{ grn.notes|default:"—" }}</dd>
-</dl>
-
-<h2 class="h5 mt-4">Chi tiết hàng</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Sản phẩm</th>
-        <th>Qty đặt</th>
-        <th>Qty nhận</th>
-        <th>Qty đạt QC</th>
-        <th>Trạng thái</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in grn.items.all %}
-      <tr>
-        <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
-        <td>{{ item.qty_ordered }}</td>
-        <td>{{ item.qty_received }}</td>
-        <td>{{ item.qty_pass|default:"—" }}</td>
-        <td>{{ item.get_status_display }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="5" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Chi tiết hàng</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Sản phẩm</th>
+            <th>Qty đặt</th>
+            <th>Qty nhận</th>
+            <th>Qty đạt QC</th>
+            <th>Trạng thái</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in grn.items.all %}
+          <tr>
+            <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
+            <td>{{ item.qty_ordered }}</td>
+            <td>{{ item.qty_received }}</td>
+            <td>{{ item.qty_pass|default:"—" }}</td>
+            <td>{{ item.get_status_display }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 {% if grn.qc_inspections.all %}
-<h2 class="h5 mt-4">Lịch sử QC</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã QC</th>
-        <th>Người kiểm</th>
-        <th>Kết quả</th>
-        <th>Bắt đầu</th>
-        <th>Hoàn thành</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for inspection in grn.qc_inspections.all %}
-      <tr>
-        <td>{{ inspection.qc_no }}</td>
-        <td>{{ inspection.inspector.username }}</td>
-        <td>{{ inspection.get_status_display }}</td>
-        <td>{{ inspection.started_at|date:'d/m/Y H:i'|default:"—" }}</td>
-        <td>{{ inspection.completed_at|date:'d/m/Y H:i'|default:"—" }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Lịch sử QC</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã QC</th>
+            <th>Người kiểm</th>
+            <th>Kết quả</th>
+            <th>Bắt đầu</th>
+            <th>Hoàn thành</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for inspection in grn.qc_inspections.all %}
+          <tr>
+            <td>{{ inspection.qc_no }}</td>
+            <td>{{ inspection.inspector.username }}</td>
+            <td>{{ inspection.get_status_display }}</td>
+            <td>{{ inspection.started_at|date:'d/m/Y H:i'|default:"—" }}</td>
+            <td>{{ inspection.completed_at|date:'d/m/Y H:i'|default:"—" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 {% endif %}
 
 {% if grn.returns.all %}
-<h2 class="h5 mt-4">Phiếu trả hàng</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Trạng thái</th>
-        <th>Lý do</th>
-        <th>Ngày tạo</th>
-        <th>Xử lý</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for ret in grn.returns.all %}
-      <tr>
-        <td>{{ ret.get_status_display }}</td>
-        <td>{{ ret.reason }}</td>
-        <td>{{ ret.created_at|date:'d/m/Y H:i' }}</td>
-        <td>
-          {% if can_approve_return and ret.status == 'PENDING' %}
-          <form method="post" action="{% url 'receiving:grn_return_approve' ret.pk %}" class="d-inline">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-primary">Duyệt</button>
-          </form>
-          {% endif %}
-          {% if can_manage_return and ret.status == 'APPROVED' %}
-          <form method="post" action="{% url 'receiving:grn_return_mark_returned' ret.pk %}" class="d-inline">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-primary">Xác nhận đã trả</button>
-          </form>
-          {% endif %}
-          {% if can_approve_return and ret.status == 'RETURNED' %}
-          <form method="post" action="{% url 'receiving:grn_return_close' ret.pk %}" class="d-inline">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-outline-secondary">Đóng</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Phiếu trả hàng</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Trạng thái</th>
+            <th>Lý do</th>
+            <th>Ngày tạo</th>
+            <th>Xử lý</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ret in grn.returns.all %}
+          <tr>
+            <td>{{ ret.get_status_display }}</td>
+            <td>{{ ret.reason }}</td>
+            <td>{{ ret.created_at|date:'d/m/Y H:i' }}</td>
+            <td>
+              {% if can_approve_return and ret.status == 'PENDING' %}
+              <form method="post" action="{% url 'receiving:grn_return_approve' ret.pk %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-check-lg"></i> Duyệt</button>
+              </form>
+              {% endif %}
+              {% if can_manage_return and ret.status == 'APPROVED' %}
+              <form method="post" action="{% url 'receiving:grn_return_mark_returned' ret.pk %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-truck"></i> Xác nhận đã trả</button>
+              </form>
+              {% endif %}
+              {% if can_approve_return and ret.status == 'RETURNED' %}
+              <form method="post" action="{% url 'receiving:grn_return_close' ret.pk %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-lock"></i> Đóng</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 {% endif %}
 {% endblock %}

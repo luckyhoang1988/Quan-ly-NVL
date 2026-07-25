@@ -1,86 +1,96 @@
 {% extends 'base.html' %}
 {% block title %}Tồn Kho — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Tồn kho</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Tồn Kho Real-time</h1>
-  <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">Xem Lô hàng »</a>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Tồn Kho Real-time</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-box-seam"></i> Xem Lô hàng
+      </a>
+    </div>
+  </div>
+  <div class="card-body">
+    {% if below_min_count %}
+      <div class="alert alert-danger py-2">⚠ {{ below_min_count }} SKU đang tồn dưới Min Level.</div>
+    {% endif %}
+    {% if above_max_count %}
+      <div class="alert alert-warning py-2">⚠ {{ above_max_count }} SKU đang tồn trên Max Level.</div>
+    {% endif %}
+
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="warehouse">Kho</label>
+        <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả kho --</option>
+          {% for wh in warehouses %}
+            <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã SKU</th>
+            <th>Tên sản phẩm</th>
+            <th>Kho</th>
+            <th>Qty on-hand</th>
+            <th>Qty reserved</th>
+            <th>Qty quarantine</th>
+            <th>Qty available</th>
+            <th>Min / Max</th>
+            <th>Cảnh báo</th>
+            <th>EOQ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr class="{% if row.below_min %}table-danger{% elif row.above_max %}table-warning{% endif %}">
+            <td>{{ row.inventory.product.product_code }}</td>
+            <td>{{ row.inventory.product.name }}</td>
+            <td>{{ row.inventory.warehouse.code }}</td>
+            <td>{{ row.inventory.qty_on_hand }}</td>
+            <td>{{ row.inventory.qty_reserved }}</td>
+            <td>{{ row.inventory.qty_quarantine }}</td>
+            <td>{{ row.inventory.qty_available }}</td>
+            <td>{{ row.inventory.product.min_level|default:"—" }} / {{ row.inventory.product.max_level|default:"—" }}</td>
+            <td>
+              {% if row.below_min %}
+                <span class="badge bg-danger">Dưới Min</span>
+                {% if row.suggested_po_qty > 0 %}
+                  <a class="btn btn-sm btn-outline-danger ms-1"
+                     href="{% url 'purchasing:po_create' %}?product={{ row.inventory.product_id }}&qty={{ row.suggested_po_qty }}"><i class="bi bi-cart-plus"></i> Tạo PO</a>
+                {% endif %}
+              {% elif row.above_max %}
+                <span class="badge bg-warning text-dark">Trên Max</span>
+              {% else %}
+                <span class="badge bg-success">Bình thường</span>
+              {% endif %}
+            </td>
+            <td>
+              <a class="btn btn-sm btn-outline-secondary" href="{% url 'inventory:product_eoq' row.inventory.product_id %}"><i class="bi bi-calculator"></i> Tính EOQ</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="10" class="text-center text-muted">Chưa có dữ liệu tồn kho.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
 </div>
-
-{% if below_min_count %}
-  <div class="alert alert-danger py-2">⚠ {{ below_min_count }} SKU đang tồn dưới Min Level.</div>
-{% endif %}
-{% if above_max_count %}
-  <div class="alert alert-warning py-2">⚠ {{ above_max_count }} SKU đang tồn trên Max Level.</div>
-{% endif %}
-
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="warehouse">Kho</label>
-    <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả kho --</option>
-      {% for wh in warehouses %}
-        <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã SKU</th>
-        <th>Tên sản phẩm</th>
-        <th>Kho</th>
-        <th>Qty on-hand</th>
-        <th>Qty reserved</th>
-        <th>Qty quarantine</th>
-        <th>Qty available</th>
-        <th>Min / Max</th>
-        <th>Cảnh báo</th>
-        <th>EOQ</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr class="{% if row.below_min %}table-danger{% elif row.above_max %}table-warning{% endif %}">
-        <td>{{ row.inventory.product.product_code }}</td>
-        <td>{{ row.inventory.product.name }}</td>
-        <td>{{ row.inventory.warehouse.code }}</td>
-        <td>{{ row.inventory.qty_on_hand }}</td>
-        <td>{{ row.inventory.qty_reserved }}</td>
-        <td>{{ row.inventory.qty_quarantine }}</td>
-        <td>{{ row.inventory.qty_available }}</td>
-        <td>{{ row.inventory.product.min_level|default:"—" }} / {{ row.inventory.product.max_level|default:"—" }}</td>
-        <td>
-          {% if row.below_min %}
-            <span class="badge bg-danger">Dưới Min</span>
-            {% if row.suggested_po_qty > 0 %}
-              <a class="btn btn-sm btn-outline-danger ms-1"
-                 href="{% url 'purchasing:po_create' %}?product={{ row.inventory.product_id }}&qty={{ row.suggested_po_qty }}">Tạo PO</a>
-            {% endif %}
-          {% elif row.above_max %}
-            <span class="badge bg-warning text-dark">Trên Max</span>
-          {% else %}
-            <span class="badge bg-success">Bình thường</span>
-          {% endif %}
-        </td>
-        <td>
-          <a class="btn btn-sm btn-outline-secondary" href="{% url 'inventory:product_eoq' row.inventory.product_id %}">Tính EOQ</a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="10" class="text-center text-muted">Chưa có dữ liệu tồn kho.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

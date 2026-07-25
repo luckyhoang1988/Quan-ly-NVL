@@ -1,143 +1,164 @@
 {% extends 'base.html' %}
 {% block title %}Kết quả QC — {{ grn.grn_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'receiving:grn_list' %}">GRN</a> <span class="mx-1">/</span>
+  <a href="{% url 'receiving:grn_detail' grn.pk %}">{{ grn.grn_no }}</a> <span class="mx-1">/</span>
+  <span class="current">Kết quả QC</span>
+{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-lg-9">
-    <h1 class="h3 mb-3">Nhập kết quả QC — {{ grn.grn_no }} ({{ inspection.qc_no }})</h1>
-
-    <form method="post" novalidate>
-      {% csrf_token %}
-      {% if result_form.non_field_errors %}
-        <div class="alert alert-danger py-2">{{ result_form.non_field_errors }}</div>
-      {% endif %}
-
-      <div class="mb-3">
-        <label class="form-label" for="{{ result_form.location.id_for_label }}">{{ result_form.location.label }}</label>
-        {{ result_form.location }}
-        {% if result_form.location.help_text %}<div class="form-text">{{ result_form.location.help_text }}</div>{% endif %}
-        {% for error in result_form.location.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Nhập kết quả QC — {{ grn.grn_no }} ({{ inspection.qc_no }})</h1>
       </div>
-      <div class="mb-3">
-        <label class="form-label" for="{{ result_form.reason.id_for_label }}">{{ result_form.reason.label }}</label>
-        {{ result_form.reason }}
-        {% for error in result_form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      <div class="card-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% if result_form.non_field_errors %}
+            <div class="alert alert-danger py-2">{{ result_form.non_field_errors }}</div>
+          {% endif %}
+
+          <div class="mb-3">
+            <label class="form-label" for="{{ result_form.location.id_for_label }}">{{ result_form.location.label }}</label>
+            {{ result_form.location }}
+            {% if result_form.location.help_text %}<div class="form-text">{{ result_form.location.help_text }}</div>{% endif %}
+            {% for error in result_form.location.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="{{ result_form.reason.id_for_label }}">{{ result_form.reason.label }}</label>
+            {{ result_form.reason }}
+            {% for error in result_form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
+
+          <h2 class="h5 mt-4 mb-2">Qty đạt QC từng item (dùng cho Partial Pass)</h2>
+          {{ formset.management_form }}
+          {% if formset.non_form_errors %}
+            <div class="alert alert-danger py-2">{{ formset.non_form_errors }}</div>
+          {% endif %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle table-accent">
+              <thead>
+                <tr>
+                  <th>Sản phẩm</th>
+                  <th>Qty thực nhận</th>
+                  <th>Qty đạt QC</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item_form in formset %}
+                <tr>
+                  {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+                  <td>{{ item_form.instance.product.product_code }} — {{ item_form.instance.product.name }}</td>
+                  <td>{{ item_form.instance.qty_received }}</td>
+                  <td>
+                    {{ item_form.qty_pass }}
+                    {% for error in item_form.qty_pass.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="d-flex gap-2 mt-4">
+            <button type="submit" name="action" value="pass" class="btn btn-success">QC Pass</button>
+            <button type="submit" name="action" value="partial" class="btn btn-warning">QC Partial Pass</button>
+            <button type="submit" name="action" value="fail" class="btn btn-danger">QC Fail</button>
+            <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
+          </div>
+        </form>
       </div>
+    </div>
 
-      <h2 class="h5 mt-4 mb-2">Qty đạt QC từng item (dùng cho Partial Pass)</h2>
-      {{ formset.management_form }}
-      {% if formset.non_form_errors %}
-        <div class="alert alert-danger py-2">{{ formset.non_form_errors }}</div>
-      {% endif %}
-      <div class="table-responsive">
-        <table class="table table-sm align-middle">
-          <thead>
-            <tr>
-              <th>Sản phẩm</th>
-              <th>Qty thực nhận</th>
-              <th>Qty đạt QC</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item_form in formset %}
-            <tr>
-              {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
-              <td>{{ item_form.instance.product.product_code }} — {{ item_form.instance.product.name }}</td>
-              <td>{{ item_form.instance.qty_received }}</td>
-              <td>
-                {{ item_form.qty_pass }}
-                {% for error in item_form.qty_pass.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="d-flex gap-2 mt-4">
-        <button type="submit" name="action" value="pass" class="btn btn-success">QC Pass</button>
-        <button type="submit" name="action" value="partial" class="btn btn-warning">QC Partial Pass</button>
-        <button type="submit" name="action" value="fail" class="btn btn-danger">QC Fail</button>
-        <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
-      </div>
-    </form>
-
-    <hr class="my-4">
-
-    <h2 class="h5 mb-2">Kết quả PASS/FAIL từng tiêu chuẩn</h2>
     {% if criteria_ref %}
-    <div class="table-responsive mb-3">
-      <table class="table table-sm table-bordered">
-        <caption class="small">Tiêu chuẩn QC tham khảo (đang hoạt động)</caption>
-        <thead>
-          <tr><th>Category</th><th>Tiêu chuẩn</th><th>Pass rule</th><th>Fail rule</th><th>Ảnh mẫu</th></tr>
-        </thead>
-        <tbody>
-          {% for c in criteria_ref %}
-          <tr>
-            <td>{{ c.category }}</td><td>{{ c.name }}</td><td>{{ c.pass_rule|default:"—" }}</td><td>{{ c.fail_rule|default:"—" }}</td>
-            <td>
-              {% if c.reference_image %}
-              <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:40px;"></a>
-              {% else %}—{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="card shadow-sm mb-3">
+      <div class="card-header panel-toolbar">
+        <h2 class="panel-title">Tiêu chuẩn QC tham khảo (đang hoạt động)</h2>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered table-accent">
+            <thead>
+              <tr><th>Category</th><th>Tiêu chuẩn</th><th>Pass rule</th><th>Fail rule</th><th>Ảnh mẫu</th></tr>
+            </thead>
+            <tbody>
+              {% for c in criteria_ref %}
+              <tr>
+                <td>{{ c.category }}</td><td>{{ c.name }}</td><td>{{ c.pass_rule|default:"—" }}</td><td>{{ c.fail_rule|default:"—" }}</td>
+                <td>
+                  {% if c.reference_image %}
+                  <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:40px;"></a>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
     {% endif %}
 
-    <form method="post" enctype="multipart/form-data" novalidate>
-      {% csrf_token %}
-      {{ item_formset.management_form }}
-      {% if item_formset.non_form_errors %}
-        <div class="alert alert-danger py-2">{{ item_formset.non_form_errors }}</div>
-      {% endif %}
-      <div class="table-responsive">
-        <table class="table table-sm align-middle">
-          <thead>
-            <tr>
-              <th>Sản phẩm (GrnItem)</th>
-              <th>Tiêu chuẩn</th>
-              <th>Giá trị mong đợi</th>
-              <th>Giá trị thực tế</th>
-              <th>Kết quả</th>
-              <th>Ghi chú</th>
-              <th>Ảnh evidence</th>
-              {% if item_formset.can_delete %}<th>Xoá</th>{% endif %}
-            </tr>
-          </thead>
-          <tbody>
-            {% for item_form in item_formset %}
-            <tr>
-              {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
-              {% if item_form.non_field_errors %}
-                <td colspan="8"><div class="text-danger small">{{ item_form.non_field_errors }}</div></td>
-              </tr><tr>
-              {% endif %}
-              <td>{{ item_form.grn_item }}{% for error in item_form.grn_item.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
-              <td>{{ item_form.criteria_name }}{% for error in item_form.criteria_name.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
-              <td>{{ item_form.expected_value }}</td>
-              <td>{{ item_form.actual_value }}</td>
-              <td>{{ item_form.result }}{% for error in item_form.result.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
-              <td>{{ item_form.notes }}</td>
-              <td>
-                {% if item_form.instance.image %}
-                  <a href="{{ item_form.instance.image.url }}" target="_blank">
-                    <img src="{{ item_form.instance.image.url }}" alt="Evidence" style="max-height:40px;">
-                  </a>
-                {% endif %}
-                {{ item_form.image }}
-                {% for error in item_form.image.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
-              </td>
-              {% if item_formset.can_delete %}<td>{{ item_form.DELETE }}</td>{% endif %}
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h2 class="panel-title">Kết quả PASS/FAIL từng tiêu chuẩn</h2>
       </div>
-      <button type="submit" class="btn btn-outline-primary">Lưu kết quả tiêu chuẩn</button>
-    </form>
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data" novalidate>
+          {% csrf_token %}
+          {{ item_formset.management_form }}
+          {% if item_formset.non_form_errors %}
+            <div class="alert alert-danger py-2">{{ item_formset.non_form_errors }}</div>
+          {% endif %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle table-accent">
+              <thead>
+                <tr>
+                  <th>Sản phẩm (GrnItem)</th>
+                  <th>Tiêu chuẩn</th>
+                  <th>Giá trị mong đợi</th>
+                  <th>Giá trị thực tế</th>
+                  <th>Kết quả</th>
+                  <th>Ghi chú</th>
+                  <th>Ảnh evidence</th>
+                  {% if item_formset.can_delete %}<th>Xoá</th>{% endif %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for item_form in item_formset %}
+                <tr>
+                  {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+                  {% if item_form.non_field_errors %}
+                    <td colspan="8"><div class="text-danger small">{{ item_form.non_field_errors }}</div></td>
+                  </tr><tr>
+                  {% endif %}
+                  <td>{{ item_form.grn_item }}{% for error in item_form.grn_item.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
+                  <td>{{ item_form.criteria_name }}{% for error in item_form.criteria_name.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
+                  <td>{{ item_form.expected_value }}</td>
+                  <td>{{ item_form.actual_value }}</td>
+                  <td>{{ item_form.result }}{% for error in item_form.result.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</td>
+                  <td>{{ item_form.notes }}</td>
+                  <td>
+                    {% if item_form.instance.image %}
+                      <a href="{{ item_form.instance.image.url }}" target="_blank">
+                        <img src="{{ item_form.instance.image.url }}" alt="Evidence" style="max-height:40px;">
+                      </a>
+                    {% endif %}
+                    {{ item_form.image }}
+                    {% for error in item_form.image.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  {% if item_formset.can_delete %}<td>{{ item_form.DELETE }}</td>{% endif %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <button type="submit" class="btn btn-outline-primary">Lưu kết quả tiêu chuẩn</button>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

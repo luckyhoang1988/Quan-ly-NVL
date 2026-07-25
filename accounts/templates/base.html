@@ -7,21 +7,12 @@
   <title>{% block title %}NVL / WMS{% endblock %}</title>
   <link href="{% static 'vendor/bootstrap/css/bootstrap.min.css' %}" rel="stylesheet">
   <link href="{% static 'vendor/bootstrap-icons/bootstrap-icons.min.css' %}" rel="stylesheet">
-  <style>
-    .sidebar { width: 240px; min-height: 100vh; flex-shrink: 0; }
-    .sidebar .brand { font-size: 1.15rem; font-weight: 600; letter-spacing: .02em; }
-    .sidebar .nav-link { color: rgba(255,255,255,.75); border-radius: .5rem; padding: .55rem .8rem; display: flex; align-items: center; gap: .65rem; }
-    .sidebar .nav-link i { font-size: 1.1rem; width: 1.25rem; text-align: center; }
-    .sidebar .nav-link:hover { color: #fff; background-color: rgba(255,255,255,.08); }
-    .sidebar .nav-link.active { color: #fff; background-color: var(--bs-primary); }
-    .sidebar .user-box { background-color: rgba(255,255,255,.06); border-radius: .5rem; padding: .6rem .8rem; }
-    .layout-wrapper { min-height: 100vh; }
-  </style>
+  <link href="{% static 'css/custom.css' %}" rel="stylesheet">
 </head>
-<body class="bg-light">
+<body>
   <div class="d-flex layout-wrapper">
     {% if user.is_authenticated %}
-    <nav class="sidebar bg-dark d-flex flex-column p-3">
+    <nav class="sidebar d-flex flex-column p-3">
       <div class="brand text-white d-flex align-items-center gap-2 mb-4">
         <i class="bi bi-boxes"></i> NVL / WMS
       </div>
@@ -100,12 +91,23 @@
         </button>
       </form>
     </nav>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
     {% endif %}
 
     <main class="container-fluid py-4 flex-grow-1">
+      {% if user.is_authenticated %}
+      <button type="button" class="btn btn-sm btn-outline-secondary sidebar-toggle mb-2" id="sidebarToggle" aria-label="Mở menu">
+        <i class="bi bi-list"></i> Menu
+      </button>
+      {% endif %}
+      <nav aria-label="breadcrumb" class="page-breadcrumb">{% block breadcrumb %}{% endblock %}</nav>
       {% if messages %}
         {% for message in messages %}
-          <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+          <div class="alert {% if message.tags == 'error' %}alert-danger{% elif message.tags %}alert-{{ message.tags }}{% else %}alert-info{% endif %} alert-dismissible fade show d-flex align-items-center gap-2" role="alert">
+            <i class="bi {% if message.tags == 'success' %}bi-check-circle{% elif message.tags == 'error' %}bi-exclamation-triangle{% elif message.tags == 'warning' %}bi-exclamation-triangle{% else %}bi-info-circle{% endif %}"></i>
+            <div>{{ message }}</div>
+            <button type="button" class="btn-close ms-auto" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
         {% endfor %}
       {% endif %}
       {% block content %}{% endblock %}
@@ -113,5 +115,22 @@
   </div>
 
   <script src="{% static 'vendor/bootstrap/js/bootstrap.bundle.min.js' %}"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var toggle = document.getElementById('sidebarToggle');
+      var sidebar = document.querySelector('.sidebar');
+      var backdrop = document.getElementById('sidebarBackdrop');
+      if (toggle && sidebar && backdrop) {
+        toggle.addEventListener('click', function () {
+          sidebar.classList.toggle('show');
+          backdrop.classList.toggle('show');
+        });
+        backdrop.addEventListener('click', function () {
+          sidebar.classList.remove('show');
+          backdrop.classList.remove('show');
+        });
+      }
+    });
+  </script>
 </body>
 </html>

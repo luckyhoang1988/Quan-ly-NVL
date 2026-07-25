@@ -1,68 +1,78 @@
 {% extends 'base.html' %}
 {% block title %}Nhà cung cấp — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Nhà cung cấp</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Nhà cung cấp</h1>
-  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
-    <a href="{% url 'partners:supplier_create' %}" class="btn btn-primary">+ Tạo Supplier</a>
-  {% endif %}
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Nhà cung cấp</h1>
+    {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <div class="page-toolbar">
+      <a href="{% url 'partners:supplier_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo Supplier
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
+          <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã NCC, tên NCC..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
-      <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã NCC</th>
+            <th>Tên nhà cung cấp</th>
+            <th>Liên hệ</th>
+            <th>Lead time (ngày)</th>
+            <th>Trạng thái</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in suppliers %}
+          <tr class="{% if not s.is_active %}table-secondary text-muted{% endif %}">
+            <td>{{ s.supplier_code }}</td>
+            <td>{{ s.name }}</td>
+            <td>{{ s.contact|default:"—" }}</td>
+            <td>{{ s.lead_time_days|default:"—" }}</td>
+            <td>
+              {% if s.is_active %}
+                <span class="badge bg-success">Hoạt động</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Khoá</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+                <a href="{% url 'partners:supplier_update' s.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-muted">Chưa có Supplier nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã NCC, tên NCC..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã NCC</th>
-        <th>Tên nhà cung cấp</th>
-        <th>Liên hệ</th>
-        <th>Lead time (ngày)</th>
-        <th>Trạng thái</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for s in suppliers %}
-      <tr class="{% if not s.is_active %}table-secondary text-muted{% endif %}">
-        <td>{{ s.supplier_code }}</td>
-        <td>{{ s.name }}</td>
-        <td>{{ s.contact|default:"—" }}</td>
-        <td>{{ s.lead_time_days|default:"—" }}</td>
-        <td>
-          {% if s.is_active %}
-            <span class="badge bg-success">Hoạt động</span>
-          {% else %}
-            <span class="badge bg-warning text-dark">Khoá</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
-            <a href="{% url 'partners:supplier_update' s.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
-          {% endif %}
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="6" class="text-center text-muted">Chưa có Supplier nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

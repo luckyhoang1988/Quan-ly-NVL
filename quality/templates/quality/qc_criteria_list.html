@@ -1,89 +1,99 @@
 {% extends 'base.html' %}
 {% block title %}Tiêu chuẩn QC — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Tiêu chuẩn QC</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Tiêu chuẩn QC</h1>
-  {% if can_manage %}
-    <a href="{% url 'quality:qc_criteria_create' %}" class="btn btn-primary">+ Tạo tiêu chuẩn</a>
-  {% endif %}
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Tiêu chuẩn QC</h1>
+    {% if can_manage %}
+    <div class="page-toolbar">
+      <a href="{% url 'quality:qc_criteria_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo tiêu chuẩn
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="category">Category</label>
+        <select name="category" id="category" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả category --</option>
+          {% for cat in categories %}
+            <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
+          <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Tên tiêu chuẩn..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="category">Category</label>
-    <select name="category" id="category" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả category --</option>
-      {% for cat in categories %}
-        <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
-      {% endfor %}
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Tiêu chuẩn</th>
+            <th>Pass rule</th>
+            <th>Fail rule</th>
+            <th>Ảnh mẫu</th>
+            <th>Trạng thái</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in criteria %}
+          <tr class="{% if not c.is_active %}table-secondary text-muted{% endif %}">
+            <td>{{ c.category }}</td>
+            <td>{{ c.name }}</td>
+            <td>{{ c.pass_rule|default:"—" }}</td>
+            <td>{{ c.fail_rule|default:"—" }}</td>
+            <td>
+              {% if c.reference_image %}
+              <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:32px;"></a>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if c.is_active %}
+                <span class="badge bg-success">Hoạt động</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Khoá</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if can_manage %}
+                <a href="{% url 'quality:qc_criteria_update' c.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+                <form method="post" action="{% url 'quality:qc_criteria_toggle_active' c.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-sm btn-outline-{% if c.is_active %}warning{% else %}success{% endif %}">
+                    {% if c.is_active %}<i class="bi bi-lock"></i> Khoá{% else %}<i class="bi bi-unlock"></i> Mở lại{% endif %}
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="7" class="text-center text-muted">Chưa có tiêu chuẩn QC nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
-      <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Tên tiêu chuẩn..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Category</th>
-        <th>Tiêu chuẩn</th>
-        <th>Pass rule</th>
-        <th>Fail rule</th>
-        <th>Ảnh mẫu</th>
-        <th>Trạng thái</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in criteria %}
-      <tr class="{% if not c.is_active %}table-secondary text-muted{% endif %}">
-        <td>{{ c.category }}</td>
-        <td>{{ c.name }}</td>
-        <td>{{ c.pass_rule|default:"—" }}</td>
-        <td>{{ c.fail_rule|default:"—" }}</td>
-        <td>
-          {% if c.reference_image %}
-          <a href="{{ c.reference_image.url }}" target="_blank"><img src="{{ c.reference_image.url }}" alt="Ref" style="max-height:32px;"></a>
-          {% else %}—{% endif %}
-        </td>
-        <td>
-          {% if c.is_active %}
-            <span class="badge bg-success">Hoạt động</span>
-          {% else %}
-            <span class="badge bg-warning text-dark">Khoá</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if can_manage %}
-            <a href="{% url 'quality:qc_criteria_update' c.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
-            <form method="post" action="{% url 'quality:qc_criteria_toggle_active' c.pk %}" class="d-inline">
-              {% csrf_token %}
-              <button type="submit" class="btn btn-sm btn-outline-{% if c.is_active %}warning{% else %}success{% endif %}">
-                {% if c.is_active %}Khoá{% else %}Mở lại{% endif %}
-              </button>
-            </form>
-          {% endif %}
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="7" class="text-center text-muted">Chưa có tiêu chuẩn QC nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

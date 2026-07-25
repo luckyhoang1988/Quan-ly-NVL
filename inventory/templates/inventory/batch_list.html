@@ -1,91 +1,103 @@
 {% extends 'base.html' %}
 {% block title %}Lô hàng — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'inventory:inventory_list' %}">Tồn kho</a> <span class="mx-1">/</span>
+  <span class="current">Lô hàng</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Quản lý Lô hàng (Batch)</h1>
-  <div class="d-flex gap-2">
-    <a href="{% url 'inventory:transfer_list' %}" class="btn btn-outline-secondary btn-sm">Điều chuyển tồn kho »</a>
-    <a href="{% url 'inventory:inventory_list' %}" class="btn btn-outline-secondary btn-sm">« Tồn kho theo kho</a>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Quản lý Lô hàng (Batch)</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'inventory:transfer_list' %}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left-right"></i> Điều chuyển tồn kho
+      </a>
+      <a href="{% url 'inventory:inventory_list' %}" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-bar-chart-line"></i> Tồn kho theo kho
+      </a>
+    </div>
+  </div>
+  <div class="card-body">
+    {% if expiring_count %}
+      <div class="alert alert-warning py-2">⚠ {{ expiring_count }} lô đang hoạt động sẽ hết hạn trong vòng 30 ngày tới.</div>
+    {% endif %}
+
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="warehouse">Kho</label>
+        <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả kho --</option>
+          {% for wh in warehouses %}
+            <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã lô, mã SKU..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
+
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã lô</th>
+            <th>Sản phẩm</th>
+            <th>Nhà cung cấp</th>
+            <th>Vị trí</th>
+            <th>NSX</th>
+            <th>HSD</th>
+            <th>Qty nhận</th>
+            <th>Qty đã dùng</th>
+            <th>Qty khả dụng</th>
+            <th>Trạng thái</th>
+            <th>Cảnh báo</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in batches %}
+          <tr class="{% if batch.status == 'EXPIRED' %}table-danger{% elif batch.pk in expiring_ids %}table-warning{% endif %}">
+            <td>{{ batch.batch_code }}</td>
+            <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
+            <td>{{ batch.supplier.name }}</td>
+            <td>{{ batch.location.warehouse.code }} / {{ batch.location.code }}</td>
+            <td>{{ batch.mfg_date|date:'d/m/Y'|default:'—' }}</td>
+            <td>{{ batch.exp_date|date:'d/m/Y'|default:'—' }}</td>
+            <td>{{ batch.qty_received }}</td>
+            <td>{{ batch.qty_used }}</td>
+            <td>{{ batch.qty_available }}</td>
+            <td><span class="badge bg-secondary">{{ batch.get_status_display }}</span></td>
+            <td>
+              {% if batch.pk in expiring_ids %}
+                <span class="badge bg-warning text-dark">Sắp hết hạn</span>
+              {% endif %}
+            </td>
+            <td>
+              <a href="{% url 'inventory:batch_detail' batch.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Xem</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="12" class="text-center text-muted">Chưa có lô hàng nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
 </div>
-
-{% if expiring_count %}
-  <div class="alert alert-warning py-2">⚠ {{ expiring_count }} lô đang hoạt động sẽ hết hạn trong vòng 30 ngày tới.</div>
-{% endif %}
-
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="warehouse">Kho</label>
-    <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả kho --</option>
-      {% for wh in warehouses %}
-        <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      {% for value, label in statuses %}
-        <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã lô, mã SKU..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã lô</th>
-        <th>Sản phẩm</th>
-        <th>Nhà cung cấp</th>
-        <th>Vị trí</th>
-        <th>NSX</th>
-        <th>HSD</th>
-        <th>Qty nhận</th>
-        <th>Qty đã dùng</th>
-        <th>Qty khả dụng</th>
-        <th>Trạng thái</th>
-        <th>Cảnh báo</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for batch in batches %}
-      <tr class="{% if batch.status == 'EXPIRED' %}table-danger{% elif batch.pk in expiring_ids %}table-warning{% endif %}">
-        <td>{{ batch.batch_code }}</td>
-        <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
-        <td>{{ batch.supplier.name }}</td>
-        <td>{{ batch.location.warehouse.code }} / {{ batch.location.code }}</td>
-        <td>{{ batch.mfg_date|date:'d/m/Y'|default:'—' }}</td>
-        <td>{{ batch.exp_date|date:'d/m/Y'|default:'—' }}</td>
-        <td>{{ batch.qty_received }}</td>
-        <td>{{ batch.qty_used }}</td>
-        <td>{{ batch.qty_available }}</td>
-        <td><span class="badge bg-secondary">{{ batch.get_status_display }}</span></td>
-        <td>
-          {% if batch.pk in expiring_ids %}
-            <span class="badge bg-warning text-dark">Sắp hết hạn</span>
-          {% endif %}
-        </td>
-        <td>
-          <a href="{% url 'inventory:batch_detail' batch.pk %}" class="btn btn-sm btn-outline-secondary">Xem</a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="12" class="text-center text-muted">Chưa có lô hàng nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

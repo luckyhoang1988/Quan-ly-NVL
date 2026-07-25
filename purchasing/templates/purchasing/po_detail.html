@@ -1,103 +1,123 @@
 {% extends 'base.html' %}
 {% block title %}{{ po.po_no }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:po_list' %}">Purchase Order</a> <span class="mx-1">/</span>
+  <span class="current">{{ po.po_no }}</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">{{ po.po_no }}</h1>
-  <div class="d-flex gap-2">
-    <a href="{% url 'purchasing:po_list' %}" class="btn btn-outline-secondary">← Danh sách</a>
-    {% if can_edit %}
-      <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-outline-primary">Sửa</a>
-    {% endif %}
-    {% if can_approve and po.status == 'DRAFT' %}
-      <form method="post" action="{% url 'purchasing:po_approve' po.pk %}" class="d-inline">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-primary">Duyệt PO</button>
-      </form>
-    {% endif %}
-    {% if can_update and po.status == 'APPROVED' %}
-      <form method="post" action="{% url 'purchasing:po_send' po.pk %}" class="d-inline">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-primary">Gửi NCC</button>
-      </form>
-    {% endif %}
-    {% if can_close %}
-      <form method="post" action="{% url 'purchasing:po_close' po.pk %}" class="d-inline">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-outline-secondary">Đóng PO</button>
-      </form>
-    {% endif %}
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">{{ po.po_no }}</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'purchasing:po_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
+      {% if can_edit %}
+        <a href="{% url 'purchasing:po_update' po.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+      {% endif %}
+      {% if can_approve and po.status == 'DRAFT' %}
+        <form method="post" action="{% url 'purchasing:po_approve' po.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg"></i> Duyệt PO</button>
+        </form>
+      {% endif %}
+      {% if can_update and po.status == 'APPROVED' %}
+        <form method="post" action="{% url 'purchasing:po_send' po.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-send"></i> Gửi NCC</button>
+        </form>
+      {% endif %}
+      {% if can_close %}
+        <form method="post" action="{% url 'purchasing:po_close' po.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock"></i> Đóng PO</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-2">Trạng thái</dt>
+      <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></dd>
+      <dt class="col-sm-2">Giao hàng</dt>
+      <dd class="col-sm-4">
+        {% if delivery_status %}
+          <span class="badge bg-{{ delivery_status.css }}{% if delivery_status.css == 'warning' %} text-dark{% endif %}">{{ delivery_status.label }}</span>
+        {% else %}—{% endif %}
+      </dd>
+      <dt class="col-sm-2">NCC</dt>
+      <dd class="col-sm-4">
+        {{ po.supplier.name }}
+        <a href="{% url 'purchasing:po_price_comparison' %}" class="small">So sánh giá NCC »</a>
+      </dd>
+      <dt class="col-sm-2">Ngày giao dự kiến</dt>
+      <dd class="col-sm-4">{{ po.expected_delivery_date|default:"—" }}</dd>
+      <dt class="col-sm-2">Ngày tạo</dt>
+      <dd class="col-sm-4">{{ po.created_at|date:'d/m/Y H:i' }}</dd>
+    </dl>
   </div>
 </div>
 
-<dl class="row">
-  <dt class="col-sm-2">Trạng thái</dt>
-  <dd class="col-sm-4"><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></dd>
-  <dt class="col-sm-2">Giao hàng</dt>
-  <dd class="col-sm-4">
-    {% if delivery_status %}
-      <span class="badge bg-{{ delivery_status.css }}{% if delivery_status.css == 'warning' %} text-dark{% endif %}">{{ delivery_status.label }}</span>
-    {% else %}—{% endif %}
-  </dd>
-  <dt class="col-sm-2">NCC</dt>
-  <dd class="col-sm-4">
-    {{ po.supplier.name }}
-    <a href="{% url 'purchasing:po_price_comparison' %}" class="small">So sánh giá NCC »</a>
-  </dd>
-  <dt class="col-sm-2">Ngày giao dự kiến</dt>
-  <dd class="col-sm-4">{{ po.expected_delivery_date|default:"—" }}</dd>
-  <dt class="col-sm-2">Ngày tạo</dt>
-  <dd class="col-sm-4">{{ po.created_at|date:'d/m/Y H:i' }}</dd>
-</dl>
-
-<h2 class="h5 mt-4">Chi tiết đơn hàng</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Sản phẩm</th>
-        <th>Qty đặt</th>
-        <th>Đơn giá</th>
-        <th>Qty đã nhận (GRN)</th>
-        <th>Qty còn lại</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in item_rows %}
-      <tr>
-        <td>{{ row.item.product.product_code }} — {{ row.item.product.name }}</td>
-        <td>{{ row.item.qty_ordered }}</td>
-        <td>{{ row.item.unit_price }}</td>
-        <td>{{ row.qty_received }}</td>
-        <td>{{ row.qty_remaining }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="5" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Chi tiết đơn hàng</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Sản phẩm</th>
+            <th>Qty đặt</th>
+            <th>Đơn giá</th>
+            <th>Qty đã nhận (GRN)</th>
+            <th>Qty còn lại</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in item_rows %}
+          <tr>
+            <td>{{ row.item.product.product_code }} — {{ row.item.product.name }}</td>
+            <td>{{ row.item.qty_ordered }}</td>
+            <td>{{ row.item.unit_price }}</td>
+            <td>{{ row.qty_received }}</td>
+            <td>{{ row.qty_remaining }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 {% if po.grns.all %}
-<h2 class="h5 mt-4">GRN tham chiếu</h2>
-<div class="table-responsive">
-  <table class="table table-sm table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã GRN</th>
-        <th>Trạng thái</th>
-        <th>Ngày GRN</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for grn in po.grns.all %}
-      <tr>
-        <td><a href="{% url 'receiving:grn_detail' grn.pk %}">{{ grn.grn_no }}</a></td>
-        <td>{{ grn.get_status_display }}</td>
-        <td>{{ grn.grn_date }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">GRN tham chiếu</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã GRN</th>
+            <th>Trạng thái</th>
+            <th>Ngày GRN</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for grn in po.grns.all %}
+          <tr>
+            <td><a href="{% url 'receiving:grn_detail' grn.pk %}">{{ grn.grn_no }}</a></td>
+            <td>{{ grn.get_status_display }}</td>
+            <td>{{ grn.grn_date }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 {% endif %}
 {% endblock %}

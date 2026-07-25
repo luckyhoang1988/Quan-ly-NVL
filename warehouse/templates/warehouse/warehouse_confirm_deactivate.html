@@ -1,19 +1,31 @@
 {% extends 'base.html' %}
 {% block title %}Khoá kho — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'warehouse:warehouse_list' %}">Kho hàng</a> <span class="mx-1">/</span>
+  <a href="{% url 'warehouse:warehouse_detail' obj.pk %}">{{ obj.code }}</a> <span class="mx-1">/</span>
+  <span class="current">Khoá</span>
+{% endblock %}
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-md-6">
-    <h1 class="h3 mb-3">Khoá hoạt động kho</h1>
-    <p>
-      Bạn có chắc muốn khoá hoạt động kho <strong>{{ obj.code }} — {{ obj.name }}</strong>?
-      Bản ghi vẫn được giữ lại (kể cả vị trí lưu trữ) phục vụ audit, chỉ ngừng dùng cho
-      GRN/GIN mới cho tới khi mở lại.
-    </p>
-    <form method="post">
-      {% csrf_token %}
-      <button type="submit" class="btn btn-danger">Khoá</button>
-      <a href="{% url 'warehouse:warehouse_detail' obj.pk %}" class="btn btn-link">Huỷ</a>
-    </form>
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Khoá hoạt động kho</h1>
+      </div>
+      <div class="card-body">
+        <p>
+          Bạn có chắc muốn khoá hoạt động kho <strong>{{ obj.code }} — {{ obj.name }}</strong>?
+          Bản ghi vẫn được giữ lại (kể cả vị trí lưu trữ) phục vụ audit, chỉ ngừng dùng cho
+          GRN/GIN mới cho tới khi mở lại.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger"><i class="bi bi-lock"></i> Khoá</button>
+          <a href="{% url 'warehouse:warehouse_detail' obj.pk %}" class="btn btn-link">Huỷ</a>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

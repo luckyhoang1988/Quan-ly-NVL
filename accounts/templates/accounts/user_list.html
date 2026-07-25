@@ -1,75 +1,85 @@
 {% extends 'base.html' %}
 {% block title %}Người dùng — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Quản lý user</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Người dùng</h1>
-  <a href="{% url 'user_create' %}" class="btn btn-primary">+ Tạo user</a>
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Người dùng</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'user_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo user
+      </a>
+    </div>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="role">Vai trò</label>
+        <select name="role" id="role" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả vai trò --</option>
+          {% for value, label in roles %}
+            <option value="{{ value }}" {% if selected_role == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
+          <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Tên đăng nhập, email..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="role">Vai trò</label>
-    <select name="role" id="role" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả vai trò --</option>
-      {% for value, label in roles %}
-        <option value="{{ value }}" {% if selected_role == value %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Tên đăng nhập</th>
+            <th>Họ tên</th>
+            <th>Email</th>
+            <th>Vai trò</th>
+            <th>Trạng thái</th>
+            <th class="text-end"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr class="{% if u.is_deleted %}table-secondary text-muted{% endif %}">
+            <td><a href="{% url 'user_detail' u.pk %}">{{ u.username }}</a></td>
+            <td>{{ u.get_full_name|default:"—" }}</td>
+            <td>{{ u.email|default:"—" }}</td>
+            <td>{{ u.get_role_display|default:"—" }}</td>
+            <td>
+              {% if u.is_deleted %}
+                <span class="badge bg-secondary">Đã xoá</span>
+              {% elif u.is_active %}
+                <span class="badge bg-success">Hoạt động</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Khoá</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              <a href="{% url 'user_update' u.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-muted">Chưa có user nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
-      <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Tên đăng nhập, email..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Tên đăng nhập</th>
-        <th>Họ tên</th>
-        <th>Email</th>
-        <th>Vai trò</th>
-        <th>Trạng thái</th>
-        <th class="text-end"></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for u in users %}
-      <tr class="{% if u.is_deleted %}table-secondary text-muted{% endif %}">
-        <td><a href="{% url 'user_detail' u.pk %}">{{ u.username }}</a></td>
-        <td>{{ u.get_full_name|default:"—" }}</td>
-        <td>{{ u.email|default:"—" }}</td>
-        <td>{{ u.get_role_display|default:"—" }}</td>
-        <td>
-          {% if u.is_deleted %}
-            <span class="badge bg-secondary">Đã xoá</span>
-          {% elif u.is_active %}
-            <span class="badge bg-success">Hoạt động</span>
-          {% else %}
-            <span class="badge bg-warning text-dark">Khoá</span>
-          {% endif %}
-        </td>
-        <td class="text-end">
-          <a href="{% url 'user_update' u.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="6" class="text-center text-muted">Chưa có user nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

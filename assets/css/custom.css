@@ -1,0 +1,187 @@
+/*
+ * NVL/WMS design tokens + shared UI patterns.
+ * Applies project-wide via base.html — every page that uses .card, .table-accent,
+ * .page-toolbar, .page-breadcrumb inherits the same look automatically.
+ */
+
+:root {
+  --wms-sidebar-bg: #17233d;
+  --wms-sidebar-bg-soft: rgba(255, 255, 255, .07);
+  --wms-sidebar-text: rgba(255, 255, 255, .75);
+  --wms-sidebar-text-active: #ffffff;
+  --wms-accent: #2f6fed;
+  --wms-content-bg: #f3f5f9;
+  --wms-panel-border: #e7eaf0;
+  --wms-panel-radius: .75rem;
+  --wms-panel-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  --wms-toolbar-bg: #f8f9fb;
+  --wms-table-header-bg: #eef4ff;
+  --wms-table-header-color: #1d3a66;
+}
+
+body {
+  background-color: var(--wms-content-bg);
+}
+
+.layout-wrapper {
+  min-height: 100vh;
+}
+
+/* ---- Sidebar ---- */
+.sidebar {
+  width: 240px;
+  min-height: 100vh;
+  flex-shrink: 0;
+  background-color: var(--wms-sidebar-bg);
+}
+
+.sidebar .brand {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.sidebar .nav-link {
+  color: var(--wms-sidebar-text);
+  border-radius: .5rem;
+  padding: .55rem .8rem;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  font-size: .92rem;
+}
+
+.sidebar .nav-link i {
+  font-size: 1.1rem;
+  width: 1.25rem;
+  text-align: center;
+}
+
+.sidebar .nav-link:hover {
+  color: var(--wms-sidebar-text-active);
+  background-color: var(--wms-sidebar-bg-soft);
+}
+
+.sidebar .nav-link.active {
+  color: var(--wms-sidebar-text-active);
+  background-color: var(--wms-accent);
+  box-shadow: 0 2px 6px rgba(47, 111, 237, .35);
+}
+
+.sidebar .user-box {
+  background-color: var(--wms-sidebar-bg-soft);
+  border-radius: .5rem;
+  padding: .6rem .8rem;
+}
+
+.sidebar-toggle {
+  display: none;
+}
+
+@media (max-width: 991.98px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1040;
+    margin-left: -240px;
+    transition: margin-left .2s ease;
+  }
+
+  .sidebar.show {
+    margin-left: 0;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, .25);
+  }
+
+  .sidebar-toggle {
+    display: inline-flex;
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .35);
+    z-index: 1035;
+  }
+
+  .sidebar-backdrop.show {
+    display: block;
+  }
+}
+
+/* ---- Breadcrumb ---- */
+.page-breadcrumb {
+  font-size: .85rem;
+  color: #6b7280;
+  margin-bottom: .6rem;
+  min-height: 1.1rem;
+}
+
+.page-breadcrumb a {
+  color: #6b7280;
+  text-decoration: none;
+}
+
+.page-breadcrumb a:hover {
+  color: var(--wms-accent);
+  text-decoration: underline;
+}
+
+.page-breadcrumb .current {
+  color: #1f2937;
+  font-weight: 500;
+}
+
+/* ---- Panels / cards ---- */
+.card {
+  border: 1px solid var(--wms-panel-border);
+  border-radius: var(--wms-panel-radius);
+  box-shadow: var(--wms-panel-shadow);
+}
+
+.card-header.panel-toolbar {
+  background-color: var(--wms-toolbar-bg);
+  border-bottom: 1px solid var(--wms-panel-border);
+  border-top-left-radius: var(--wms-panel-radius);
+  border-top-right-radius: var(--wms-panel-radius);
+  padding: .85rem 1.1rem;
+}
+
+.panel-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+}
+
+/* ---- Tables ---- */
+.table-accent thead th {
+  background-color: var(--wms-table-header-bg);
+  color: var(--wms-table-header-color);
+  font-weight: 600;
+  border-bottom: 2px solid #d7e4fb;
+  white-space: nowrap;
+}
+
+.table-accent tbody tr:hover {
+  background-color: #f5f9ff;
+}
+
+/* ---- Action toolbar ---- */
+.page-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+}
+
+.page-toolbar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+}
+
+/* ---- Flash messages ---- */
+.alert {
+  border-radius: .6rem;
+}

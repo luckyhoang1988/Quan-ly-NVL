@@ -1,24 +1,29 @@
 {% extends 'base.html' %}
 {% block title %}Lô {{ batch.batch_code }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'inventory:inventory_list' %}">Tồn kho</a> <span class="mx-1">/</span>
+  <a href="{% url 'inventory:batch_list' %}">Lô hàng</a> <span class="mx-1">/</span>
+  <span class="current">{{ batch.batch_code }}</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Lô hàng {{ batch.batch_code }}</h1>
-  <div class="d-flex gap-2">
-    {% if batch.status == 'ACTIVE' or batch.status == 'PARTIAL_USED' %}
-      <a href="{% url 'inventory:transfer_create' %}?batch={{ batch.pk }}" class="btn btn-primary btn-sm">Điều chuyển »</a>
-    {% endif %}
-    <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">« Danh sách lô hàng</a>
+<div class="card shadow-sm mb-3">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Lô hàng {{ batch.batch_code }}</h1>
+    <div class="page-toolbar">
+      {% if batch.status == 'ACTIVE' or batch.status == 'PARTIAL_USED' %}
+        <a href="{% url 'inventory:transfer_create' %}?batch={{ batch.pk }}" class="btn btn-primary btn-sm"><i class="bi bi-arrow-left-right"></i> Điều chuyển</a>
+      {% endif %}
+      <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách lô hàng</a>
+    </div>
   </div>
-</div>
-
-{% if is_expiring_soon %}
-  <div class="alert alert-warning py-2">⚠ Lô này sẽ hết hạn trong vòng 30 ngày tới.</div>
-{% elif batch.status == 'EXPIRED' %}
-  <div class="alert alert-danger py-2">⚠ Lô này đã hết hạn.</div>
-{% endif %}
-
-<div class="card mb-3">
   <div class="card-body">
+    {% if is_expiring_soon %}
+      <div class="alert alert-warning py-2">⚠ Lô này sẽ hết hạn trong vòng 30 ngày tới.</div>
+    {% elif batch.status == 'EXPIRED' %}
+      <div class="alert alert-danger py-2">⚠ Lô này đã hết hạn.</div>
+    {% endif %}
+
     <dl class="row mb-0">
       <dt class="col-sm-3">Sản phẩm</dt>
       <dd class="col-sm-9">{{ batch.product.product_code }} — {{ batch.product.name }}</dd>
@@ -47,33 +52,39 @@
   </div>
 </div>
 
-<h2 class="h5">Lịch sử chuyển động</h2>
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Thời gian</th>
-        <th>Loại</th>
-        <th>Số lượng</th>
-        <th>Tồn sau giao dịch</th>
-        <th>Tham chiếu</th>
-        <th>Người thực hiện</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for m in movements %}
-      <tr>
-        <td>{{ m.created_at|date:'d/m/Y H:i' }}</td>
-        <td>{{ m.get_movement_type_display }}</td>
-        <td>{{ m.qty }}</td>
-        <td>{{ m.qty_on_hand_after }}</td>
-        <td>{{ m.reference|default:'—' }}</td>
-        <td>{{ m.created_by.username|default:'—' }}</td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="6" class="text-center text-muted">Chưa có chuyển động nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Lịch sử chuyển động</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Thời gian</th>
+            <th>Loại</th>
+            <th>Số lượng</th>
+            <th>Tồn sau giao dịch</th>
+            <th>Tham chiếu</th>
+            <th>Người thực hiện</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in movements %}
+          <tr>
+            <td>{{ m.created_at|date:'d/m/Y H:i' }}</td>
+            <td>{{ m.get_movement_type_display }}</td>
+            <td>{{ m.qty }}</td>
+            <td>{{ m.qty_on_hand_after }}</td>
+            <td>{{ m.reference|default:'—' }}</td>
+            <td>{{ m.created_by.username|default:'—' }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-muted">Chưa có chuyển động nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 {% endblock %}

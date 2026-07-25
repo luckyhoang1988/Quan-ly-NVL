@@ -1,72 +1,82 @@
 {% extends 'base.html' %}
 {% block title %}GIN — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">GIN</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Phiếu Xuất (GIN)</h1>
-  {% if can_create %}
-    <a href="{% url 'shipping:gin_create' %}" class="btn btn-primary">+ Tạo GIN</a>
-  {% endif %}
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Phiếu Xuất (GIN)</h1>
+    {% if can_create %}
+    <div class="page-toolbar">
+      <a href="{% url 'shipping:gin_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo GIN
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="status">Trạng thái</label>
+        <select name="status" id="status" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả trạng thái --</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="warehouse">Kho</label>
+        <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả kho --</option>
+          {% for wh in warehouses %}
+            <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã GIN..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="status">Trạng thái</label>
-    <select name="status" id="status" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả trạng thái --</option>
-      {% for value, label in statuses %}
-        <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
-      {% endfor %}
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã GIN</th>
+            <th>Kho</th>
+            <th>Tham chiếu</th>
+            <th>Trạng thái</th>
+            <th>Người yêu cầu</th>
+            <th>Ngày tạo</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for gin in gins %}
+          <tr>
+            <td>{{ gin.gin_no }}</td>
+            <td>{{ gin.warehouse.code }}</td>
+            <td>{{ gin.get_reference_type_display }} {{ gin.reference_no }}</td>
+            <td><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></td>
+            <td>{{ gin.requested_by.username }}</td>
+            <td>{{ gin.created_at|date:'d/m/Y H:i' }}</td>
+            <td>
+              <a href="{% url 'shipping:gin_detail' gin.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Xem</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="7" class="text-center text-muted">Chưa có GIN nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="warehouse">Kho</label>
-    <select name="warehouse" id="warehouse" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả kho --</option>
-      {% for wh in warehouses %}
-        <option value="{{ wh.pk }}" {% if selected_warehouse == wh.pk %}selected{% endif %}>{{ wh.code }} - {{ wh.name }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã GIN..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã GIN</th>
-        <th>Kho</th>
-        <th>Tham chiếu</th>
-        <th>Trạng thái</th>
-        <th>Người yêu cầu</th>
-        <th>Ngày tạo</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for gin in gins %}
-      <tr>
-        <td>{{ gin.gin_no }}</td>
-        <td>{{ gin.warehouse.code }}</td>
-        <td>{{ gin.get_reference_type_display }} {{ gin.reference_no }}</td>
-        <td><span class="badge bg-info text-dark">{{ gin.get_status_display }}</span></td>
-        <td>{{ gin.requested_by.username }}</td>
-        <td>{{ gin.created_at|date:'d/m/Y H:i' }}</td>
-        <td>
-          <a href="{% url 'shipping:gin_detail' gin.pk %}" class="btn btn-sm btn-outline-secondary">Xem</a>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="7" class="text-center text-muted">Chưa có GIN nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}

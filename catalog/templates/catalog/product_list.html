@@ -1,73 +1,83 @@
 {% extends 'base.html' %}
 {% block title %}Sản phẩm (SKU) — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span> <span class="current">Sản phẩm (SKU)</span>
+{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">Sản phẩm (SKU)</h1>
-  {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
-    <a href="{% url 'catalog:product_create' %}" class="btn btn-primary">+ Tạo Product</a>
-  {% endif %}
-</div>
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Sản phẩm (SKU)</h1>
+    {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+    <div class="page-toolbar">
+      <a href="{% url 'catalog:product_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Tạo Product
+      </a>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label" for="category">Nhóm</label>
+        <select name="category" id="category" class="form-select" onchange="this.form.submit()">
+          <option value="">-- Tất cả nhóm --</option>
+          {% for cat in categories %}
+            <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <label class="form-label" for="q">Tìm kiếm</label>
+        <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary">Lọc</button>
+      </div>
+    </form>
 
-<form method="get" class="row g-2 align-items-end mb-3">
-  <div class="col-auto">
-    <label class="form-label" for="category">Nhóm</label>
-    <select name="category" id="category" class="form-select" onchange="this.form.submit()">
-      <option value="">-- Tất cả nhóm --</option>
-      {% for cat in categories %}
-        <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
-      {% endfor %}
-    </select>
+    <div class="table-responsive">
+      <table class="table table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Mã SKU</th>
+            <th>Tên sản phẩm</th>
+            <th>Nhóm</th>
+            <th>ĐVT</th>
+            <th>Min level</th>
+            <th>Max level</th>
+            <th>Trạng thái</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in products %}
+          <tr class="{% if not p.is_active %}table-secondary text-muted{% endif %}">
+            <td>{{ p.product_code }}</td>
+            <td>{{ p.name }}</td>
+            <td>{{ p.category|default:"—" }}</td>
+            <td>{{ p.uom }}</td>
+            <td>{{ p.min_level|default:"—" }}</td>
+            <td>{{ p.max_level|default:"—" }}</td>
+            <td>
+              {% if p.is_active %}
+                <span class="badge bg-success">Hoạt động</span>
+              {% else %}
+                <span class="badge bg-warning text-dark">Khoá</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
+                <a href="{% url 'catalog:product_update' p.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="8" class="text-center text-muted">Chưa có Product nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
   </div>
-  <div class="col-auto">
-    <label class="form-label" for="q">Tìm kiếm</label>
-    <input type="text" name="q" id="q" class="form-control" placeholder="Mã SKU, tên sản phẩm..." value="{{ q }}">
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-outline-primary">Lọc</button>
-  </div>
-</form>
-
-<div class="table-responsive">
-  <table class="table table-striped align-middle">
-    <thead>
-      <tr>
-        <th>Mã SKU</th>
-        <th>Tên sản phẩm</th>
-        <th>Nhóm</th>
-        <th>ĐVT</th>
-        <th>Min level</th>
-        <th>Max level</th>
-        <th>Trạng thái</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for p in products %}
-      <tr class="{% if not p.is_active %}table-secondary text-muted{% endif %}">
-        <td>{{ p.product_code }}</td>
-        <td>{{ p.name }}</td>
-        <td>{{ p.category|default:"—" }}</td>
-        <td>{{ p.uom }}</td>
-        <td>{{ p.min_level|default:"—" }}</td>
-        <td>{{ p.max_level|default:"—" }}</td>
-        <td>
-          {% if p.is_active %}
-            <span class="badge bg-success">Hoạt động</span>
-          {% else %}
-            <span class="badge bg-warning text-dark">Khoá</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
-            <a href="{% url 'catalog:product_update' p.pk %}" class="btn btn-sm btn-outline-secondary">Sửa</a>
-          {% endif %}
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="8" class="text-center text-muted">Chưa có Product nào.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
 </div>
-{% include 'partials/pagination.html' %}
 {% endblock %}
