@@ -12,6 +12,7 @@
     <div class="page-toolbar">
       <a href="{% url 'user_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
       <a href="{% url 'user_update' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+      <a href="{% url 'user_permission_edit' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-key"></i> Phân quyền chi tiết</a>
       {% if not obj.is_deleted and obj.pk != user.pk %}
         <a href="{% url 'user_delete' obj.pk %}" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Xoá</a>
       {% endif %}
@@ -40,8 +41,13 @@
 </div>
 
 <div class="card shadow-sm">
-  <div class="card-header panel-toolbar">
-    <h2 class="panel-title">Quyền hạn theo vai trò</h2>
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h2 class="panel-title">Quyền hạn hiệu lực</h2>
+    {% if is_customized %}
+      <span class="badge bg-warning text-dark">Đã tuỳ chỉnh so với vai trò</span>
+    {% else %}
+      <span class="badge bg-secondary">Theo mặc định vai trò</span>
+    {% endif %}
   </div>
   <div class="card-body">
     <div class="table-responsive">

@@ -70,6 +70,11 @@ INSTALLED_APPS = [
 # BẮT BUỘC khai báo trước lần migrate đầu tiên — đổi về sau rất khó.
 AUTH_USER_MODEL = 'accounts.User'
 
+# Quyền hiệu lực chỉ tính từ user_permissions trực tiếp, không cộng dồn từ Group
+# (xem accounts/backends.py) — để "phân quyền chi tiết cho từng user" (FR-USER-04
+# mở rộng) có thể THU HỒI, không chỉ thêm, so với mặc định vai trò.
+AUTHENTICATION_BACKENDS = ['accounts.backends.DirectPermissionsBackend']
+
 # Điều hướng đăng nhập/đăng xuất (FR-USER-03).
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'dashboard'

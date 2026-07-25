@@ -1,9 +1,16 @@
-"""RBAC — nguồn dữ liệu DUY NHẤT của ma trận phân quyền (FR-USER-02, FR-USER-04).
+"""RBAC — nguồn dữ liệu của ma trận quyền MẶC ĐỊNH theo role (FR-USER-02, FR-USER-04).
 
-Toàn bộ ma trận khai báo tập trung ở đây để:
+Toàn bộ ma trận mặc định khai báo tập trung ở đây để:
 - ``models.py`` sinh danh sách custom Permission (``User.Meta.permissions``).
-- ``rbac.sync_roles()`` tạo 6 Group và gán quyền theo đúng ma trận.
-- View/template kiểm tra quyền qua ``perms.accounts.<codename>`` hoặc ``user.can(...)``.
+- ``rbac.sync_roles()`` tạo 6 Group theo đúng ma trận (giữ làm "mẫu" tham chiếu/test).
+- ``rbac.sync_user_permissions()`` seed ``user.user_permissions`` theo ma trận này
+  khi tạo user mới hoặc khi đổi role.
+- View kiểm tra quyền qua ``user.can(...)``.
+
+Quyền HIỆU LỰC của một user cụ thể có thể khác ma trận này: admin có thể phân
+quyền chi tiết riêng cho từng user (thêm hoặc thu hồi quyền) qua trang "Phân
+quyền chi tiết" (``views.user_permission_edit``) — xem ``accounts/backends.py``
+để biết vì sao Group không còn cộng dồn quyền vào kết quả ``has_perm``.
 
 Quyền KHÔNG gắn với model nghiệp vụ (GRN/GIN/... chưa tồn tại ở Phase 1) mà là
 "quyền hành động cấp module", neo vào content type của ``accounts.User`` — tạo một

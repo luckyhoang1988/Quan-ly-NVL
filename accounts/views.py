@@ -13,6 +13,7 @@ from functools import wraps
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db.models import Q
@@ -23,7 +24,8 @@ from .audit import client_ip, log_action
 from .forms import UserCreateForm, UserUpdateForm
 from .models import AuditLog
 from .pagination import paginate_queryset
-from .permissions import ACTIONS, MODULES
+from .permissions import ACTIONS, MODULES, codenames_for_role
+from .rbac import sync_user_permissions
 
 User = get_user_model()
 
@@ -107,9 +109,18 @@ def user_list(request):
     })
 
 
+def _effective_codenames(user):
+    """Tập codename ``can_<action>_<module>`` mà user hiện có (quyền trực tiếp,
+    không cộng dồn từ Group — xem accounts/backends.py)."""
+    return set(
+        user.user_permissions.filter(content_type__app_label='accounts')
+        .values_list('codename', flat=True)
+    )
+
+
 @user_admin_required
 def user_detail(request, pk):
-    """READ — chi tiết user + ma trận quyền hạn theo role (FR-USER-01: "quyền hạn")."""
+    """READ — chi tiết user + ma trận quyền hạn hiệu lực (FR-USER-01: "quyền hạn")."""
     obj = get_object_or_404(User, pk=pk)
     # Cột đúng thứ tự ACTIONS; mỗi hàng là 1 module với danh sách bool can/không.
     action_labels = list(ACTIONS.values())
@@ -118,7 +129,62 @@ def user_detail(request, pk):
          'cells': [obj.can(action, module) for action in ACTIONS]}
         for module, label in MODULES.items()
     ]
+    is_customized = _effective_codenames(obj) != set(codenames_for_role(obj.role))
     return render(request, 'accounts/user_detail.html', {
+        'obj': obj, 'action_labels': action_labels, 'perm_rows': perm_rows,
+        'is_customized': is_customized,
+    })
+
+
+@user_admin_required
+def user_permission_edit(request, pk):
+    """UPDATE — phân quyền chi tiết cho từng user: admin tick/bỏ tick từng ô
+    Module x Action, có thể THU HỒI quyền mặc định của role (không chỉ thêm),
+    hoặc bấm "Đặt lại theo vai trò" để quay về đúng mặc định của role.
+    """
+    obj = get_object_or_404(User, pk=pk)
+    all_codenames = [f'can_{action}_{module}' for module in MODULES for action in ACTIONS]
+
+    if request.method == 'POST':
+        before = _effective_codenames(obj)
+        if 'reset' in request.POST:
+            sync_user_permissions(obj)
+            after = set(codenames_for_role(obj.role))
+            description = f'Đặt lại phân quyền của {obj.username} theo mặc định vai trò'
+        else:
+            selected = set(request.POST.getlist('perm')) & set(all_codenames)
+            perms = Permission.objects.filter(
+                content_type__app_label='accounts', codename__in=selected,
+            )
+            obj.user_permissions.set(perms)
+            after = selected
+            description = f'Cập nhật phân quyền chi tiết của {obj.username}'
+        changes = {}
+        added = sorted(after - before)
+        removed = sorted(before - after)
+        if added:
+            changes['granted'] = added
+        if removed:
+            changes['revoked'] = removed
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=obj,
+            description=description, changes=changes or None,
+            ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã cập nhật phân quyền của "{obj.username}".')
+        return redirect('user_detail', pk=obj.pk)
+
+    action_labels = list(ACTIONS.values())
+    effective = _effective_codenames(obj)
+    perm_rows = [
+        {'module_label': module_label,
+         'cells': [
+             {'codename': f'can_{action}_{module}', 'checked': f'can_{action}_{module}' in effective}
+             for action in ACTIONS
+         ]}
+        for module, module_label in MODULES.items()
+    ]
+    return render(request, 'accounts/user_permission_form.html', {
         'obj': obj, 'action_labels': action_labels, 'perm_rows': perm_rows,
     })
 

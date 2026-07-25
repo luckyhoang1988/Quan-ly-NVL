@@ -373,6 +373,116 @@ class UserCrudTest(TestCase):
                 action='DELETE', target_id=str(self.admin.pk)).exists())
 
 
+class UserPermissionOverrideTest(TestCase):
+    """Phân quyền chi tiết cho từng user (mở rộng FR-USER-04): admin ghi đè ma
+    trận mặc định của role — có thể THU HỒI (không chỉ thêm) một quyền cụ thể.
+
+    Nhánh dễ sai:
+    - Thu hồi quyền phải có hiệu lực thật (không bị Group của role "cứu" lại
+      qua union — xem accounts/backends.py::DirectPermissionsBackend).
+    - Sửa field khác (không đổi role) KHÔNG được xoá mất phân quyền đã tuỳ chỉnh.
+    - Đổi role THÌ reset về đúng mặc định role mới (khớp hành vi cũ đã test ở
+      RBACMatrixTest.test_TC_USER_02_003).
+    - Chỉ Admin được vào trang phân quyền.
+    """
+
+    PASSWORD = 'admin-pass-123'
+
+    def setUp(self):
+        sync_roles()
+        self.admin = User.objects.create_user(
+            username='boss2', password=self.PASSWORD, role='ADMIN')
+        self.client.force_login(self.admin)
+        self.staff = User.objects.create_user(
+            username='staffer', password='x', role='STAFF')
+
+    def test_revoke_a_role_granted_permission_takes_effect(self):
+        self.assertTrue(self.staff.can('update', 'grn'))  # STAFF mặc định có update grn
+
+        resp = self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]),
+            {'perm': ['can_create_grn', 'can_read_grn']},  # bỏ can_update_grn
+        )
+        self.assertEqual(resp.status_code, 302)
+        # Nạp lại instance MỚI (không dùng refresh_from_db) để xoá cache quyền
+        # Django giữ trên instance cũ — giống pattern ở RBACMatrixTest.
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertFalse(staff.can('update', 'grn'))  # đã bị thu hồi
+        self.assertTrue(staff.can('create', 'grn'))   # các quyền khác vẫn còn
+
+        entry = AuditLog.objects.filter(
+            action='UPDATE', target_id=str(self.staff.pk)).first()
+        self.assertIn('can_update_grn', entry.changes.get('revoked', []))
+
+    def test_revoking_one_user_does_not_affect_another_same_role_user(self):
+        other_staff = User.objects.create_user(username='staffer2', password='x', role='STAFF')
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]),
+            {'perm': ['can_create_grn', 'can_read_grn']},
+        )
+        other_staff = User.objects.get(pk=other_staff.pk)
+        self.assertTrue(other_staff.can('update', 'grn'))  # user khác không bị ảnh hưởng
+
+    def test_grant_extra_permission_beyond_role(self):
+        self.assertFalse(self.staff.can('approve', 'reports'))  # STAFF mặc định không có
+
+        codenames = [f'can_{a}_{m}' for m in MODULES for a in ACTIONS
+                     if self.staff.can(a, m)]
+        codenames.append('can_approve_reports')
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]), {'perm': codenames})
+
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertTrue(staff.can('approve', 'reports'))  # đã được cấp thêm
+
+    def test_reset_restores_role_defaults(self):
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]),
+            {'perm': ['can_create_grn']},  # thu hẹp rất nhiều so với mặc định STAFF
+        )
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertFalse(staff.can('update', 'grn'))
+
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]), {'reset': '1'})
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertTrue(staff.can('update', 'grn'))   # về lại đúng mặc định STAFF
+        self.assertTrue(staff.can('create', 'grn'))
+
+    def test_editing_other_field_preserves_customization(self):
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]),
+            {'perm': ['can_create_grn', 'can_read_grn']},  # thu hồi update
+        )
+        # Sửa email qua user_update — KHÔNG đổi role.
+        self.client.post(reverse('user_update', args=[self.staff.pk]), {
+            'email': 'staffer@example.com', 'first_name': '', 'last_name': '',
+            'role': 'STAFF', 'is_active': 'on'})
+
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertEqual(staff.email, 'staffer@example.com')
+        self.assertFalse(staff.can('update', 'grn'))  # tuỳ chỉnh vẫn giữ nguyên
+
+    def test_changing_role_resets_customization_to_new_role_defaults(self):
+        self.client.post(
+            reverse('user_permission_edit', args=[self.staff.pk]),
+            {'perm': ['can_create_grn', 'can_read_grn']},
+        )
+        self.client.post(reverse('user_update', args=[self.staff.pk]), {
+            'email': '', 'first_name': '', 'last_name': '',
+            'role': 'QC', 'is_active': 'on'})
+
+        staff = User.objects.get(pk=self.staff.pk)
+        self.assertTrue(staff.can('create', 'qc'))    # đúng mặc định QC mới
+        self.assertFalse(staff.can('create', 'grn'))  # không còn dính tuỳ chỉnh cũ
+
+    def test_non_admin_forbidden(self):
+        qc = User.objects.create_user(username='qc1', password='x', role='QC')
+        self.client.force_login(qc)
+        resp = self.client.get(reverse('user_permission_edit', args=[self.staff.pk]))
+        self.assertEqual(resp.status_code, 403)
+
+
 class UserListPaginationFilterTest(TestCase):
     """Phân trang + bộ lọc (role/status/tìm kiếm) trên user_list."""
 

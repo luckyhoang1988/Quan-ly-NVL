@@ -37,6 +37,23 @@ def sync_user_group(user):
             user.groups.add(target)
 
 
+def sync_user_permissions(user):
+    """Đặt lại ``user.user_permissions`` đúng theo mặc định của ``role`` hiện tại
+    (ghi đè/xoá mọi phân quyền chi tiết đã tuỳ chỉnh riêng trước đó cho user này).
+
+    Chỉ nên gọi khi TẠO user mới hoặc khi ROLE vừa đổi (xem ``on_user_post_save``)
+    — không gọi ở mọi lần lưu User, để sửa các field khác (email, họ tên...)
+    không vô tình xoá mất phân quyền chi tiết admin đã set qua trang "Phân quyền".
+    """
+    if not user.pk:
+        return
+    perms = Permission.objects.filter(
+        content_type__app_label='accounts',
+        codename__in=codenames_for_role(user.role),
+    )
+    user.user_permissions.set(perms)
+
+
 # --- Signal handlers (kết nối trong AccountsConfig.ready) ---
 
 def on_post_migrate(sender, **kwargs):
@@ -44,6 +61,22 @@ def on_post_migrate(sender, **kwargs):
     sync_roles()
 
 
-def on_user_post_save(sender, instance, **kwargs):
-    """Sau mỗi lần lưu User: đồng bộ membership theo role (kể cả khi đổi role)."""
+def on_user_pre_save(sender, instance, **kwargs):
+    """Nhớ lại role CŨ (trước khi ghi đè) để post_save biết role có thật sự đổi
+    không — xem lý do ở ``sync_user_permissions``."""
+    if instance.pk:
+        instance._previous_role = (
+            sender.objects.filter(pk=instance.pk).values_list('role', flat=True).first()
+        )
+    else:
+        instance._previous_role = None
+
+
+def on_user_post_save(sender, instance, created, **kwargs):
+    """Sau mỗi lần lưu User: đồng bộ Group membership theo role (luôn luôn);
+    reset phân quyền trực tiếp theo role CHỈ khi user mới tạo hoặc role vừa đổi.
+    """
     sync_user_group(instance)
+    previous_role = getattr(instance, '_previous_role', None)
+    if created or previous_role != instance.role:
+        sync_user_permissions(instance)

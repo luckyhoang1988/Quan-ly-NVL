@@ -20,6 +20,7 @@ urlpatterns = [
     path('users/new/', views.user_create, name='user_create'),
     path('users/<int:pk>/', views.user_detail, name='user_detail'),
     path('users/<int:pk>/edit/', views.user_update, name='user_update'),
+    path('users/<int:pk>/permissions/', views.user_permission_edit, name='user_permission_edit'),
     path('users/<int:pk>/delete/', views.user_delete, name='user_delete'),
 
     path('', views.dashboard, name='dashboard'),

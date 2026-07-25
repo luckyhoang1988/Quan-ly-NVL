@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block title %}Phân quyền: {{ obj.username }} — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'user_list' %}">Quản lý user</a> <span class="mx-1">/</span>
+  <a href="{% url 'user_detail' obj.pk %}">{{ obj.username }}</a> <span class="mx-1">/</span>
+  <span class="current">Phân quyền</span>
+{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Phân quyền chi tiết: {{ obj.username }} ({{ obj.get_role_display|default:"chưa gán role" }})</h1>
+    <a href="{% url 'user_detail' obj.pk %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Quay lại</a>
+  </div>
+  <div class="card-body">
+    <p class="text-muted small">
+      Bỏ tick 1 ô để <strong>thu hồi</strong> quyền mà vai trò mặc định cấp cho user này, hoặc
+      tick thêm để cấp quyền ngoài vai trò. Thay đổi chỉ áp dụng cho riêng user này, không ảnh
+      hưởng vai trò/user khác. Đổi vai trò của user sẽ đặt lại toàn bộ về mặc định vai trò mới.
+    </p>
+    <form method="post">
+      {% csrf_token %}
+      <div class="table-responsive">
+        <table class="table table-sm table-bordered table-accent align-middle">
+          <thead>
+            <tr>
+              <th>Module</th>
+              {% for label in action_labels %}<th class="text-center">{{ label }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in perm_rows %}
+            <tr>
+              <td>{{ row.module_label }}</td>
+              {% for cell in row.cells %}
+                <td class="text-center">
+                  <input class="form-check-input" type="checkbox" name="perm"
+                         value="{{ cell.codename }}" {% if cell.checked %}checked{% endif %}>
+                </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="d-flex gap-2 mt-3">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Lưu phân quyền</button>
+        <button type="submit" name="reset" value="1" class="btn btn-outline-secondary"
+                onclick="return confirm('Đặt lại toàn bộ phân quyền của user này theo đúng mặc định vai trò?');">
+          <i class="bi bi-arrow-counterclockwise"></i> Đặt lại theo vai trò
+        </button>
+        <a class="btn btn-link" href="{% url 'user_detail' obj.pk %}">Huỷ</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
