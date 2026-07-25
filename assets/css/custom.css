@@ -68,6 +68,20 @@ body {
   box-shadow: 0 2px 6px rgba(47, 111, 237, .35);
 }
 
+.sidebar-section-title {
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, .35);
+  padding: .5rem .8rem .15rem;
+  margin-top: .35rem;
+}
+
+.sidebar-section-title:first-child {
+  margin-top: 0;
+}
+
 .sidebar .user-box {
   background-color: var(--wms-sidebar-bg-soft);
   border-radius: .5rem;
@@ -153,6 +167,13 @@ body {
   font-weight: 600;
   color: #1f2937;
   margin: 0;
+}
+
+/* ---- Detail page 2-column field split ---- */
+@media (min-width: 768px) {
+  .detail-col-split {
+    border-right: 1px solid var(--wms-panel-border);
+  }
 }
 
 /* ---- Tables ---- */

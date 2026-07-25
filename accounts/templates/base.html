@@ -17,6 +17,7 @@
         <i class="bi bi-boxes"></i> NVL / WMS
       </div>
       <ul class="nav nav-pills flex-column mb-auto gap-1">
+        <li class="sidebar-section-title">Danh mục</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'warehouse' %}active{% endif %}" href="{% url 'warehouse:warehouse_list' %}">
             <i class="bi bi-building"></i> Kho hàng
@@ -32,11 +33,15 @@
             <i class="bi bi-truck"></i> Nhà cung cấp
           </a>
         </li>
+
+        <li class="sidebar-section-title">Mua hàng</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
             <i class="bi bi-cart-check"></i> Purchase Order
           </a>
         </li>
+
+        <li class="sidebar-section-title">Nhập kho &amp; QC</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'receiving' %}active{% endif %}" href="{% url 'receiving:grn_list' %}">
             <i class="bi bi-clipboard-check"></i> GRN
@@ -49,6 +54,8 @@
           </a>
         </li>
         {% endif %}
+
+        <li class="sidebar-section-title">Kho vận</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'inventory' %}active{% endif %}" href="{% url 'inventory:inventory_list' %}">
             <i class="bi bi-bar-chart-line"></i> Tồn kho
@@ -66,12 +73,16 @@
           </a>
         </li>
         {% endif %}
+
+        <li class="sidebar-section-title">Báo cáo</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}" href="{% url 'reports:dashboard' %}">
             <i class="bi bi-graph-up"></i> Báo cáo
           </a>
         </li>
+
         {% if user.is_superuser or user.role == 'ADMIN' %}
+        <li class="sidebar-section-title">Quản trị</li>
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
             <i class="bi bi-people"></i> Quản lý user
