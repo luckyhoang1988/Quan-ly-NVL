@@ -168,6 +168,16 @@ body {
   background-color: #f5f9ff;
 }
 
+.table-accent > :not(caption) > * > th,
+.table-accent > :not(caption) > * > td {
+  border-right: 1px solid var(--wms-panel-border);
+}
+
+.table-accent > :not(caption) > * > th:last-child,
+.table-accent > :not(caption) > * > td:last-child {
+  border-right: none;
+}
+
 /* ---- Action toolbar ---- */
 .page-toolbar {
   display: flex;
