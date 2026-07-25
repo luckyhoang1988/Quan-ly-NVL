@@ -18,10 +18,12 @@ from django.utils import timezone
 class Grn(models.Model):
     class Status(models.TextChoices):
         DRAFT = 'DRAFT', 'Nháp'
+        PENDING_APPROVAL = 'PENDING_APPROVAL', 'Chờ duyệt nộp'
         PENDING_QC = 'PENDING_QC', 'Chờ QC'
         QC_IN_PROGRESS = 'QC_IN_PROGRESS', 'Đang QC'
         RECEIVED = 'RECEIVED', 'Đã nhận'
         REJECTED = 'REJECTED', 'Từ chối'
+        CANCELLED = 'CANCELLED', 'Đã hủy'
         CLOSED = 'CLOSED', 'Đã đóng'
 
     grn_no = models.CharField(
@@ -47,6 +49,21 @@ class Grn(models.Model):
 
     def __str__(self):
         return self.grn_no
+
+    @property
+    def current_department(self):
+        """Phòng ban đang giữ GRN ở bước hiện tại — dùng để xác định ai được
+        hủy/duyệt theo phòng ban (``accounts.models.User.is_department_manager``).
+
+        Dùng thẳng mã Department ('WAREHOUSE'/'QC', khớp
+        ``accounts.models.User.Department``) thay vì import ``accounts.models.User``
+        để tránh phụ thuộc chéo app ở lớp model.
+        """
+        if self.status in (self.Status.DRAFT, self.Status.PENDING_APPROVAL, self.Status.PENDING_QC):
+            return 'WAREHOUSE'
+        if self.status == self.Status.QC_IN_PROGRESS:
+            return 'QC'
+        return None
 
     def clean(self):
         if self.po_id and self.supplier_id and self.po.supplier_id != self.supplier_id:

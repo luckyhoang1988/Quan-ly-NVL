@@ -15,8 +15,9 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 
+from accounts.approvals import latest_approval_for
 from accounts.audit import client_ip, log_action
-from accounts.models import AuditLog
+from accounts.models import Approval, AuditLog, User
 from accounts.pagination import paginate_queryset
 from partners.models import Supplier
 from purchasing.services import sync_po_status
@@ -26,12 +27,43 @@ from .forms import GrnForm, GrnItemFormSet, ReceiveQtyFormSet, SubmitToQcForm
 from .models import Grn, GrnReturn
 from .services import (
     approve_return,
+    cancel_grn,
     close_grn,
     close_return,
-    mark_return_returned,
-    submit_to_pending_qc,
+    decide_grn_submission,
+    decide_return_confirmation,
+    request_return_confirmation,
+    request_submission,
     tolerance_alerts,
 )
+
+
+def can_decide_grn_submission(user):
+    """Quản lý Kho, hoặc Manager/Admin qua quyền ``approve`` sẵn có trên GRN."""
+    return user.is_department_manager(User.Department.WAREHOUSE) or user.can('approve', 'grn')
+
+
+def can_cancel_grn(user, grn):
+    """Quản lý phòng ban đang giữ phiếu ở bước hiện tại, hoặc Manager/Admin có quyền xoá GRN."""
+    department = grn.current_department
+    if department and user.is_department_manager(department):
+        return True
+    return user.can('delete', 'grn')
+
+
+def can_approve_grn_return(user):
+    """Mua hàng xử lý trả hàng NCC, hoặc Manager/Admin qua quyền ``approve`` sẵn có."""
+    return user.department == User.Department.PURCHASING or user.can('approve', 'grn')
+
+
+def can_request_return_confirmation(user):
+    """Chỉ QC xác nhận đã kiểm tra hàng trả, hoặc Manager/Admin override."""
+    return user.department == User.Department.QC or user.can('approve', 'grn')
+
+
+def can_decide_return_confirmation(user):
+    """Quản lý QC duyệt xác nhận trả hàng, hoặc Manager/Admin override."""
+    return user.is_department_manager(User.Department.QC) or user.can('approve', 'grn')
 
 
 def grn_permission_required(action):
@@ -91,21 +123,30 @@ def grn_list(request):
 
 @grn_permission_required('read')
 def grn_detail(request, pk):
-    """READ — chi tiết GRN: items, lịch sử QC, phiếu trả hàng (nếu có)."""
+    """READ — chi tiết GRN: items, lịch sử QC, phiếu trả hàng (nếu có), yêu cầu duyệt."""
     grn = get_object_or_404(
         Grn.objects.select_related('supplier', 'po').prefetch_related('items', 'qc_inspections', 'returns'), pk=pk)
     can_close = (
         request.user.can('approve', 'grn')
         and grn.status in (Grn.Status.RECEIVED, Grn.Status.REJECTED)
     )
+    returns = list(grn.returns.all())
+    for ret in returns:
+        ret.latest_approval = latest_approval_for(ret)
+
     return render(request, 'receiving/grn_detail.html', {
         'grn': grn,
+        'returns': returns,
         'can_update': request.user.can('update', 'grn'),
         'can_qc': request.user.can('approve', 'qc'),
         'can_override_qc': request.user.can('override', 'qc'),
         'can_close': can_close,
-        'can_manage_return': request.user.can('update', 'grn'),
-        'can_approve_return': request.user.can('approve', 'grn'),
+        'can_cancel': can_cancel_grn(request.user, grn),
+        'can_decide_submission': can_decide_grn_submission(request.user),
+        'latest_submission_approval': latest_approval_for(grn),
+        'can_approve_return': can_approve_grn_return(request.user),
+        'can_request_return_confirmation': can_request_return_confirmation(request.user),
+        'can_decide_return_confirmation': can_decide_return_confirmation(request.user),
     })
 
 
@@ -149,8 +190,8 @@ def grn_create(request):
         )
         if request.POST.get('action') == 'submit':
             try:
-                submit_to_pending_qc(obj, actor=request.user, ip_address=client_ip(request))
-                messages.success(request, f'Đã tạo và submit GRN "{obj.grn_no}" sang PENDING_QC.')
+                request_submission(obj, actor=request.user, ip_address=client_ip(request))
+                messages.success(request, f'Đã tạo và nộp GRN "{obj.grn_no}", chờ quản lý Kho duyệt.')
             except ValidationError as exc:
                 messages.error(request, ' '.join(exc.messages))
         else:
@@ -188,12 +229,66 @@ def grn_update(request, pk):
 
 @grn_permission_required('update')
 def grn_submit(request, pk):
-    """DRAFT -> PENDING_QC cho 1 GRN đã lưu nháp từ trước (POST-only)."""
+    """DRAFT -> PENDING_APPROVAL cho 1 GRN đã lưu nháp từ trước (POST-only) — chờ
+    quản lý Kho duyệt trước khi thật sự sang PENDING_QC."""
     obj = get_object_or_404(Grn, pk=pk)
     if request.method == 'POST':
         try:
-            submit_to_pending_qc(obj, actor=request.user, ip_address=client_ip(request))
-            messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang PENDING_QC.')
+            request_submission(obj, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã nộp GRN "{obj.grn_no}", chờ quản lý Kho duyệt.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=obj.pk)
+
+
+@login_required
+def grn_approve_submission(request, pk):
+    """Quản lý Kho duyệt nộp GRN: PENDING_APPROVAL -> PENDING_QC (POST-only)."""
+    obj = get_object_or_404(Grn, pk=pk)
+    if not can_decide_grn_submission(request.user):
+        raise PermissionDenied('Không có quyền duyệt yêu cầu nộp GRN.')
+    if request.method == 'POST':
+        approval = latest_approval_for(obj)
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('GRN này không có yêu cầu duyệt nào đang chờ xử lý.')
+            decide_grn_submission(approval, True, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã duyệt nộp GRN "{obj.grn_no}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=obj.pk)
+
+
+@login_required
+def grn_reject_submission(request, pk):
+    """Quản lý Kho từ chối nộp GRN: PENDING_APPROVAL -> DRAFT (POST-only)."""
+    obj = get_object_or_404(Grn, pk=pk)
+    if not can_decide_grn_submission(request.user):
+        raise PermissionDenied('Không có quyền từ chối yêu cầu nộp GRN.')
+    if request.method == 'POST':
+        approval = latest_approval_for(obj)
+        note = request.POST.get('note', '')
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('GRN này không có yêu cầu duyệt nào đang chờ xử lý.')
+            decide_grn_submission(approval, False, actor=request.user, note=note, ip_address=client_ip(request))
+            messages.success(request, f'Đã từ chối nộp GRN "{obj.grn_no}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=obj.pk)
+
+
+@login_required
+def grn_cancel(request, pk):
+    """Hủy GRN (POST-only) — quyền theo phòng ban đang giữ phiếu (``current_department``)."""
+    obj = get_object_or_404(Grn, pk=pk)
+    if not can_cancel_grn(request.user, obj):
+        raise PermissionDenied('Không có quyền hủy GRN này.')
+    if request.method == 'POST':
+        note = request.POST.get('note', '')
+        try:
+            cancel_grn(obj, actor=request.user, note=note, ip_address=client_ip(request))
+            messages.success(request, f'Đã hủy GRN "{obj.grn_no}".')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('receiving:grn_detail', pk=obj.pk)
@@ -245,10 +340,12 @@ def grn_close(request, pk):
     return redirect('receiving:grn_detail', pk=obj.pk)
 
 
-@grn_permission_required('approve')
+@login_required
 def grn_return_approve(request, pk):
-    """GRN_RETURN: PENDING -> APPROVED (POST-only)."""
+    """GRN_RETURN: PENDING -> APPROVED (POST-only) — Mua hàng, hoặc Manager/Admin."""
     ret = get_object_or_404(GrnReturn, pk=pk)
+    if not can_approve_grn_return(request.user):
+        raise PermissionDenied('Không có quyền duyệt phiếu trả hàng.')
     if request.method == 'POST':
         try:
             approve_return(ret, actor=request.user, ip_address=client_ip(request))
@@ -258,14 +355,54 @@ def grn_return_approve(request, pk):
     return redirect('receiving:grn_detail', pk=ret.grn_id)
 
 
-@grn_permission_required('update')
-def grn_return_mark_returned(request, pk):
-    """GRN_RETURN: APPROVED -> RETURNED (POST-only)."""
+@login_required
+def grn_return_request_confirmation(request, pk):
+    """QC xác nhận đã kiểm tra hàng trả (APPROVED) — tạo yêu cầu duyệt cho quản lý
+    QC (POST-only). Chỉ QC được bấm nút này."""
     ret = get_object_or_404(GrnReturn, pk=pk)
+    if not can_request_return_confirmation(request.user):
+        raise PermissionDenied('Chỉ QC được xác nhận đã kiểm tra hàng trả.')
     if request.method == 'POST':
         try:
-            mark_return_returned(ret, actor=request.user, ip_address=client_ip(request))
-            messages.success(request, f'Đã xác nhận trả hàng RETURN-{ret.grn.grn_no}.')
+            request_return_confirmation(ret, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã gửi xác nhận RETURN-{ret.grn.grn_no}, chờ quản lý QC duyệt.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=ret.grn_id)
+
+
+@login_required
+def grn_return_approve_confirmation(request, pk):
+    """Quản lý QC duyệt xác nhận trả hàng: APPROVED -> RETURNED (POST-only)."""
+    ret = get_object_or_404(GrnReturn, pk=pk)
+    if not can_decide_return_confirmation(request.user):
+        raise PermissionDenied('Không có quyền duyệt xác nhận trả hàng.')
+    if request.method == 'POST':
+        approval = latest_approval_for(ret)
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('Phiếu trả hàng này không có yêu cầu xác nhận nào đang chờ xử lý.')
+            decide_return_confirmation(approval, True, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã duyệt xác nhận trả hàng RETURN-{ret.grn.grn_no}.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('receiving:grn_detail', pk=ret.grn_id)
+
+
+@login_required
+def grn_return_reject_confirmation(request, pk):
+    """Quản lý QC từ chối xác nhận trả hàng (POST-only)."""
+    ret = get_object_or_404(GrnReturn, pk=pk)
+    if not can_decide_return_confirmation(request.user):
+        raise PermissionDenied('Không có quyền từ chối xác nhận trả hàng.')
+    if request.method == 'POST':
+        approval = latest_approval_for(ret)
+        note = request.POST.get('note', '')
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('Phiếu trả hàng này không có yêu cầu xác nhận nào đang chờ xử lý.')
+            decide_return_confirmation(approval, False, actor=request.user, note=note, ip_address=client_ip(request))
+            messages.success(request, f'Đã từ chối xác nhận trả hàng RETURN-{ret.grn.grn_no}.')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('receiving:grn_detail', pk=ret.grn_id)

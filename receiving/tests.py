@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import AuditLog
+from accounts.models import Approval, AuditLog
 from catalog.models import Product
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem
@@ -264,6 +264,14 @@ class GrnCloseAndReturnViewTest(TestCase):
             username='kho1', password='kho-pass-123', role=User.Role.STAFF)
         self.manager = User.objects.create_user(
             username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.qc_user = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC, department=User.Department.QC)
+        self.qc_manager = User.objects.create_user(
+            username='qlqc1', password='qlqc-pass-123', role=User.Role.QC,
+            department=User.Department.QC, is_manager=True)
+        self.purchasing_user = User.objects.create_user(
+            username='mua1', password='mua-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         self.po = PurchaseOrder.objects.create(
             po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
@@ -311,26 +319,69 @@ class GrnCloseAndReturnViewTest(TestCase):
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
         self.assertEqual(ret.status, GrnReturn.Status.APPROVED)
 
-    def test_TC_GRN_VIEW_006_003_staff_can_mark_return_returned(self):
-        """STAFF có 'update' trên grn (không có 'approve') -> đủ quyền xác nhận đã trả hàng."""
+    def test_TC_GRN_VIEW_006_003_purchasing_can_approve_return(self):
+        """Yêu cầu #4: phòng Mua hàng (không chỉ Manager/Admin) duyệt trả hàng NCC."""
+        self.client.force_login(self.purchasing_user)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn)
+        response = self.client.post(reverse('receiving:grn_return_approve', args=[ret.pk]))
+        ret.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(ret.status, GrnReturn.Status.APPROVED)
+
+    def test_TC_GRN_VIEW_006_004_qc_can_request_return_confirmation(self):
+        """Yêu cầu #4: chỉ QC xác nhận được đã kiểm tra hàng trả — tạo yêu cầu duyệt PENDING."""
+        self.client.force_login(self.qc_user)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.APPROVED)
+        response = self.client.post(reverse('receiving:grn_return_request_confirmation', args=[ret.pk]))
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertTrue(
+            Approval.objects.filter(target_id=str(ret.pk), status=Approval.Status.PENDING).exists())
+
+    def test_TC_GRN_VIEW_006_005_staff_forbidden_to_request_return_confirmation(self):
         self.client.force_login(self.staff)
         grn = self._grn(Grn.Status.REJECTED)
         ret = GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.APPROVED)
-        response = self.client.post(reverse('receiving:grn_return_mark_returned', args=[ret.pk]))
+        response = self.client.post(reverse('receiving:grn_return_request_confirmation', args=[ret.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GRN_VIEW_006_006_qc_manager_approves_confirmation_marks_returned(self):
+        """Yêu cầu #4: quản lý QC duyệt xác nhận -> RETURNED, tự động forward về Kho."""
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.APPROVED)
+        self.client.force_login(self.qc_user)
+        self.client.post(reverse('receiving:grn_return_request_confirmation', args=[ret.pk]))
+
+        self.client.force_login(self.qc_manager)
+        response = self.client.post(reverse('receiving:grn_return_approve_confirmation', args=[ret.pk]))
         ret.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
         self.assertEqual(ret.status, GrnReturn.Status.RETURNED)
 
-    def test_TC_GRN_VIEW_006_004_invalid_transition_shows_error_message(self):
-        self.client.force_login(self.manager)
+    def test_TC_GRN_VIEW_006_007_qc_manager_rejects_confirmation_keeps_approved(self):
         grn = self._grn(Grn.Status.REJECTED)
-        ret = GrnReturn.objects.create(grn=grn)  # PENDING
+        ret = GrnReturn.objects.create(grn=grn, status=GrnReturn.Status.APPROVED)
+        self.client.force_login(self.qc_user)
+        self.client.post(reverse('receiving:grn_return_request_confirmation', args=[ret.pk]))
+
+        self.client.force_login(self.qc_manager)
         response = self.client.post(
-            reverse('receiving:grn_return_mark_returned', args=[ret.pk]), follow=True)
+            reverse('receiving:grn_return_reject_confirmation', args=[ret.pk]), {'note': 'chưa đủ chứng từ'})
+        ret.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(ret.status, GrnReturn.Status.APPROVED)
+
+    def test_TC_GRN_VIEW_006_008_invalid_transition_shows_error_message(self):
+        self.client.force_login(self.qc_manager)
+        grn = self._grn(Grn.Status.REJECTED)
+        ret = GrnReturn.objects.create(grn=grn)  # PENDING, chưa từng có yêu cầu xác nhận nào
+        response = self.client.post(
+            reverse('receiving:grn_return_approve_confirmation', args=[ret.pk]), follow=True)
         ret.refresh_from_db()
         self.assertEqual(ret.status, GrnReturn.Status.PENDING)
         error_messages = [str(m) for m in response.context['messages']]
-        self.assertTrue(any('Không thể xác nhận đã trả hàng' in m for m in error_messages))
+        self.assertTrue(any('không có yêu cầu xác nhận' in m for m in error_messages))
 
 
 class GrnViewTest(TestCase):
@@ -341,6 +392,9 @@ class GrnViewTest(TestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
             username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.manager = User.objects.create_user(
+            username='qlk1', password='ql-pass-123', role=User.Role.MANAGER,
+            department=User.Department.WAREHOUSE, is_manager=True)
         self.qc_user = User.objects.create_user(
             username='qc1', password='qc-pass-123', role=User.Role.QC)
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
@@ -405,24 +459,84 @@ class GrnViewTest(TestCase):
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.CREATE, target_id=str(grn.pk)).exists())
 
     def test_TC_GRN_VIEW_001_004_staff_can_save_and_submit_in_one_step(self):
+        """Nộp giờ chỉ chuyển sang PENDING_APPROVAL (chờ quản lý Kho duyệt), không
+        còn nhảy thẳng PENDING_QC như trước (luồng nộp/duyệt 2 cấp)."""
         response = self.client.post(reverse('receiving:grn_create'), self._create_payload(action='submit'))
         grn = Grn.objects.get(supplier=self.supplier)
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
-        self.assertEqual(grn.status, Grn.Status.PENDING_QC)
+        self.assertEqual(grn.status, Grn.Status.PENDING_APPROVAL)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_id=str(grn.pk)).exists())
 
-    def test_TC_GRN_VIEW_002_001_submit_transitions_draft_to_pending_qc(self):
+    def test_TC_GRN_VIEW_002_001_submit_transitions_draft_to_pending_approval(self):
         grn = self._create_grn()
         response = self.client.post(reverse('receiving:grn_submit', args=[grn.pk]))
         grn.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
-        self.assertEqual(grn.status, Grn.Status.PENDING_QC)
+        self.assertEqual(grn.status, Grn.Status.PENDING_APPROVAL)
 
     def test_TC_GRN_VIEW_002_002_submit_rejected_when_not_draft(self):
         grn = self._create_grn(status=Grn.Status.PENDING_QC)
         self.client.post(reverse('receiving:grn_submit', args=[grn.pk]))
         grn.refresh_from_db()
         self.assertEqual(grn.status, Grn.Status.PENDING_QC)
+
+    def test_TC_GRN_VIEW_002_003_manager_approves_submission_transitions_to_pending_qc(self):
+        grn = self._create_grn()
+        self.client.post(reverse('receiving:grn_submit', args=[grn.pk]))
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('receiving:grn_approve_submission', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.PENDING_QC)
+
+    def test_TC_GRN_VIEW_002_004_manager_rejects_submission_returns_to_draft(self):
+        grn = self._create_grn()
+        self.client.post(reverse('receiving:grn_submit', args=[grn.pk]))
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse('receiving:grn_reject_submission', args=[grn.pk]), {'note': 'thiếu chứng từ'})
+        grn.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.DRAFT)
+
+    def test_TC_GRN_VIEW_002_005_staff_forbidden_to_approve_submission(self):
+        grn = self._create_grn()
+        self.client.post(reverse('receiving:grn_submit', args=[grn.pk]))
+        response = self.client.post(reverse('receiving:grn_approve_submission', args=[grn.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GRN_VIEW_007_001_manager_can_cancel_draft_grn(self):
+        grn = self._create_grn()
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.CANCELLED)
+
+    def test_TC_GRN_VIEW_007_002_staff_forbidden_to_cancel_grn(self):
+        """STAFF không phải quản lý phòng ban -> không được hủy (chỉ is_manager mới được)."""
+        grn = self._create_grn()
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_GRN_VIEW_007_003_cancel_rejected_when_received(self):
+        grn = self._create_grn(status=Grn.Status.RECEIVED)
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]), follow=True)
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.RECEIVED)
+
+    def test_TC_GRN_VIEW_007_004_qc_manager_can_cancel_during_qc_in_progress(self):
+        """Yêu cầu #2: quản lý QC hủy được phiếu nhập của NV kho khi đang ở bước QC."""
+        grn = self._create_grn(status=Grn.Status.QC_IN_PROGRESS)
+        qc_manager = User.objects.create_user(
+            username='qlqc2', password='qlqc-pass-123', role=User.Role.QC,
+            department=User.Department.QC, is_manager=True)
+        self.client.force_login(qc_manager)
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.CANCELLED)
 
     def test_TC_GRN_VIEW_003_001_receive_qty_saves_qty_and_starts_qc(self):
         grn = self._create_grn(status=Grn.Status.PENDING_QC)
