@@ -166,7 +166,7 @@ def supplier_lead_time_stats():
     for supplier in Supplier.objects.filter(status=Supplier.Status.ACTIVE):
         received_pos = PurchaseOrder.objects.filter(supplier=supplier, received_at__isnull=False)
         lead_times = [
-            (po.received_at - po.created_at.date()).days for po in received_pos
+            (po.received_at - timezone.localtime(po.created_at).date()).days for po in received_pos
         ]
         avg_actual_lead_time = sum(lead_times) / len(lead_times) if lead_times else None
 
