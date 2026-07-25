@@ -161,13 +161,14 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   (just `po_no`, `supplier_id` FK, `status` defaulted to `SENT`, line items) — enough for GRN to have a valid
   FK. Don't build PO approval workflow while implementing the stub.
 - **GRN/QC/Batch/Inventory is one transaction, not three**: QC result determines what happens atomically —
-  PASS creates a Batch (`ACTIVE`) and increases inventory; FAIL creates a `GRN_RETURN` and must **not** touch
-  inventory; PARTIAL_PASS splits into two batches (`ACTIVE` for the passed qty, `QUARANTINE` for the failed
-  qty) and only credits inventory for the passed portion. Each path needs its own test — the backlog calls
-  out the FAIL and PARTIAL_PASS paths as the easiest to get wrong.
-- **Batch status enum** (`ACTIVE`, `PARTIAL_USED`, `QUARANTINE`, `EXPIRED`, `CLOSED`) gates what GIN can
-  select: only `ACTIVE` batches are eligible for FIFO issue; `QUARANTINE`/`EXPIRED` must be rejected even if
-  `qty_available > 0`.
+  PASS creates a Batch (`PENDING_RECEIPT` since Phase D, see below) and increases inventory; FAIL creates a
+  `GRN_RETURN` and must **not** touch inventory; PARTIAL_PASS splits into two batches (`PENDING_RECEIPT` for
+  the passed qty, `QUARANTINE` for the failed qty) and only credits inventory for the passed portion. Each
+  path needs its own test — the backlog calls out the FAIL and PARTIAL_PASS paths as the easiest to get
+  wrong.
+- **Batch status enum** (`PENDING_RECEIPT`, `ACTIVE`, `PARTIAL_USED`, `QUARANTINE`, `EXPIRED`, `CLOSED`) gates
+  what GIN can select: only `ACTIVE` batches are eligible for FIFO issue; `PENDING_RECEIPT` (chờ kho xác
+  nhận nhận hàng, Phase D)/`QUARANTINE`/`EXPIRED` must all be rejected even if `qty_available > 0`.
 - **FIFO issue algorithm** (GIN): select from `batch WHERE product_id=? AND qty_available>0 AND status='ACTIVE'
   ORDER BY exp_date ASC, created_at ASC`, and allow splitting the requested qty across multiple batches if
   one batch isn't enough. This is flagged in the backlog as the most error-prone piece of logic and requires
@@ -181,9 +182,10 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   `STAGING` via `start_qc()` — it no longer "disappears" from the system until QC decides, the way it used
   to. `qc_pass`/`qc_fail`/`qc_partial_pass` then consume that staging batch via
   `inventory.services.move_batch_qty()` (the shared split primitive also used by `transfer_stock`, recording
-  `TRANSFER_OUT`/`TRANSFER_IN` rather than `RECEIPT`): PASS moves 100% to a new `ACTIVE` batch in the chosen
-  `MAIN` warehouse; FAIL moves 100% to a new `QUARANTINE` batch in `SCRAP`; PARTIAL_PASS splits into both in
-  the same transaction. `Batch.grn_item` (nullable `PROTECT` FK) tracks lineage back to the source `GrnItem`
+  `TRANSFER_OUT`/`TRANSFER_IN` rather than `RECEIPT`): PASS moves 100% to a new `PENDING_RECEIPT` batch in the
+  chosen `MAIN` warehouse (see Phase D bullet below — no longer `ACTIVE` immediately); FAIL moves 100% to a
+  new `QUARANTINE` batch in `SCRAP`; PARTIAL_PASS splits into both (`PENDING_RECEIPT` + `QUARANTINE`) in the
+  same transaction. `Batch.grn_item` (nullable `PROTECT` FK) tracks lineage back to the source `GrnItem`
   across every split. Two guards keep the "must go through QC" invariant: `qc_pass`/`qc_partial_pass` reject
   any destination location whose warehouse isn't `MAIN`, and `transfer_stock` rejects any source batch
   currently sitting in a `STAGING` warehouse. `GinForm`/`Gin.clean()` restrict GIN to `MAIN` warehouses only —
@@ -197,3 +199,86 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   2 onward — it's called out as "hard to add later," so don't defer it while building the workflow states.
 - `qty_available = qty_on_hand - qty_reserved` is computed, not stored input — keep it derived wherever it's
   used (Inventory, Batch).
+- **Department-manager approval axis, added 2026-07-25, parallel to `role`, not a replacement**: `User.role`
+  keeps deciding the CRUD permission matrix (`user.can(action, module)`) exactly as before — don't touch
+  `ROLE_PERMISSIONS`/`rbac.py` for the new approval-hierarchy work. A second, independent axis —
+  `User.department` (`WAREHOUSE`/`QC`/`PURCHASING`/`ACCOUNTING`) + `User.is_manager` (bool) — was added
+  specifically so every department (not just the warehouse `MANAGER` role) can have its own manager who
+  approves/cancels tickets currently in their department's stage. Check it via
+  `user.is_department_manager(department)`, never via `user.role == 'MANAGER'` (that check now only means
+  "has warehouse CRUD/approve rights," not "is anyone's manager"). In-app notifications
+  (`accounts.models.Notification`, sent via `accounts.notifications.notify()`) and the audit-log search page
+  (`/audit-log/`, gated to `is_manager or role==ADMIN or is_superuser`) were built on top of this axis — both
+  are plain DB-polled, no Celery/websocket, per the `⏸️` convention. `Warehouse.staff` (M2M→User, limited to
+  `department=WAREHOUSE`) lets a GRN/QC handoff target a specific warehouse's assigned staff instead of every
+  `STAFF`-role user company-wide; empty assignment falls back to notifying the whole `WAREHOUSE` department.
+  A staff→department-manager "submit for approval" pattern (GRN submit, GrnReturn QC sign-off, GIN confirm,
+  and the Phase D warehouse handoff below are all done) is built on top via a generic `Approval` model
+  (`accounts.models.Approval`, GenericFK `target`) + `accounts.approvals.create_approval()`/
+  `decide_approval()`/`latest_approval_for()` — see
+  `.claude/skills/wms-conventions/SKILL.md` §4 for the reusable helpers before wiring a new approval step.
+- **GRN submit is now itself gated by `Approval` (added Phase B, 2026-07-26)**: `Grn.Status` gained
+  `PENDING_APPROVAL` (between `DRAFT` and `PENDING_QC`) and `CANCELLED`. Staff "Nộp" no longer calls
+  `submit_to_pending_qc()` directly — `receiving.services.request_submission()` moves the GRN to
+  `PENDING_APPROVAL` and creates an `Approval` for `department=WAREHOUSE`; only a WAREHOUSE
+  `is_department_manager` (or the existing `can('approve','grn')` Manager/Admin fallback) can decide it via
+  `decide_grn_submission()`, which calls the real `submit_to_pending_qc()` on approve or reverts to `DRAFT`
+  on reject. `submit_to_pending_qc()` itself still accepts `DRAFT` as a source status too (not just
+  `PENDING_APPROVAL`) — kept so `seed_demo_data.py` and other programmatic callers can skip the approval gate
+  entirely; only the UI submit path goes through `request_submission()`. `Grn.current_department` (property:
+  `WAREHOUSE` for `DRAFT`/`PENDING_APPROVAL`/`PENDING_QC`, `QC` for `QC_IN_PROGRESS`, else `None`) drives who
+  can `grn_cancel` a ticket at its current stage (e.g. a QC department manager can cancel a GRN that's
+  `QC_IN_PROGRESS`, per `receiving.views.can_cancel_grn`) — this property intentionally hardcodes the
+  department string constants instead of importing `accounts.models.User` to avoid a cross-app model
+  dependency at the model layer; keep that pattern for any similar property added later.
+- **`GrnReturn` return-to-supplier flow is now department-routed, not Manager-only (Phase B)**:
+  `approve_return()` (PENDING→APPROVED) now accepts `department=PURCHASING` in addition to the existing
+  `can('approve','grn')` Manager/Admin path, and fans out a `notify()` to both QC and WAREHOUSE departments.
+  `mark_return_returned()` (APPROVED→RETURNED) is no longer exposed directly to any view — it only runs
+  inside `decide_return_confirmation()`'s `on_approve` callback. The flow is: QC calls
+  `request_return_confirmation()` (creates an `Approval` for `department=QC`) after physically checking the
+  returned goods; a QC `is_department_manager` decides it via `decide_return_confirmation()`, which on
+  approve calls `mark_return_returned()` for real and `notify()`s the WAREHOUSE department (the "auto-forward
+  to warehouse" behavior) — on reject the `GrnReturn` simply stays `APPROVED` so QC can re-request later.
+- **GIN start-picking is approval-gated too (Phase C, mirrors GRN submit)**: `Gin.Status` gained
+  `PENDING_APPROVAL` (between `DRAFT` and `PICKING`) and `CANCELLED`. STAFF has no `update` permission on
+  GIN (only `create`+`read`), so they use a *new*, separate view (`shipping.views.gin_confirm_request`, gated
+  by `user.can('create', 'gin')`) to move DRAFT→PENDING_APPROVAL and create an `Approval` for
+  `department=WAREHOUSE` — this is deliberately a different view from the pre-existing `gin_start_picking`
+  (kept unchanged, still gated by `update`), not a rewire of one shared button like GRN's `grn_submit`: a
+  Manager/Admin (who already has `update`) still starts picking directly with no self-approval detour, while
+  STAFF's request must go through `shipping.views.gin_approve_confirmation`/`gin_reject_confirmation`
+  (`user.is_department_manager('WAREHOUSE') or user.can('approve', 'gin')`) →
+  `shipping.services.decide_gin_confirmation()`, which on approve calls the real `start_picking()` (now
+  accepts `DRAFT` *or* `PENDING_APPROVAL` as source status, same dual-entry reasoning as
+  `submit_to_pending_qc`) or on reject reverts to `DRAFT`. `gin_cancel` mirrors `grn_cancel` but is simpler —
+  GIN only ever belongs to one department (`WAREHOUSE`), so there's no `current_department`-style property;
+  the permission check is a flat `user.is_department_manager('WAREHOUSE') or user.can('delete', 'gin')`, and
+  cancel is blocked once `ISSUED` (inventory has already been deducted for real by then).
+- **QC PASS → warehouse handoff (Phase D)**: `Batch.Status` gained `PENDING_RECEIPT` ("Chờ kho xác nhận"),
+  placed *before* `ACTIVE` in the enum. `qc_pass`/`qc_partial_pass` (`quality/services.py`) now create the
+  passed-qty destination batch as `PENDING_RECEIPT` instead of `ACTIVE` — `Inventory.qty_on_hand` at the
+  destination `MAIN` warehouse is still credited immediately (physical goods really are there), only the
+  per-batch `status` gates FIFO eligibility, so `suggest_fifo_batches`'s existing `status=ACTIVE` filter
+  needed no changes to exclude it. Each such batch gets one `inventory.models.WarehouseHandoff`
+  (`inventory.services.create_handoff()`) — an optional `assigned_to` picked on the QC PASS/PARTIAL_PASS form
+  (`quality.forms.QcResultForm.assigned_to`, queryset `department=WAREHOUSE`) notifies just that person;
+  left blank, `create_handoff()` notifies `destination_warehouse.staff` (falls back to the whole
+  `department=WAREHOUSE` if that kho has no staff assigned — same fallback rule as the Phase A
+  `Warehouse.staff` design). `inventory.services.accept_handoff()` flips the batch to `ACTIVE` (now real FIFO
+  stock) and notifies the QC inspector back; `reject_handoff()` requires a `reason` and a
+  `WarehouseHandoff.RejectDestination` choice: `TO_SCRAP` calls `move_batch_qty()` to split the batch into a
+  new `QUARANTINE` batch in `SCRAP` (reuses the same primitive as `qc_fail`/`transfer_stock`); `BACK_TO_QC`
+  deliberately does **not** touch Batch/Inventory (mirrors the QC-override boundary: "annotation only, never
+  reverse a completed transaction automatically") — it just flips `WarehouseHandoff.status` to `REJECTED` and
+  notifies `department=QC` to resolve it manually (e.g. a manual `transfer_stock` to `SCRAP` afterward, which
+  is why `move_batch_qty`'s source-status guard was widened to accept `PENDING_RECEIPT` as a valid source,
+  not just `ACTIVE`/`PARTIAL_USED`). Who may decide a handoff — `inventory.views.can_decide_handoff()` — is
+  `is_department_manager('WAREHOUSE')` (oversight, sees/decides everything) OR the exact `assigned_to` user
+  OR (if unassigned) anyone in `destination_warehouse.staff`, falling back to any `department=WAREHOUSE` user
+  if that kho has no staff assigned — same three-tier resolution as who gets *notified*, so "who sees it in
+  their queue" and "who was told about it" never disagree. Queue page: `inventory:handoff_list`
+  ("Phiếu chờ nhận hàng" in the sidebar, gated to `department=WAREHOUSE`/ADMIN/superuser). Unlike GRN/GIN's
+  Approval-based gates, this flow does **not** use the generic `Approval` model — a handoff is a hand-off to
+  a *specific person or team*, not a request that bubbles up to one department manager's decision, so it has
+  its own lighter PENDING/ACCEPTED/REJECTED model instead.
