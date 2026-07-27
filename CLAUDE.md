@@ -388,3 +388,22 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   instead of trying to make the locking airtight — a real DB sequence (`nextval`) or a dedicated counter row
   would also work but weren't introduced here to avoid a new migration/model for a problem the retry loop
   already solves at the `save()` layer.
+- **Bug fix 2026-07-27: `seed_demo_data --flush` was wiping the entire `Notification`/`Approval`/`AuditLog`
+  tables, not just demo-related rows**. `accounts/management/commands/seed_demo_data.py::_flush_demo_data()`
+  deletes demo `Warehouse`/`Supplier`/`Product`/`Grn`/`Gin`/etc. (identified by their `DEMO-` prefix), then
+  needs to clean up the `Notification`/`Approval`/`AuditLog` entries that pointed at those now-deleted objects
+  via `GenericForeignKey` (`target_type` + `target_id` — these don't cascade automatically when the target
+  row is deleted). The old code assumed a GenericFK "can't be filtered by prefix" and called
+  `Notification.objects.all().delete()` / `Approval.objects.all().delete()` / `AuditLog.objects.all().delete()`
+  unconditionally whenever any demo data existed — correct only if demo data is the *only* data in the DB;
+  on any environment that mixes seeded demo data with real usage (real GRN/GIN/PR approvals, real audit
+  trail), running `--flush` silently destroyed all of it. Fixed by collecting `(ContentType, pk)` for every
+  demo object **before** deleting it (`Warehouse`, `Location`, `Product`, `Supplier`, `PurchaseOrder`,
+  `PurchaseRequest`, `Grn`, `GrnReturn`, `Gin`, `StocktakeSession`, `WarehouseHandoff`, `StockTransfer`,
+  `QcCriteria` — every model actually used as a `target=` argument to `log_action()`/`notify()`/
+  `create_approval()` anywhere in the codebase, cross-checked via grep), building one `Q(target_type=ct,
+  target_id__in=[...])` clause per model, OR-ing them together, and using that combined `Q` to scope the three
+  `.delete()` calls instead of `.objects.all()`. **General lesson**: a `GenericForeignKey` target *can* be
+  filtered to a subset — grab the `ContentType` + id list of the objects you're about to delete first (before
+  they're gone), then filter the log/notification table by that; never fall back to "can't scope it, wipe the
+  whole table" for a table that a real environment might also be writing to.

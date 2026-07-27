@@ -10,9 +10,13 @@ app dựng fixture (xem CLAUDE.md: GRN/QC/Batch/Inventory là 1 transaction).
 
 Mọi bản ghi demo dùng prefix ``DEMO-`` trên mã (code/supplier_code/product_code/
 po_no) để ``--flush`` xoá đúng phạm vi, không đụng dữ liệu thật (kho/NCC/SP khác
-DEMO- code). ``--flush`` cũng dọn sạch AuditLog/Notification/Approval (log của
-dữ liệu demo cũ, không còn target sau khi xoá thì chỉ là rác) — không dùng
-cho môi trường có dữ liệu thật cần giữ audit trail.
+DEMO- code). Khi có dữ liệu demo bị xoá, ``--flush`` cũng dọn AuditLog/
+Notification/Approval trỏ tới các đối tượng demo đó (log sẽ thành rác — không
+còn target sau khi xoá) — nhưng CHỈ đúng phạm vi demo: thu thập
+(ContentType, object_id) của từng đối tượng demo TRƯỚC khi xoá rồi lọc theo đó,
+không đụng tới log/thông báo/phiếu duyệt của dữ liệu thật dù môi trường có lẫn
+cả hai. Nếu không có dữ liệu demo nào để xoá, ``--flush`` sẽ không đụng tới
+AuditLog/Notification/Approval.
 
 KHÔNG tạo tài khoản demo_* riêng nữa — script này dùng thẳng các tài khoản THẬT
 đã được tạo sẵn trong Quản lý User (mỗi phòng ban 1 quản lý + 1 nhân viên, xem
@@ -23,8 +27,10 @@ demo_* dùng-rồi-bỏ. Nếu thiếu tài khoản nào, lệnh sẽ báo lỗi
 import datetime
 from decimal import Decimal
 
+from django.contrib.contenttypes.models import ContentType
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.approvals import latest_approval_for
@@ -554,20 +560,56 @@ class Command(BaseCommand):
         if not (demo_warehouses.exists() or demo_suppliers.exists() or demo_products.exists()):
             self.stdout.write('Không có dữ liệu demo để xoá.')
         else:
+            demo_locations = Location.objects.filter(warehouse__in=demo_warehouses)
+            demo_grns = Grn.objects.filter(po__in=demo_pos)
+            demo_grn_returns = GrnReturn.objects.filter(grn__po__in=demo_pos)
+            demo_gins = Gin.objects.filter(warehouse__in=demo_warehouses)
+            demo_sessions = StocktakeSession.objects.filter(warehouse__in=demo_warehouses)
+            demo_prs = PurchaseRequest.objects.filter(warehouse__in=demo_warehouses)
+            demo_handoffs = WarehouseHandoff.objects.filter(batch__product__in=demo_products)
+            demo_transfers = StockTransfer.objects.filter(batch__product__in=demo_products)
+            demo_qc_criteria = QcCriteria.objects.filter(category__startswith='DEMO-')
+
+            # Notification/Approval/AuditLog.target là GenericFK (target_type +
+            # target_id) -> không cascade tự động khi xoá đối tượng đích, và không
+            # lọc được theo prefix DEMO- ngay trên chính 3 bảng đó. Thay vào đó thu
+            # thập (ContentType, pk) của MỌI model từng được dùng làm target=... ở
+            # log_action()/notify()/create_approval() (xem accounts.audit/
+            # accounts.notifications/accounts.approvals + các *.services đang gọi
+            # chúng) cho đúng các bản ghi demo sắp xoá bên dưới — làm TRƯỚC khi xoá,
+            # để không lọc trên dữ liệu đã biến mất. Danh sách model này phải cập
+            # nhật nếu sau này có model demo mới trở thành target= ở nơi khác.
+            demo_target_querysets = [
+                (Warehouse, demo_warehouses), (Location, demo_locations),
+                (Product, demo_products), (Supplier, demo_suppliers),
+                (PurchaseOrder, demo_pos), (PurchaseRequest, demo_prs),
+                (Grn, demo_grns), (GrnReturn, demo_grn_returns),
+                (Gin, demo_gins), (StocktakeSession, demo_sessions),
+                (WarehouseHandoff, demo_handoffs), (StockTransfer, demo_transfers),
+                (QcCriteria, demo_qc_criteria),
+            ]
+            target_q = None
+            for model, qs in demo_target_querysets:
+                ids = [str(pk) for pk in qs.values_list('pk', flat=True)]
+                if not ids:
+                    continue
+                clause = Q(target_type=ContentType.objects.get_for_model(model), target_id__in=ids)
+                target_q = clause if target_q is None else (target_q | clause)
+
             StocktakeItem.objects.filter(session__warehouse__in=demo_warehouses).delete()
-            StocktakeSession.objects.filter(warehouse__in=demo_warehouses).delete()
+            demo_sessions.delete()
 
             GinBatchAllocation.objects.filter(gin_item__gin__warehouse__in=demo_warehouses).delete()
             GinItem.objects.filter(gin__warehouse__in=demo_warehouses).delete()
-            Gin.objects.filter(warehouse__in=demo_warehouses).delete()
+            demo_gins.delete()
 
             StockMovement.objects.filter(warehouse__in=demo_warehouses).delete()
-            StockTransfer.objects.filter(batch__product__in=demo_products).delete()
+            demo_transfers.delete()
 
             # WarehouseHandoff.batch là OneToOne PROTECT (Phase D) -> phải xoá handoff
             # trước Batch, nếu không .delete() bên dưới raise ProtectedError (bug cũ:
             # hàm này chưa được cập nhật khi WarehouseHandoff ra đời).
-            WarehouseHandoff.objects.filter(batch__product__in=demo_products).delete()
+            demo_handoffs.delete()
 
             # Batch.grn_item là PROTECT -> phải xoá Batch trước GrnItem (batch ở Kho
             # chờ/Kho phế đều trace về grn_item nguồn qua move_batch_qty, xem M4).
@@ -577,9 +619,9 @@ class Command(BaseCommand):
             QcInspectionItem.objects.filter(inspection__grn__po__in=demo_pos).delete()
             QcInspection.objects.filter(grn__po__in=demo_pos).delete()
 
-            GrnReturn.objects.filter(grn__po__in=demo_pos).delete()
+            demo_grn_returns.delete()
             GrnItem.objects.filter(grn__po__in=demo_pos).delete()
-            Grn.objects.filter(po__in=demo_pos).delete()
+            demo_grns.delete()
 
             PurchaseOrderItem.objects.filter(purchase_order__in=demo_pos).delete()
             demo_pos.delete()
@@ -587,23 +629,29 @@ class Command(BaseCommand):
             # PurchaseRequest.warehouse la PROTECT -> phai xoa truoc demo_warehouses;
             # linked_po la SET_NULL nen khong phu thuoc thu tu voi demo_pos.delete() o tren.
             PurchaseRequestItem.objects.filter(purchase_request__warehouse__in=demo_warehouses).delete()
-            PurchaseRequest.objects.filter(warehouse__in=demo_warehouses).delete()
+            demo_prs.delete()
 
-            Location.objects.filter(warehouse__in=demo_warehouses).delete()
+            demo_locations.delete()
             demo_warehouses.delete()
             demo_products.delete()
             demo_suppliers.delete()
-            QcCriteria.objects.filter(category__startswith='DEMO-').delete()
+            demo_qc_criteria.delete()
+
+            # Chỉ xoá đúng phạm vi demo đã thu thập ở target_q phía trên — không đụng
+            # tới Notification/Approval/AuditLog của dữ liệu thật dù môi trường có
+            # lẫn cả hai (khác hành vi cũ là xoá sạch cả bảng).
+            if target_q is not None:
+                notif_count, _ = Notification.objects.filter(target_q).delete()
+                approval_count, _ = Approval.objects.filter(target_q).delete()
+                audit_count, _ = AuditLog.objects.filter(target_q).delete()
+            else:
+                notif_count = approval_count = audit_count = 0
+            self.stdout.write(
+                f'Đã xoá {notif_count} notification, {approval_count} approval, {audit_count} audit log '
+                f'(chỉ của dữ liệu demo).'
+            )
 
             self.stdout.write(self.style.WARNING('Đã xoá toàn bộ dữ liệu demo cũ.'))
-
-        # Notification/Approval/AuditLog gắn với dữ liệu demo qua GenericFK, không
-        # lọc được theo prefix DEMO- -> xoá sạch mỗi lần --flush (đây là reset môi
-        # trường test, không phải xoá audit trail của dữ liệu thật đang vận hành).
-        notif_count, _ = Notification.objects.all().delete()
-        approval_count, _ = Approval.objects.all().delete()
-        audit_count, _ = AuditLog.objects.all().delete()
-        self.stdout.write(f'Đã xoá {notif_count} notification, {approval_count} approval, {audit_count} audit log cũ.')
 
         # Tài khoản demo_* của phiên bản script cũ (đã bị thay bằng REQUIRED_USERS ở
         # trên) -> xoá cứng luôn cho gọn, theo xác nhận của người dùng.
