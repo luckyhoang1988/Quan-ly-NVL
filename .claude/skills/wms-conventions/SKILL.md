@@ -162,6 +162,16 @@ DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt 
    4 — đừng để `user.pk == obj.assigned_to_id` lọt vào điều kiện cho phép duyệt (khác pattern §5 bên dưới, nơi
    `assigned_to` CÓ quyền quyết định) (xem `PurchaseRequest.assigned_to` + `purchasing.views.can_decide_pr`,
    Phase E).
+8. **Nếu retrofit pattern này vào 1 workflow ĐÃ có sẵn dữ liệu đang ở trạng thái "chờ" theo cơ chế cũ (không
+   phải build từ đầu)**: PHẢI viết kèm 1 data migration (`RunPython`) backfill 1 `Approval` PENDING cho mỗi
+   bản ghi đang ở state "chờ duyệt" cũ mà chưa có `Approval` nào — nếu không, các bản ghi đó bị kẹt vĩnh viễn
+   (UI vẫn hiện đúng trạng thái cũ, nhưng `decide_x` luôn raise lỗi vì `latest_approval_for()` trả `None`, và
+   không ai — kể cả Manager/Admin — duyệt/từ chối được nữa). Migration schema tạo model `Approval`
+   (`0011_approval.py`) và migration re-seed quyền (`0012_reseed_purchasing_pr_permissions.py`) KHÔNG tự làm
+   việc này — chúng chỉ lo phần schema/quyền, không đụng tới dữ liệu nghiệp vụ đang tồn tại. Bug thật đã xảy
+   ra với PR (Phase E, phát hiện + vá 2026-07-27, xem `purchasing/migrations/0008_backfill_pr_approval.py` +
+   CLAUDE.md) — coi đây là checklist bắt buộc, không phải tuỳ chọn, mỗi khi bước 1-7 ở trên được áp dụng cho
+   1 workflow đã có dữ liệu sống từ trước.
 
 ## 5. Bàn giao trực tiếp cho 1 người/nhóm cụ thể — KHÔNG dùng `Approval` (pattern Phase D)
 

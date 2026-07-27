@@ -351,3 +351,19 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   anyone with base `read` on `po`; only `po_list` (the browsing/queue view) is scoped down, so a PURCHASING
   staff member's list isn't cluttered with every colleague's PO but they can still open one directly when
   their job requires it (e.g. sending a PO a manager created).
+- **Bug fix 2026-07-27: backfill migration for pre-existing `PENDING` PRs stranded by the Approval rewire
+  above**. When `491a017` rewired `pr_approve`/`pr_reject` to require a PENDING `Approval` row
+  (`latest_approval_for(obj)`), it shipped no data migration — any `PurchaseRequest` created and left
+  `PENDING` *before* that commit had no `Approval` at all, so it stayed visibly "Chờ duyệt" in the UI but
+  `pr_approve`/`pr_reject` would raise `ValidationError('Yêu cầu này không có phiếu duyệt nào đang chờ xử lý.')`
+  forever — un-actionable by anyone, including Manager/Admin. Fixed by
+  `purchasing/migrations/0008_backfill_pr_approval.py` (data migration, `RunPython`): for every
+  `PurchaseRequest.status == PENDING` lacking an `Approval`, create one
+  (`status=PENDING, department=PURCHASING, submitted_by=requested_by`), then `.update(submitted_at=...)` to
+  the PR's own `created_at` (can't pass `submitted_at` at `.create()` time — it's `auto_now_add`). **General
+  lesson for any future retrofit of the `Approval` pattern (§4 of the skill file) onto an existing flat-
+  permission workflow**: introducing the `Approval` gate on an app that already has live in-flight rows in
+  the pre-gate "pending" status always needs a paired backfill data migration in the same change — the
+  schema migration that adds `Approval` (`accounts/migrations/0011_approval.py`) and a permission-reseed
+  migration (`0012_reseed_purchasing_pr_permissions.py`) are not enough on their own to cover objects that
+  predate the rewire.
