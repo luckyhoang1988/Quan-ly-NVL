@@ -65,7 +65,7 @@
             </td>
             <td>
               <a href="{% url 'partners:supplier_detail' s.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-eye"></i> Chi tiết</a>
-              {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' or (user.role == 'PURCHASING' and s.managed_by_id == user.id) %}
+              {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' or user.role == 'PURCHASING' and s.managed_by_id == user.id %}
                 <a href="{% url 'partners:supplier_update' s.pk %}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-pencil"></i> Sửa</a>
               {% endif %}
             </td>

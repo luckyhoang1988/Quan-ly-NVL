@@ -156,6 +156,16 @@ class ExpiredBatchSyncServiceTest(TestCase):
         batch.refresh_from_db()
         self.assertEqual(batch.status, Batch.Status.ACTIVE)
 
+    def test_TC_INV_EXP_006_partial_used_batch_past_exp_date_becomes_expired(self):
+        """Bug fix 2026-07-27: lô PARTIAL_USED (còn qty_available > 0) hết hạn
+        phải chuyển EXPIRED giống ACTIVE — trước đó filter chỉ quét ACTIVE nên
+        lô PARTIAL_USED hết hạn không bao giờ bị chặn khỏi FIFO."""
+        batch = self._batch('LOT-0001', self.today - datetime.timedelta(days=1), status=Batch.Status.PARTIAL_USED)
+        count = sync_expired_batches()
+        batch.refresh_from_db()
+        self.assertEqual(count, 1)
+        self.assertEqual(batch.status, Batch.Status.EXPIRED)
+
     def test_TC_INV_EXP_004_expiring_soon_includes_within_window_excludes_beyond(self):
         near = self._batch('LOT-NEAR', self.today + datetime.timedelta(days=10))
         far = self._batch('LOT-FAR', self.today + datetime.timedelta(days=60))
@@ -168,6 +178,14 @@ class ExpiredBatchSyncServiceTest(TestCase):
             'LOT-Q', self.today + datetime.timedelta(days=5), status=Batch.Status.QUARANTINE)
         result = list(expiring_soon_batches(days=30))
         self.assertNotIn(quarantine, result)
+
+    def test_TC_INV_EXP_007_expiring_soon_includes_partial_used_status(self):
+        """Bug fix 2026-07-27: lô PARTIAL_USED còn tồn vẫn phải lên cảnh báo
+        sắp hết hạn, không chỉ ACTIVE."""
+        partial = self._batch(
+            'LOT-P', self.today + datetime.timedelta(days=5), status=Batch.Status.PARTIAL_USED)
+        result = list(expiring_soon_batches(days=30))
+        self.assertIn(partial, result)
 
 
 class StaleQuarantineBatchesTest(TestCase):
@@ -219,10 +237,10 @@ class FifoSuggestionServiceTest(TestCase):
         self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
         self.today = timezone.now().date()
 
-    def _batch(self, code, exp_date, qty, status=Batch.Status.ACTIVE):
+    def _batch(self, code, exp_date, qty, status=Batch.Status.ACTIVE, qty_used=0):
         return Batch.objects.create(
             product=self.product, batch_code=code, supplier=self.supplier, location=self.location,
-            qty_received=qty, exp_date=exp_date, status=status,
+            qty_received=qty, qty_used=qty_used, exp_date=exp_date, status=status,
         )
 
     def test_TC_INV_FIFO_001_single_batch_covers_qty_needed(self):
@@ -269,6 +287,23 @@ class FifoSuggestionServiceTest(TestCase):
     def test_TC_INV_FIFO_006_zero_qty_needed_rejected(self):
         with self.assertRaises(ValidationError):
             suggest_fifo_batches(self.product, self.warehouse, 0)
+
+    def test_TC_INV_FIFO_008_includes_partial_used_batch_with_remaining_qty(self):
+        """Bug fix 2026-07-27: batch PARTIAL_USED (đã xuất một phần, còn
+        qty_available > 0) phải vẫn được FIFO gợi ý tiếp — trước đó filter chỉ
+        lấy status=ACTIVE nên phần tồn còn lại của lô PARTIAL_USED bị "kẹt"
+        vĩnh viễn, không bao giờ xuất được nữa dù Inventory.qty_on_hand vẫn còn."""
+        partial = self._batch(
+            'LOT-PARTIAL', self.today + datetime.timedelta(days=5), 50,
+            status=Batch.Status.PARTIAL_USED, qty_used=30)
+        self.assertEqual(partial.qty_available, 20)
+
+        plan = suggest_fifo_batches(self.product, self.warehouse, 15)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]['batch'], partial)
+        self.assertEqual(plan[0]['qty_to_issue'], 15)
+        with self.assertRaises(ValidationError):
+            suggest_fifo_batches(self.product, self.warehouse, 21)
 
     def test_TC_INV_FIFO_007_ignores_active_batch_at_staging_warehouse(self):
         """M5: batch ACTIVE ở Kho chờ (cùng product) không bao giờ được gợi ý

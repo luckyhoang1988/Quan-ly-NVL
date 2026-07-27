@@ -11,6 +11,7 @@ from accounts.models import Approval, AuditLog
 from catalog.models import Product
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem
+from inventory.models import Batch, Inventory
 from quality.models import QcInspection
 from warehouse.models import Location, Warehouse
 
@@ -537,6 +538,43 @@ class GrnViewTest(TestCase):
         grn.refresh_from_db()
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
         self.assertEqual(grn.status, Grn.Status.CANCELLED)
+
+    def test_TC_GRN_VIEW_007_005_cancel_during_qc_in_progress_reverses_staging_batch(self):
+        """Bug fix: hủy GRN lúc QC_IN_PROGRESS phải đảo batch/Inventory Kho chờ
+        do start_qc tạo ra (Batch ACTIVE + Inventory) — không được để hàng "kẹt"
+        trong Kho chờ trong khi GRN đã CANCELLED. Đi qua flow thật (grn_receive_qty
+        gọi start_qc thật), không set status tay, mới bắt được bug."""
+        grn = self._create_grn(status=Grn.Status.PENDING_QC)
+        item = grn.items.first()
+        self.client.post(reverse('receiving:grn_receive_qty', args=[grn.pk]), {
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1',
+            'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': item.pk, 'items-0-qty_received': 9,
+            'inspector': self.qc_user.pk,
+        })
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.QC_IN_PROGRESS)
+        batch = Batch.objects.get(grn_item=item)
+        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        staging_inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(staging_inv.qty_on_hand, 9)
+
+        qc_manager = User.objects.create_user(
+            username='qlqc3', password='qlqc-pass-123', role=User.Role.QC,
+            department=User.Department.QC, is_manager=True)
+        self.client.force_login(qc_manager)
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        grn.refresh_from_db()
+        batch.refresh_from_db()
+        staging_inv.refresh_from_db()
+        inspection = QcInspection.objects.get(grn=grn)
+
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.CANCELLED)
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        self.assertEqual(batch.qty_used, batch.qty_received)
+        self.assertEqual(staging_inv.qty_on_hand, 0)
+        self.assertEqual(inspection.status, QcInspection.Result.CANCELLED)
 
     def test_TC_GRN_VIEW_003_001_receive_qty_saves_qty_and_starts_qc(self):
         grn = self._create_grn(status=Grn.Status.PENDING_QC)

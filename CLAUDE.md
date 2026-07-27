@@ -449,3 +449,60 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   and the filter itself should treat "unknown owner" as visible-to-all rather than invisible-to-all — the same
   class of gap as the `Approval`-retrofit lesson two bullets up, just for a plain nullable FK instead of a new
   gating model.
+- **Bug fix 2026-07-27: `cancel_grn` allowed cancelling a GRN mid-`QC_IN_PROGRESS` without reversing the
+  staging Batch/Inventory that `start_qc` had already created**. `receiving.services.cancel_grn`
+  (`receiving/services.py`) blocks cancellation only for `RECEIVED`/`REJECTED`/`CANCELLED`/`CLOSED` — every
+  other status, including `QC_IN_PROGRESS`, was cancellable. But by the time a GRN reaches `QC_IN_PROGRESS`,
+  `quality.services.start_qc` has already created a real `Batch` (`ACTIVE`) per item in the `STAGING`
+  warehouse and credited `Inventory.qty_on_hand` there (Phase-D "Kho chờ" design — goods are physically
+  present from the moment Qty thực nhận is confirmed, not just recorded on paper). `cancel_grn` only flipped
+  `grn.status` to `CANCELLED` and cleaned up any pending `Approval` — it never touched that staging
+  Batch/Inventory, so the goods stayed permanently "stuck" in STAGING stock with no GRN referencing them
+  anymore. The existing test (`TC_GRN_VIEW_007_004`) didn't catch this because it constructed the GRN with
+  `status=QC_IN_PROGRESS` set directly on the model rather than driving it through the real
+  `grn_receive_qty` → `start_qc` flow, so no Batch/Inventory ever existed for it to check. Fixed by adding
+  `quality.services.cancel_qc_inspection(grn, actor=None, ip_address=None)` — finds the GRN's `PENDING_QC`
+  `QcInspection`, closes every staging `Batch` tied to it (`qty_used = qty_received`, `status = CLOSED`),
+  decrements `Inventory.qty_on_hand` at the staging warehouse by each batch's `qty_available` with a
+  `StockMovement` `ADJUSTMENT` entry, and marks the inspection `CANCELLED` (new
+  `QcInspection.Result.CANCELLED` choice, migration `quality/migrations/0006_alter_qcinspection_status.py`).
+  `receiving.services.cancel_grn` calls this (local import, to avoid a module-level `receiving`↔`quality`
+  cycle) when `grn.status == QC_IN_PROGRESS`, before flipping the GRN itself to `CANCELLED`. This is
+  deliberately **not** the same boundary as the QC-override rule ("annotation only, never reverse a completed
+  transaction automatically" — see `QcInspection.override_note` and the Phase-D `reject_handoff(...,
+  BACK_TO_QC)` branch): those apply *after* QC has rendered a PASS/FAIL/PARTIAL_PASS decision, which is a
+  completed business transaction. A staging batch under `QC_IN_PROGRESS` has no decision yet — it is
+  provisional, created solely so goods aren't invisible between receipt and QC, so reversing it on cancel is
+  undoing an in-flight step, not rewriting history. **General lesson**: whenever a `cancel_x`/`reject_x`
+  function is allowed at an intermediate status, check whether *any* side effect (Batch, Inventory, a row in
+  another app) was already created to reach that status — a cancel that only flips the owning object's status
+  back is incomplete if a side effect from getting *into* that status was never undone. Tests that assert a
+  cancel/reject transition by constructing the object directly at the target status (`Model(status=X)`)
+  instead of driving it through the real service call that produces that status will not catch this class of
+  bug — this one specifically needs a regression test that goes through the real view/service flow, see
+  `test_TC_GRN_VIEW_007_005_cancel_during_qc_in_progress_reverses_staging_batch` in `receiving/tests.py`.
+- **Bug fix 2026-07-27: `PARTIAL_USED` batches were permanently excluded from FIFO once a GIN issued part of
+  them, stranding the remaining stock forever**. `shipping.services.issue_gin` sets
+  `batch.status = Batch.Status.PARTIAL_USED` (not `ACTIVE`) whenever a batch still has `qty_available > 0`
+  after an issue (BR-GIN-006). But `inventory.services.suggest_fifo_batches` — the query FIFO/GIN actually
+  runs — filtered `status=Batch.Status.ACTIVE` only, with no `PARTIAL_USED` branch, so a batch that had ever
+  been partially issued could never be selected by FIFO again even though it still had real stock:
+  `Inventory.qty_on_hand` kept the qty, but no GIN could ever draw it down through the normal flow, only via
+  manual override — and even `shipping.services.override_allocation`/`shipping.forms.GinAllocationOverrideForm`
+  had the identical `status=ACTIVE`-only restriction, so there was no way to select a `PARTIAL_USED` batch at
+  all short of an admin DB edit. `inventory.services.sync_expired_batches`/`expiring_soon_batches` had the same
+  narrow `status=ACTIVE` filter, so a `PARTIAL_USED` batch whose `exp_date` had passed never flipped to
+  `EXPIRED` and never showed up in the "sắp hết hạn" dashboard warning either — expired stock with leftover
+  qty sat invisibly forever instead of being correctly excluded. Fixed by widening all four call sites to
+  `status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED]` (`inventory/services.py`:
+  `sync_expired_batches`, `expiring_soon_batches`, `suggest_fifo_batches`; `shipping/services.py`:
+  `override_allocation`; `shipping/forms.py`: `GinAllocationOverrideForm`) — `QUARANTINE`/`EXPIRED`/
+  `PENDING_RECEIPT` are still excluded everywhere, unchanged. `inventory.forms.StockTransferForm` already had
+  the correct `status__in=[ACTIVE, PARTIAL_USED]` filter before this fix (manual stock-transfer form was never
+  broken) — that inconsistency between it and the FIFO/override code paths is what made the bug detectable by
+  inspection alone, without even needing to reproduce it. **General lesson**: any place that filters
+  `Batch.objects` by `status` for "is this batch usable" should default to
+  `status__in=[ACTIVE, PARTIAL_USED]`, not `status=ACTIVE` — `PARTIAL_USED` is not a terminal/excluded state
+  like `QUARANTINE`/`EXPIRED`/`CLOSED`, it is a normal mid-life state of an otherwise-active batch, and a
+  single-status filter is fine only where the whole point is to exclude everything but a genuinely fresh batch
+  (there is no such case in this codebase today).

@@ -53,8 +53,10 @@ class Batch(models.Model):
     """Lô hàng nhận từ GRN (mục 1f) — dùng cho FIFO issue ở Phase 3 (GIN).
 
     ``status`` dùng enum đầy đủ ngay từ đầu vì Phase 2 (QC PASS/PARTIAL_PASS)
-    và Phase 3 (FIFO) đều cần các state này tồn tại sẵn (CLAUDE.md: chỉ batch
-    ACTIVE mới được FIFO chọn; QUARANTINE/EXPIRED phải bị loại dù qty còn > 0).
+    và Phase 3 (FIFO) đều cần các state này tồn tại sẵn (CLAUDE.md: batch
+    ACTIVE hoặc PARTIAL_USED mới được FIFO chọn — lô đã xuất một phần vẫn còn
+    ``qty_available`` > 0 nên vẫn phải khả dụng tiếp; QUARANTINE/EXPIRED/
+    PENDING_RECEIPT phải bị loại dù qty còn > 0).
 
     ``PENDING_RECEIPT`` (Phase D): batch phần PASS/PARTIAL_PASS của QC không
     còn chuyển thẳng ACTIVE nữa — dừng ở đây chờ nhân viên kho xác nhận nhận

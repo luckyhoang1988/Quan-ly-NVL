@@ -20,6 +20,9 @@ giữa lúc xác nhận Qty thực nhận và lúc có kết quả QC:
 - ``qc_partial_pass``: mỗi item nhận ``qty_pass`` riêng (0 <= qty_pass <=
   qty_received) -> tách batch Kho chờ làm 2 (``PENDING_RECEIPT`` phần pass tại
   kho MAIN, kèm ``WarehouseHandoff``, + QUARANTINE phần fail tại Kho phế).
+- ``cancel_qc_inspection``: gọi từ ``receiving.services.cancel_grn`` khi GRN bị
+  hủy lúc đang QC_IN_PROGRESS — đảo batch/Inventory Kho chờ do ``start_qc`` tạo
+  (khác PASS/FAIL/PARTIAL_PASS, batch ở đây CHƯA có quyết định QC nên đảo được).
 
 Mọi transition đều ghi ``AuditLog`` qua ``accounts.audit.log_action`` (hạ
 tầng có sẵn từ Phase 1) — một dòng log cho mỗi transaction nghiệp vụ (không
@@ -148,6 +151,59 @@ def start_qc(grn, inspector, actor=None, ip_address=None):
         actor, AuditLog.Action.UPDATE, target=grn,
         description=f'Submit to QC: {grn.grn_no} -> QC_IN_PROGRESS ({inspection.qc_no}), '
                     f'{grn.items.count()} item(s) vào Kho chờ.',
+        ip_address=ip_address,
+    )
+    return inspection
+
+
+@transaction.atomic
+def cancel_qc_inspection(grn, actor=None, ip_address=None):
+    """Hủy QC đang ``PENDING_QC`` khi GRN bị hủy giữa chừng lúc QC_IN_PROGRESS
+    (gọi từ ``receiving.services.cancel_grn``) — đảo ngược batch/Inventory Kho
+    chờ do ``start_qc`` tạo ra (đóng batch, trừ lại ``qty_on_hand``), rồi đánh
+    dấu inspection CANCELLED.
+
+    Khác với ranh giới "QC override chỉ annotation, không đảo Batch/Inventory
+    đã tạo bởi qc_pass/fail/partial_pass" (xem ``QcInspection.override_note``):
+    ở đây QC CHƯA có quyết định (batch vẫn còn nguyên ở Kho chờ, chưa qua
+    ``qc_pass``/``qc_fail``/``qc_partial_pass``), nên đảo được — không phải
+    undo một giao dịch nghiệp vụ đã hoàn tất.
+    """
+    inspection = grn.qc_inspections.select_for_update().filter(
+        status=QcInspection.Result.PENDING_QC).first()
+    if inspection is None:
+        return None
+
+    staging_batches = list(Batch.objects.select_for_update().filter(
+        grn_item__grn=grn, status=Batch.Status.ACTIVE,
+        location__warehouse__warehouse_type=Warehouse.WarehouseType.STAGING,
+    ))
+    for batch in staging_batches:
+        qty = batch.qty_available
+        if qty > 0:
+            inv = Inventory.objects.select_for_update().get(
+                product=batch.product, warehouse=batch.location.warehouse)
+            inv.qty_on_hand -= qty
+            inv.save(update_fields=['qty_on_hand', 'updated_at'])
+            record_movement(
+                product=batch.product, warehouse=batch.location.warehouse, batch=batch,
+                reference=grn.grn_no, actor=actor,
+                movement_type=StockMovement.MovementType.ADJUSTMENT, qty=-qty,
+            )
+        batch.qty_used = batch.qty_received
+        batch.status = Batch.Status.CLOSED
+        batch.save(update_fields=['qty_used', 'status'])
+
+    inspection.status = QcInspection.Result.CANCELLED
+    inspection.completed_at = timezone.now()
+    inspection.save(update_fields=['status', 'completed_at'])
+
+    log_action(
+        actor, AuditLog.Action.CANCEL, target=inspection,
+        description=(
+            f'Hủy QC {inspection.qc_no} do GRN {grn.grn_no} bị hủy — đóng '
+            f'{len(staging_batches)} batch Kho chờ, trừ lại tồn tương ứng.'
+        ),
         ip_address=ip_address,
     )
     return inspection

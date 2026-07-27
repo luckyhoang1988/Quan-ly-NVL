@@ -150,9 +150,11 @@ def start_picking(gin, actor=None, ip_address=None):
 @transaction.atomic
 def override_allocation(allocation, new_batch, reason, actor=None, ip_address=None):
     """FR-GIN-03: đổi batch khác gợi ý FIFO cho 1 dòng allocation, tại state
-    PICKING. ``new_batch`` phải cùng sản phẩm, ``status=ACTIVE`` (BR-GIN-007 —
-    không cho chọn QUARANTINE/EXPIRED), và đủ ``qty_available`` cho
-    ``qty_allocated`` hiện tại.
+    PICKING. ``new_batch`` phải cùng sản phẩm, ``status`` ACTIVE hoặc
+    PARTIAL_USED — cùng tập FIFO-eligible với
+    ``inventory.services.suggest_fifo_batches`` (BR-GIN-007 vẫn không cho
+    chọn QUARANTINE/EXPIRED/PENDING_RECEIPT; bug fix 2026-07-27, xem
+    CLAUDE.md) — và đủ ``qty_available`` cho ``qty_allocated`` hiện tại.
     """
     gin_item = allocation.gin_item
     gin = gin_item.gin
@@ -162,8 +164,9 @@ def override_allocation(allocation, new_batch, reason, actor=None, ip_address=No
         raise ValidationError('Phải ghi lý do khi đổi batch.')
     if new_batch.product_id != gin_item.product_id:
         raise ValidationError('Batch mới phải cùng sản phẩm với dòng hàng.')
-    if new_batch.status != Batch.Status.ACTIVE:
-        raise ValidationError('Chỉ được chọn batch đang ACTIVE (không QUARANTINE/EXPIRED).')
+    if new_batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
+        raise ValidationError(
+            'Chỉ được chọn batch đang ACTIVE hoặc đã dùng một phần (không QUARANTINE/EXPIRED).')
     if new_batch.qty_available < allocation.qty_allocated:
         raise ValidationError(
             f'Batch "{new_batch.batch_code}" chỉ còn {new_batch.qty_available}, '

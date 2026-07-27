@@ -274,6 +274,18 @@ class GinOverrideServiceTest(TestCase):
         with self.assertRaises(ValidationError):
             override_allocation(self.allocation, small_batch, 'lý do', actor=self.manager)
 
+    def test_TC_GIN_OVERRIDE_008_allows_partial_used_batch_with_enough_qty(self):
+        """Bug fix 2026-07-27: batch PARTIAL_USED (đã xuất một phần, còn
+        qty_available đủ) phải chọn được để override, không chỉ ACTIVE."""
+        partial_batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-PARTIAL', supplier=self.supplier, location=self.location,
+            qty_received=50, qty_used=30, exp_date=self.today + datetime.timedelta(days=20),
+            status=Batch.Status.PARTIAL_USED,
+        )
+        override_allocation(self.allocation, partial_batch, 'lý do', actor=self.manager)
+        self.allocation.refresh_from_db()
+        self.assertEqual(self.allocation.batch, partial_batch)
+
 
 class GinIssueServiceTest(TestCase):
     """``issue_gin`` (FR-GIN-04/FR-GIN-05/BR-GIN-006). ``TC-GIN-ISSUE-<seq>``."""

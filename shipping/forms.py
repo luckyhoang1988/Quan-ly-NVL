@@ -66,9 +66,12 @@ class GinAllocationOverrideForm(forms.Form):
     """FR-GIN-03: đổi batch khác gợi ý FIFO cho 1 dòng allocation (state PICKING).
 
     Queryset của ``batch`` giới hạn theo đúng sản phẩm + kho của dòng hàng và
-    ``status=ACTIVE`` (BR-GIN-007) — validate lại lần nữa (product/qty) ở
-    ``shipping.services.override_allocation`` vì view có thể bị submit ngoài ý
-    (curl trực tiếp), không dựa hoàn toàn vào queryset đã lọc.
+    ``status`` ACTIVE hoặc PARTIAL_USED — cùng tập FIFO-eligible với
+    ``inventory.services.suggest_fifo_batches`` (BR-GIN-007 vẫn loại
+    QUARANTINE/EXPIRED/PENDING_RECEIPT; bug fix 2026-07-27, xem CLAUDE.md) —
+    validate lại lần nữa (product/qty) ở ``shipping.services.override_allocation``
+    vì view có thể bị submit ngoài ý (curl trực tiếp), không dựa hoàn toàn vào
+    queryset đã lọc.
     """
 
     batch = BatchLocationChoiceField(queryset=Batch.objects.none(), label='Batch mới')
@@ -80,6 +83,7 @@ class GinAllocationOverrideForm(forms.Form):
         super().__init__(*args, **kwargs)
         if product is not None and warehouse is not None:
             self.fields['batch'].queryset = Batch.objects.select_related('location').filter(
-                product=product, location__warehouse=warehouse, status=Batch.Status.ACTIVE,
+                product=product, location__warehouse=warehouse,
+                status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
             ).order_by('exp_date', 'created_at')
         _bootstrapify(self.fields)

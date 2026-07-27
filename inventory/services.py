@@ -25,22 +25,27 @@ from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHan
 
 
 def sync_expired_batches():
-    """BR-GIN-007: chuyển ACTIVE -> EXPIRED cho batch có ``exp_date`` < hôm nay.
+    """BR-GIN-007: chuyển ACTIVE/PARTIAL_USED -> EXPIRED cho batch có
+    ``exp_date`` < hôm nay.
 
     Tính on-the-fly, không cron — gọi trước khi FIFO chọn batch để status
-    luôn phản ánh đúng thực tế trước khi dùng.
+    luôn phản ánh đúng thực tế trước khi dùng. Bao gồm cả PARTIAL_USED: lô đã
+    xuất một phần vẫn còn ``qty_available`` > 0 nên vẫn phải hết hạn đúng lúc,
+    không chỉ ACTIVE mới hết hạn được (bug fix 2026-07-27, xem CLAUDE.md).
     """
     today = timezone.now().date()
     return Batch.objects.filter(
-        status=Batch.Status.ACTIVE, exp_date__isnull=False, exp_date__lt=today,
+        status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
+        exp_date__isnull=False, exp_date__lt=today,
     ).update(status=Batch.Status.EXPIRED)
 
 
 def expiring_soon_batches(days=30, warehouse=None):
-    """FR-INV-02: lô ACTIVE sẽ hết hạn trong vòng ``days`` ngày tới."""
+    """FR-INV-02: lô ACTIVE/PARTIAL_USED sẽ hết hạn trong vòng ``days`` ngày tới."""
     threshold = timezone.now().date() + datetime.timedelta(days=days)
     qs = Batch.objects.filter(
-        status=Batch.Status.ACTIVE, exp_date__isnull=False, exp_date__lt=threshold,
+        status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
+        exp_date__isnull=False, exp_date__lt=threshold,
     ).select_related('product', 'location__warehouse')
     if warehouse is not None:
         qs = qs.filter(location__warehouse=warehouse)
@@ -64,10 +69,14 @@ def stale_quarantine_batches(days=7, warehouse=None):
 def suggest_fifo_batches(product, warehouse, qty_needed):
     """FR-INV-04/FR-GIN-02: gợi ý danh sách batch FIFO đáp ứng ``qty_needed``.
 
-    Chỉ chọn batch ``status=ACTIVE`` (loại QUARANTINE/EXPIRED — BR-GIN-007),
-    sắp theo ``exp_date`` ASC rồi ``created_at`` ASC, duyệt tới khi đủ số
-    lượng — tách nhiều batch nếu 1 batch không đủ (BACKLOG mục 3b). Raise
-    ``ValidationError`` nếu tổng tồn ACTIVE không đủ, không cho issue âm.
+    Chọn batch ``status`` ACTIVE hoặc PARTIAL_USED — lô đã xuất một phần vẫn
+    còn ``qty_available`` > 0 nên vẫn phải khả dụng FIFO tiếp; loại nó ra sẽ
+    khiến phần tồn còn lại "kẹt" vĩnh viễn, không bao giờ xuất được nữa dù
+    ``Inventory.qty_on_hand`` vẫn còn (bug fix 2026-07-27, xem CLAUDE.md).
+    Loại QUARANTINE/EXPIRED/PENDING_RECEIPT (BR-GIN-007). Sắp theo
+    ``exp_date`` ASC rồi ``created_at`` ASC, duyệt tới khi đủ số lượng — tách
+    nhiều batch nếu 1 batch không đủ (BACKLOG mục 3b). Raise
+    ``ValidationError`` nếu tổng tồn không đủ, không cho issue âm.
 
     Trả về list dict ``{batch, batch_id, qty_to_issue, exp_date, location}``.
     """
@@ -76,7 +85,8 @@ def suggest_fifo_batches(product, warehouse, qty_needed):
 
     sync_expired_batches()
     batches = Batch.objects.filter(
-        product=product, location__warehouse=warehouse, status=Batch.Status.ACTIVE,
+        product=product, location__warehouse=warehouse,
+        status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
     ).order_by('exp_date', 'created_at')
 
     plan = []

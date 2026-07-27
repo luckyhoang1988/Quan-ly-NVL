@@ -266,7 +266,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] **FR-INV-05** `SHOULD` — Tính toán EOQ (Economic Order Quantity)
 
 #### Batch → Inventory Link
-- [ ] `Inventory.qty_on_hand` phản ánh tổng batch vật lý còn trong kho (kể cả EXPIRED — hàng vẫn nằm đó); nhưng FIFO/GIN chỉ được chọn batch `status = ACTIVE`
+- [ ] `Inventory.qty_on_hand` phản ánh tổng batch vật lý còn trong kho (kể cả EXPIRED — hàng vẫn nằm đó); nhưng FIFO/GIN chỉ được chọn batch `status IN ('ACTIVE', 'PARTIAL_USED')`
 - [x] Batch `QUARANTINE` tính riêng, KHÔNG cộng vào `qty_available` — không dùng cột `qty_quarantine` riêng (đã xoá, xem mục 1f), thay vào đó `move_batch_qty()` chuyển batch QUARANTINE sang kho SCRAP nên nó chỉ nằm trong `Inventory(warehouse=SCRAP).qty_on_hand`, tách biệt hoàn toàn khỏi `qty_available` của kho MAIN
 
 > ✅ FR-INV-01/02 đã lên UI: `inventory` app có `batch_list`/`batch_detail` (danh sách + chi tiết lô, kèm lịch sử `StockMovement`) và banner cảnh báo lô `ACTIVE` sắp hết hạn (`expiring_soon_batches()`, tính on-the-fly mỗi lần load trang — ⏸️ chưa cần Celery/cron).
@@ -290,14 +290,14 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] State `CLOSED`: archive
 
 #### FIFO Algorithm — ⚠️ phần dễ sai nhất, BẮT BUỘC có unit test riêng
-- [x] Query: `SELECT * FROM batch WHERE product_id=? AND qty_available>0 AND status='ACTIVE' ORDER BY exp_date ASC, created_at ASC`
+- [x] Query: `SELECT * FROM batch WHERE product_id=? AND qty_available>0 AND status IN ('ACTIVE','PARTIAL_USED') ORDER BY exp_date ASC, created_at ASC` (bug fix 2026-07-27: trước đó chỉ lọc `ACTIVE`, khiến lô đã xuất một phần còn tồn không bao giờ được FIFO chọn lại — xem CLAUDE.md)
 - [x] Duyệt batch, lấy đủ `qty_needed` (có thể lấy từ nhiều batch nếu 1 batch không đủ)
 - [x] Trả về list `{batch_id, qty_to_issue, exp_date, location}`
 - [x] Edge case: không đủ hàng ở mọi batch cộng lại → error rõ ràng, không cho issue
 - [x] BR-GIN-001: `qty_issued <= qty_available`
 - [x] BR-GIN-006: khi `qty_on_hand` = 0 → `batch.status = CLOSED`
-- [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE
-- [x] BR-GIN-008: GIN chỉ được chọn kho `warehouse_type=MAIN` (`GinForm.warehouse` giới hạn queryset + `Gin.clean()` chặn ở tầng model, dropdown filter ở `gin_list` cùng convention) — bắt buộc vì FIFO chỉ lọc `status='ACTIVE'`, không tự loại được batch đang nằm ở Kho chờ (STAGING) dù batch đó cũng `ACTIVE`; ràng buộc kho là lớp chặn duy nhất
+- [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE (`sync_expired_batches` quét cả `ACTIVE` và `PARTIAL_USED`)
+- [x] BR-GIN-008: GIN chỉ được chọn kho `warehouse_type=MAIN` (`GinForm.warehouse` giới hạn queryset + `Gin.clean()` chặn ở tầng model, dropdown filter ở `gin_list` cùng convention) — bắt buộc vì FIFO chỉ lọc `status IN ('ACTIVE','PARTIAL_USED')`, không tự loại được batch đang nằm ở Kho chờ (STAGING) dù batch đó cũng cùng status; ràng buộc kho là lớp chặn duy nhất
 
 ### ✅ Definition of Done — Phase 3
 - [x] Unit test FIFO: nhiều batch cùng SKU, hạn khác nhau → lấy đúng thứ tự hạn gần nhất trước

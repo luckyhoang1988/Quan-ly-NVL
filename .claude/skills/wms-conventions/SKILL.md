@@ -155,6 +155,17 @@ DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt 
 6. Đừng quên: nếu `obj` có hành động "Hủy" tách biệt (khác với từ chối duyệt), hàm hủy phải tự
    `Approval.objects.filter(target_type=..., target_id=..., status=PENDING).update(status=REJECTED, ...)` để
    không mồ côi 1 `Approval` đang chờ xử lý trên 1 `obj` đã bị hủy (xem `receiving.services.cancel_grn`).
+   **Cùng lỗi loại đó nhưng cho side-effect thay vì Approval**: nếu 1 module KHÁC đã tạo dữ liệu thật
+   (Batch/Inventory...) ở 1 state trung gian của `obj` trước khi state đó vẫn cho phép hủy, hàm hủy PHẢI đảo
+   ngược side-effect đó luôn — chỉ đổi `obj.status` là chưa đủ, dữ liệu tạo ra sẽ "kẹt" vĩnh viễn dù `obj` đã
+   CANCELLED. Đặt hàm đảo ngược ở app SỞ HỮU side-effect đó rồi gọi từ hàm hủy của app gốc (giữ đúng ranh giới
+   module đã có), và phân biệt rõ với boundary "override/reject chỉ annotation, không đảo transaction đã hoàn
+   tất" ở mục 5.4 bên dưới: side-effect ở state TRUNG GIAN (chưa ra quyết định) đảo được, transaction đã hoàn
+   tất (đã PASS/FAIL/quyết định xong) thì không. Bug thật: `cancel_grn` cho hủy lúc `QC_IN_PROGRESS` nhưng
+   không đảo Batch `ACTIVE` + Inventory Kho chờ mà `start_qc` đã tạo — vá bằng
+   `quality.services.cancel_qc_inspection()` (phát hiện + vá 2026-07-27, xem CLAUDE.md). Viết test cho case
+   này phải đi qua flow thật tạo ra side-effect (vd gọi view `grn_receive_qty` để `start_qc` chạy thật) — test
+   dựng `obj` thẳng ở state đó (`Model(status=X)`) sẽ không bao giờ bắt được lỗi thiếu-đảo-ngược này.
 7. Nếu muốn thêm "báo riêng 1 người cụ thể" bên CẠNH việc bubble lên quản lý phòng ban (chứ không thay thế),
    thêm 1 field `assigned_to` (FK User, `null=True`, tuỳ chọn) ngay trên `obj`, KHÔNG phải trên `Approval` —
    `assigned_to` chỉ để `notify()` thêm người đó và hiển thị "ai sẽ xử lý", KHÔNG tự có quyền quyết định:

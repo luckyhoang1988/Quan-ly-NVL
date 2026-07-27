@@ -45,6 +45,7 @@ class QcInspection(models.Model):
         PASS = 'PASS', 'Đạt'
         FAIL = 'FAIL', 'Không đạt'
         PARTIAL_PASS = 'PARTIAL_PASS', 'Đạt một phần'
+        CANCELLED = 'CANCELLED', 'Đã hủy'
 
     qc_no = models.CharField(
         max_length=30, unique=True, editable=False, verbose_name='Số phiếu QC',
