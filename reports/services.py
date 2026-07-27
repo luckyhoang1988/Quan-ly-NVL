@@ -36,26 +36,43 @@ def dashboard_kpis():
     prices = latest_unit_price_by_product()
 
     total_inventory_value = Decimal('0')
-    low_stock_count = 0
+    qty_by_product = {}
+    products_by_id = {}
     for inv in Inventory.objects.select_related('product').filter(
         warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
     ):
         price = prices.get(inv.product_id)
         if price is not None:
             total_inventory_value += inv.qty_on_hand * price
-        min_level = inv.product.min_level
-        if min_level is not None and inv.qty_on_hand < min_level:
-            low_stock_count += 1
+        qty_by_product[inv.product_id] = qty_by_product.get(inv.product_id, 0) + inv.qty_on_hand
+        products_by_id[inv.product_id] = inv.product
+
+    # Gộp qty theo SKU trên tất cả kho MAIN trước khi so min_level — 1 SKU nằm ở
+    # nhiều kho chỉ được đếm low-stock 1 lần, dựa trên tổng tồn thực tế của SKU đó
+    # (bug fix 2026-07-27, xem CLAUDE.md), thay vì so min_level với từng dòng
+    # Inventory riêng lẻ (double-count / thiếu chính xác khi 1 SKU trải nhiều kho).
+    low_stock_count = sum(
+        1 for product_id, total_qty in qty_by_product.items()
+        if products_by_id[product_id].min_level is not None
+        and total_qty < products_by_id[product_id].min_level
+    )
 
     return {
         'total_inventory_value': total_inventory_value,
         'sku_count': Product.objects.filter(is_active=True).count(),
         'low_stock_count': low_stock_count,
-        'near_expiry_count': len(expiring_soon_batches(days=30)),
+        'near_expiry_count': len(expiring_soon_batches(
+            days=30, warehouse_type=Warehouse.WarehouseType.MAIN)),
         'pending_po_count': PurchaseOrder.objects.filter(
             status__in=[PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED],
         ).count(),
-        'pending_grn_count': Grn.objects.filter(status=Grn.Status.PENDING_QC).count(),
+        # Cả 3 trạng thái đều là "GRN đang chờ xử lý ở kho/QC", chưa RECEIVED —
+        # PENDING_QC là trạng thái duy nhất được tính trước fix (bug fix 2026-07-27,
+        # xem CLAUDE.md), khiến GRN đang PENDING_APPROVAL hoặc QC_IN_PROGRESS bị
+        # thiếu khỏi KPI "GRN chờ".
+        'pending_grn_count': Grn.objects.filter(status__in=[
+            Grn.Status.PENDING_APPROVAL, Grn.Status.PENDING_QC, Grn.Status.QC_IN_PROGRESS,
+        ]).count(),
     }
 
 

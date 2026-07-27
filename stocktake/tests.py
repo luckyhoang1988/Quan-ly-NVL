@@ -5,6 +5,7 @@ Theo cùng bố cục với ``shipping.tests`` (Model -> Service theo từng bư
 workflow -> View/permission), mã test case ``TC-SO-<FR#>-<seq>``.
 """
 import datetime
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -45,6 +46,20 @@ class StocktakeSessionModelTest(TestCase):
     def test_TC_SO_MODEL_003_default_status_is_planning(self):
         session = StocktakeSession.objects.create(warehouse=self.warehouse, created_by=self.manager)
         self.assertEqual(session.status, StocktakeSession.Status.PLANNING)
+
+    def test_TC_SO_MODEL_004_so_no_retries_on_integrity_error_collision(self):
+        """Bug fix 2026-07-27: save() phải retry khi generate_so_no() trả về số đã
+        tồn tại (race condition giữa 2 request song song tạo phiếu cùng lúc), không
+        để IntegrityError văng ra ngoài — mirror StockTransfer.save() (xem CLAUDE.md)."""
+        existing = StocktakeSession.objects.create(warehouse=self.warehouse, created_by=self.manager)
+        colliding_no = existing.so_no
+        next_no = f'{colliding_no[:-3]}{int(colliding_no[-3:]) + 1:03d}'
+        with mock.patch.object(
+            StocktakeSession, 'generate_so_no', side_effect=[colliding_no, next_no],
+        ):
+            session = StocktakeSession(warehouse=self.warehouse, created_by=self.manager)
+            session.save()
+        self.assertEqual(session.so_no, next_no)
 
 
 class StocktakeItemVarianceTest(TestCase):
@@ -137,6 +152,58 @@ class CreateSessionServiceTest(TestCase):
         session = create_session(warehouse=self.warehouse, created_by=self.manager, actor=self.manager)
         products_in_session = set(session.items.values_list('product_id', flat=True))
         self.assertEqual(products_in_session, {self.product.pk, self.other_product.pk})
+
+    def test_TC_SO_07_003_qty_system_uses_location_batch_qty_not_whole_warehouse_inventory(self):
+        """Bug fix 2026-07-27: kho có 2 vị trí, A=60/B=40 (Inventory cả kho=100)
+        — phiếu chỉ giới hạn vị trí A phải lấy qty_system=60, không phải 100
+        (Inventory cả kho) — nếu không, đếm đúng A=60 vẫn báo chênh lệch giả
+        -40 (xem CLAUDE.md)."""
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-A', supplier=self.supplier, location=self.location_a,
+            qty_received=60, exp_date=self.today + datetime.timedelta(days=10),
+        )
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-B', supplier=self.supplier, location=self.location_b,
+            qty_received=40, exp_date=self.today + datetime.timedelta(days=10),
+        )
+        session = create_session(
+            warehouse=self.warehouse, created_by=self.manager, location=self.location_a, actor=self.manager)
+        item = session.items.get(product=self.product)
+        self.assertEqual(item.qty_system, 60)
+
+    def test_TC_SO_07_004_qty_system_at_location_subtracts_qty_used(self):
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-A', supplier=self.supplier, location=self.location_a,
+            qty_received=60, exp_date=self.today + datetime.timedelta(days=10),
+        )
+        batch.qty_used = 20
+        batch.save(update_fields=['qty_used'])
+        session = create_session(
+            warehouse=self.warehouse, created_by=self.manager, location=self.location_a, actor=self.manager)
+        item = session.items.get(product=self.product)
+        self.assertEqual(item.qty_system, 40)
+
+    def test_TC_SO_07_005_blank_location_still_uses_warehouse_inventory(self):
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-A', supplier=self.supplier, location=self.location_a,
+            qty_received=60, exp_date=self.today + datetime.timedelta(days=10),
+        )
+        session = create_session(warehouse=self.warehouse, created_by=self.manager, actor=self.manager)
+        item = session.items.get(product=self.product)
+        self.assertEqual(item.qty_system, 100)
+
+    def test_TC_SO_07_006_rejects_location_from_different_warehouse(self):
+        """Bug fix 2026-07-27: chọn kho A + vị trí thuộc kho B phải bị chặn,
+        không được ra danh sách SKU/qty sai hoặc rỗng (xem CLAUDE.md)."""
+        other_warehouse = Warehouse.objects.create(code='KHO-HCM', name='Kho Hồ Chí Minh')
+        other_location = Location.objects.create(warehouse=other_warehouse, code='C-01')
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+        with self.assertRaises(ValidationError):
+            create_session(
+                warehouse=self.warehouse, created_by=self.manager, location=other_location, actor=self.manager)
 
 
 class StartExecutionServiceTest(TestCase):
@@ -237,18 +304,30 @@ class SubmitReconciliationServiceTest(TestCase):
 class ApplyAdjustmentServiceTest(TestCase):
     """``apply_adjustment`` (FR-SO-05) — DoD Phase 4: "chênh lệch dương/âm đều
     tạo đúng Adjustment, Inventory cập nhật đúng chiều". ``TC-SO-05-<seq>``.
+    ``TC-SO-05-009`` trở đi: bug fix 2026-07-27 — ``apply_adjustment`` phải
+    đồng bộ ``Batch`` chứ không chỉ ``Inventory`` (xem CLAUDE.md).
     """
 
     def setUp(self):
         self.manager = User.objects.create_user(username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
         self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         self.other_product = Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg')
         self.session = StocktakeSession.objects.create(
             warehouse=self.warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        self._lot_seq = 0
 
     def _inventory(self, product, qty_on_hand):
         return Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=qty_on_hand)
+
+    def _batch(self, product, qty, batch_code=None, **kwargs):
+        self._lot_seq += 1
+        return Batch.objects.create(
+            product=product, batch_code=batch_code or f'LOT-{self._lot_seq:04d}', supplier=self.supplier,
+            location=self.location, qty_received=qty, **kwargs,
+        )
 
     def _item(self, product, qty_system, qty_actual):
         return StocktakeItem.objects.create(
@@ -256,6 +335,7 @@ class ApplyAdjustmentServiceTest(TestCase):
 
     def test_TC_SO_05_001_positive_variance_increases_inventory(self):
         self._inventory(self.product, 100)
+        self._batch(self.product, 100)
         self._item(self.product, qty_system=100, qty_actual=110)
         apply_adjustment(self.session, actor=self.manager)
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
@@ -263,6 +343,7 @@ class ApplyAdjustmentServiceTest(TestCase):
 
     def test_TC_SO_05_002_negative_variance_decreases_inventory(self):
         self._inventory(self.product, 100)
+        self._batch(self.product, 100)
         self._item(self.product, qty_system=100, qty_actual=90)
         apply_adjustment(self.session, actor=self.manager)
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
@@ -281,6 +362,8 @@ class ApplyAdjustmentServiceTest(TestCase):
     def test_TC_SO_05_004_creates_stock_movement_adjustment_entries_with_correct_sign(self):
         self._inventory(self.product, 100)
         self._inventory(self.other_product, 50)
+        self._batch(self.product, 100)
+        self._batch(self.other_product, 50)
         self._item(self.product, qty_system=100, qty_actual=110)
         self._item(self.other_product, qty_system=50, qty_actual=40)
         apply_adjustment(self.session, actor=self.manager)
@@ -311,6 +394,7 @@ class ApplyAdjustmentServiceTest(TestCase):
 
     def test_TC_SO_05_007_writes_audit_log(self):
         self._inventory(self.product, 100)
+        self._batch(self.product, 100)
         self._item(self.product, qty_system=100, qty_actual=110)
         apply_adjustment(self.session, actor=self.manager)
         self.assertTrue(
@@ -324,6 +408,66 @@ class ApplyAdjustmentServiceTest(TestCase):
         self.assertEqual(self.session.status, StocktakeSession.Status.ADJUSTMENT)
         self.assertIsNotNone(self.session.completed_at)
 
+    def test_TC_SO_05_009_surplus_creates_new_active_batch_for_fifo(self):
+        """Bug fix 2026-07-27: thừa phải tạo Batch mới ACTIVE — nếu không, FIFO/GIN
+        không thấy lô nào để xuất phần thừa dù Inventory đã tăng."""
+        self._inventory(self.product, 100)
+        self._batch(self.product, 100)
+        self._item(self.product, qty_system=100, qty_actual=110)
+        apply_adjustment(self.session, actor=self.manager)
+
+        new_batch = Batch.objects.get(batch_code=f'ADJ-{self.session.so_no}-{self.product.product_code}')
+        self.assertEqual(new_batch.status, Batch.Status.ACTIVE)
+        self.assertEqual(new_batch.qty_available, 10)
+        self.assertEqual(new_batch.supplier, self.supplier)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        total_batch_qty = sum(b.qty_available for b in Batch.objects.filter(product=self.product))
+        self.assertEqual(total_batch_qty, inv.qty_on_hand)
+
+    def test_TC_SO_05_010_shortage_reduces_existing_batch_qty(self):
+        """Bug fix 2026-07-27: thiếu phải trừ vào batch hiện có — nếu không, batch
+        vẫn báo đủ hàng để FIFO xuất dù Inventory đã giảm."""
+        self._inventory(self.product, 100)
+        batch = self._batch(self.product, 100)
+        self._item(self.product, qty_system=100, qty_actual=90)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.qty_available, 90)
+        self.assertEqual(batch.status, Batch.Status.PARTIAL_USED)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(batch.qty_available, inv.qty_on_hand)
+
+    def test_TC_SO_05_011_shortage_consumes_multiple_batches_fifo_order_and_closes_depleted(self):
+        today = timezone.now().date()
+        older = self._batch(self.product, 40, batch_code='LOT-OLD', exp_date=today)
+        newer = self._batch(self.product, 60, batch_code='LOT-NEW', exp_date=today + datetime.timedelta(days=30))
+        self._inventory(self.product, 100)
+        self._item(self.product, qty_system=100, qty_actual=50)
+        apply_adjustment(self.session, actor=self.manager)
+
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        self.assertEqual(older.qty_available, 0)
+        self.assertEqual(older.status, Batch.Status.CLOSED)
+        self.assertEqual(newer.qty_available, 50)
+        self.assertEqual(newer.status, Batch.Status.PARTIAL_USED)
+
+    def test_TC_SO_05_012_shortage_rejects_when_not_enough_batch_to_cover(self):
+        self._inventory(self.product, 100)
+        self._batch(self.product, 20)
+        self._item(self.product, qty_system=100, qty_actual=70)
+        with self.assertRaises(ValidationError):
+            apply_adjustment(self.session, actor=self.manager)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(inv.qty_on_hand, 100)
+
+    def test_TC_SO_05_013_surplus_rejects_when_product_has_no_batch_history(self):
+        self._inventory(self.other_product, 50)
+        self._item(self.other_product, qty_system=50, qty_actual=60)
+        with self.assertRaises(ValidationError):
+            apply_adjustment(self.session, actor=self.manager)
+
 
 class StocktakeViewTest(TestCase):
     """View/URL/permission cho Stock Opname theo ma trận quyền
@@ -336,8 +480,14 @@ class StocktakeViewTest(TestCase):
         self.manager = User.objects.create_user(username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
         self.qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
         self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=100)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier, location=self.location,
+            qty_received=100,
+        )
 
     def _session_in_execution(self):
         session = create_session(warehouse=self.warehouse, created_by=self.manager, actor=self.manager)

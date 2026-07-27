@@ -62,7 +62,12 @@ def abc_analysis_view(request):
 @reports_permission_required('read')
 def slow_moving_view(request):
     """FR-RPT-03: Báo cáo tồn lỏng, kèm export Excel/PDF (FR-RPT-05)."""
-    days = int(request.GET.get('days', 180))
+    try:
+        days = int(request.GET.get('days', 180))
+    except (TypeError, ValueError):
+        # ?days= không phải số nguyên hợp lệ -> dùng mặc định thay vì crash 500
+        # (bug fix 2026-07-27, xem CLAUDE.md).
+        days = 180
     rows_data = slow_moving_items(days=days)
     export = request.GET.get('export')
     if export in ('excel', 'pdf'):

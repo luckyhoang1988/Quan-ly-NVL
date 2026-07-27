@@ -25,11 +25,18 @@ def _bootstrapify(fields):
 class StocktakeSessionForm(forms.Form):
     """FR-SO-01/FR-SO-07: chọn kho (bắt buộc) + vị trí (tuỳ chọn — để trống =
     kiểm toàn kho, xem ``stocktake.services.create_session``).
+
+    ``location`` queryset không lọc theo ``warehouse`` đã chọn (không có JS/HTMX
+    cascading dropdown trong project này) nên vẫn liệt kê vị trí của mọi kho —
+    ``clean()`` chặn lại tổ hợp kho A + vị trí thuộc kho B (bug fix 2026-07-27,
+    xem CLAUDE.md); ``stocktake.services.create_session`` re-check lại constraint
+    này lần nữa, không chỉ dựa vào form (cùng convention "form thu thập, service
+    validate lại" đã dùng cho ``StockTransferForm``/``GinAllocationOverrideForm``).
     """
 
     warehouse = forms.ModelChoiceField(queryset=Warehouse.objects.filter(is_active=True), label='Kho')
     location = forms.ModelChoiceField(
-        queryset=Location.objects.filter(is_active=True), required=False,
+        queryset=Location.objects.filter(is_active=True).select_related('warehouse'), required=False,
         label='Vị trí (để trống = kiểm toàn kho)',
     )
     notes = forms.CharField(widget=forms.Textarea(attrs={'rows': 2}), required=False, label='Ghi chú')
@@ -37,6 +44,14 @@ class StocktakeSessionForm(forms.Form):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _bootstrapify(self.fields)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        warehouse = cleaned_data.get('warehouse')
+        location = cleaned_data.get('location')
+        if warehouse and location and location.warehouse_id != warehouse.id:
+            self.add_error('location', 'Vị trí này không thuộc kho đã chọn.')
+        return cleaned_data
 
 
 class StocktakeCountForm(forms.Form):

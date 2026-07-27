@@ -383,6 +383,55 @@ class UserCrudTest(TestCase):
             AuditLog.objects.filter(
                 action='DELETE', target_id=str(self.admin.pk)).exists())
 
+    def test_TC_USER_01_009_cannot_deactivate_self_via_update_form(self):
+        """Guard tự-khoá phải áp dụng ở CẢ form sửa chung (bỏ tick is_active), không
+        chỉ nút "Khoá nhanh" (``user_toggle_active``) — cùng 1 hệ quả (tự đăng xuất
+        khỏi hệ thống, không ai còn quyền mở khoá lại) nên phải chặn giống nhau."""
+        resp = self.client.post(reverse('user_update', args=[self.admin.pk]), {
+            'email': '', 'first_name': '', 'last_name': '', 'role': 'ADMIN'})
+        # Bỏ trống checkbox is_active -> đáng lẽ deactivate, nhưng đây là tự khoá mình.
+
+        self.assertEqual(resp.status_code, 200)  # ở lại form, KHÔNG lưu
+        self.assertContains(resp, 'Không thể tự khoá tài khoản của chính bạn.')
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_active)
+        self.assertFalse(
+            AuditLog.objects.filter(
+                action='UPDATE', target_id=str(self.admin.pk)).exists())
+
+    def test_TC_USER_01_010_cannot_update_deleted_user(self):
+        """Bug fix 2026-07-27: user đã xoá mềm không cho sửa qua form chung — nếu
+        mở view này ra, ``UserUpdateForm`` có thể bật lại ``is_active=True`` trong
+        khi ``is_deleted`` vẫn True, và login (chỉ check ``is_active``) sẽ cho
+        đăng nhập lại một tài khoản coi như đã xoá. Mirror guard đã có ở
+        ``user_password_set``/``user_toggle_active``."""
+        u = User.objects.create_user(username='ghost', password='x', role='STAFF')
+        u.soft_delete()
+
+        resp = self.client.post(reverse('user_update', args=[u.pk]), {
+            'email': '', 'first_name': '', 'last_name': '', 'role': 'STAFF', 'is_active': 'on'})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.url, reverse('user_detail', args=[u.pk]))
+        u.refresh_from_db()
+        self.assertFalse(u.is_active)   # không bị bật lại
+        self.assertFalse(
+            AuditLog.objects.filter(action='UPDATE', target_id=str(u.pk)).exists())
+
+    def test_TC_USER_01_011_save_invariant_forces_inactive_when_deleted(self):
+        """Bug fix 2026-07-27: is_deleted=True phải kéo theo is_active=False ở MỌI
+        đường ghi (``User.save()``), không chỉ qua ``user_update`` view/form — kể
+        cả gán trực tiếp qua ORM (vd Django admin, nơi is_active/is_deleted là 2
+        field tách biệt, không đi qua view guard ở trên)."""
+        u = User.objects.create_user(username='ghost2', password='x', role='STAFF')
+        u.soft_delete()
+
+        u.is_active = True
+        u.save()
+
+        u.refresh_from_db()
+        self.assertFalse(u.is_active)
+
 
 class PasswordChangeTest(TestCase):
     """Đổi mật khẩu: tự phục vụ (mọi user) + admin đặt lại cho user khác.

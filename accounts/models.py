@@ -107,6 +107,17 @@ class User(AbstractUser):
         self.deleted_at = timezone.now()
         self.save(update_fields=['is_deleted', 'is_active', 'deleted_at'])
 
+    def save(self, *args, **kwargs):
+        """Bất biến: ``is_deleted=True`` luôn kéo theo ``is_active=False``, ở MỌI
+        đường ghi (form ``UserUpdateForm``, Django admin, ORM trực tiếp) — không
+        chỉ riêng ``user_update`` view (bug fix 2026-07-27, xem CLAUDE.md). Nếu
+        không, user đã xoá mềm có thể bị bật lại ``is_active`` qua đường khác
+        trong khi ``is_deleted`` vẫn True, và login (chỉ check ``is_active``) sẽ
+        cho đăng nhập lại một tài khoản coi như đã xoá."""
+        if self.is_deleted:
+            self.is_active = False
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f'{self.username} ({self.get_role_display() or "chưa gán role"})'
 

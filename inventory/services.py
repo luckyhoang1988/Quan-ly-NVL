@@ -40,8 +40,18 @@ def sync_expired_batches():
     ).update(status=Batch.Status.EXPIRED)
 
 
-def expiring_soon_batches(days=30, warehouse=None):
-    """FR-INV-02: lô ACTIVE/PARTIAL_USED sẽ hết hạn trong vòng ``days`` ngày tới."""
+def expiring_soon_batches(days=30, warehouse=None, warehouse_type=None):
+    """FR-INV-02: lô ACTIVE/PARTIAL_USED sẽ hết hạn trong vòng ``days`` ngày tới.
+
+    ``warehouse_type`` (vd ``Warehouse.WarehouseType.MAIN``) lọc theo LOẠI kho,
+    khác ``warehouse`` (1 kho cụ thể) — dùng ở ``reports.services.dashboard_kpis``
+    để lô đang nằm Kho chờ (``ACTIVE`` nhưng chưa qua QC, xem Phase D ở CLAUDE.md)
+    hoặc Kho phế không lọt vào KPI "sắp hết hạn", cùng invariant với
+    ``total_inventory_value``/``low_stock_count`` trong hàm đó (bug fix
+    2026-07-27, xem CLAUDE.md). ``batch_list``/``batch_detail`` (mục 3a) cố ý
+    không truyền tham số này — trang quản lý lô hàng cần thấy cảnh báo hết hạn
+    ở MỌI kho, kể cả Kho chờ/Kho phế.
+    """
     threshold = timezone.now().date() + datetime.timedelta(days=days)
     qs = Batch.objects.filter(
         status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
@@ -49,6 +59,8 @@ def expiring_soon_batches(days=30, warehouse=None):
     ).select_related('product', 'location__warehouse')
     if warehouse is not None:
         qs = qs.filter(location__warehouse=warehouse)
+    if warehouse_type is not None:
+        qs = qs.filter(location__warehouse__warehouse_type=warehouse_type)
     return qs.order_by('exp_date')
 
 

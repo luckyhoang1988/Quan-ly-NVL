@@ -11,7 +11,9 @@
     <h1 class="panel-title">{{ obj.username }}</h1>
     <div class="page-toolbar">
       <a href="{% url 'user_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
-      <a href="{% url 'user_update' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+      {% if not obj.is_deleted %}
+        <a href="{% url 'user_update' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+      {% endif %}
       <a href="{% url 'user_permission_edit' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-key"></i> Phân quyền chi tiết</a>
       {% if not obj.is_deleted and obj.pk != user.pk %}
         <a href="{% url 'user_password_set' obj.pk %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-key-fill"></i> Đặt mật khẩu</a>

@@ -10,18 +10,23 @@ state cuối (terminal): phiếu đã đối soát xong và Inventory đã đư�
 vì phiếu kiểm kê là biên bản đối chiếu tại 1 thời điểm, Inventory có thể tiếp
 tục biến động (GRN/GIN khác) trong lúc nhân viên đang đếm hàng thực tế.
 
-``location`` trên session chỉ là bộ lọc SKU để lập danh sách đếm (FR-SO-07,
-`SHOULD`) — KHÔNG phải một chiều số lượng riêng: ``Inventory`` (mục 1f) chỉ
-lưu tồn theo product x warehouse, không có tồn theo từng vị trí, nên
-``qty_system`` vẫn luôn snapshot từ ``Inventory.qty_on_hand`` ở cấp kho, dù
-phiếu kiểm kê chỉ giới hạn ở 1 vị trí.
+``location`` trên session giới hạn cả danh sách SKU lẫn ``qty_system`` (FR-SO-07,
+`SHOULD`): ``Inventory`` (mục 1f) chỉ lưu tồn theo product x warehouse, không
+có tồn theo từng vị trí, nên khi chọn ``location``, ``qty_system`` không lấy từ
+``Inventory.qty_on_hand`` cấp kho nữa (sai — nhân viên chỉ đếm 1 vị trí mà so
+sánh với tồn cả kho sẽ ra chênh lệch giả cho phần chưa đếm ở vị trí khác, bug
+fix 2026-07-27, xem CLAUDE.md) mà tính lại từ tổng ``Batch.qty_available`` tại
+đúng vị trí đó (xem ``stocktake.services.create_session``). Để trống
+``location`` (kiểm toàn kho) vẫn dùng ``Inventory.qty_on_hand`` như cũ.
 
 Điều chỉnh tồn kho (FR-SO-05) tái dùng ``StockMovement.MovementType.ADJUSTMENT``
 đã có sẵn từ Phase 1 (xem ``inventory.models.StockMovement`` docstring) qua
 ``inventory.services.record_movement()`` — không tạo model "Adjustment" riêng.
+``apply_adjustment`` cũng đồng bộ ``Batch`` theo chiều chênh lệch (bug fix
+2026-07-27, xem CLAUDE.md) — xem ``stocktake.services`` docstring.
 """
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 
@@ -74,9 +79,24 @@ class StocktakeSession(models.Model):
         return f'{prefix}{seq:03d}'
 
     def save(self, *args, **kwargs):
-        if not self.so_no:
+        """Retry-on-collision (mirror ``StockTransfer.save()`` bên inventory,
+        bug fix 2026-07-27, xem CLAUDE.md) — ``generate_so_no()`` chỉ khoá được các
+        dòng đã tồn tại, không ngăn được 2 phiếu kiểm kê song song tính ra cùng số
+        thứ tự trước khi lần nào INSERT xong."""
+        if self.so_no:
+            super().save(*args, **kwargs)
+            return
+        attempts = 5
+        for attempt in range(attempts):
             self.so_no = self.generate_so_no()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+                self.so_no = ''
 
 
 class StocktakeItem(models.Model):

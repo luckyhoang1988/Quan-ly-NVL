@@ -533,3 +533,210 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   exists), check that the paired service function actually re-asserts *every* constraint the queryset
   encodes — a docstring claiming "service re-validates, doesn't fully trust the form" is not proof it does;
   grep the service body for each filter clause in the form's queryset and confirm a matching check exists.
+- **Bug fix 2026-07-27: two Stock Opname (stocktake) gaps, both "Inventory updated but Batch left behind"**:
+  1. `stocktake.services.apply_adjustment` (FR-SO-05) only adjusted `Inventory.qty_on_hand` +
+     `StockMovement` — it never touched `Batch`, so after an adjustment `Inventory`/KPI and FIFO/`Batch`
+     disagreed: a surplus increased `Inventory.qty_on_hand` but created no batch, so FIFO/GIN had no lot to
+     issue the extra qty from; a shortage decreased `Inventory.qty_on_hand` but left every existing batch's
+     `qty_available` unchanged, so FIFO/GIN could still over-issue qty that Inventory no longer actually had.
+     Fixed by syncing `Batch` in the same transaction, same direction as the variance: surplus (`variance >
+     0`) creates one new `ACTIVE` batch (`_create_surplus_batch`) at `session.location` (FR-SO-07) or the
+     warehouse's default location if kiểm toàn kho; shortage (`variance < 0`) consumes existing `ACTIVE`/
+     `PARTIAL_USED` batches FIFO-order (`_consume_shortage_batches`, same `exp_date`/`created_at` ordering as
+     `suggest_fifo_batches`), closing/partial-using them exactly like `shipping.services.issue_gin` does. A
+     surplus batch has no GRN to inherit a supplier from — there is no such thing as "NCC of stock found lying
+     around" — so `_infer_supplier` best-effort reuses the most recent batch's supplier for that same SKU
+     (any warehouse); a SKU with **no** batch history at all (only possible with hand-built data, e.g. an
+     `Inventory` row created directly without ever going through GRN/QC) raises `ValidationError` telling the
+     approver to create a GRN/Batch manually first rather than guessing a supplier. Symmetrically, a shortage
+     that exceeds the qty actually sitting in `ACTIVE`/`PARTIAL_USED` batches also raises `ValidationError`
+     instead of silently letting `Inventory` drift below the sum of `Batch.qty_available` — this doubles as a
+     data-integrity check (in normal operation `Inventory` is always batch-backed, so this should never fire).
+  2. `stocktake.services.create_session` (FR-SO-07): when a session is scoped to one `location`, it correctly
+     filtered which SKUs to list (via `Batch.location`) but still snapshotted `qty_system` from
+     `Inventory.qty_on_hand` — the **whole warehouse's** qty, not the counted location's. A warehouse with
+     location A=60/B=40 (`Inventory.qty_on_hand`=100) and a session scoped to A: staff counts A correctly
+     (60), but `variance = 60 - 100 = -40` — a phantom 40-unit shortage for stock that was never even in scope
+     to be counted, and `apply_adjustment` would then wrongly deduct 40 from the whole-warehouse `Inventory`.
+     Fixed by computing `qty_system` from `Sum(Batch.qty_received - Batch.qty_used)` grouped by product **at
+     that location** instead of `Inventory.qty_on_hand`, whenever `location` is given; a session with no
+     `location` (kiểm toàn kho) is unaffected — `Inventory.qty_on_hand` is still correct and simpler for that
+     case, since there's no location to disagree with.
+  **General lesson**: this is the same class of bug as the `PARTIAL_USED`-excluded-from-FIFO fix above —
+  `Batch` and `Inventory` are two views of the same physical stock that must be kept in lockstep by every
+  write path, not just the GRN/QC/GIN paths that existed when that invariant was first established. Any new
+  code that mutates `Inventory.qty_on_hand` directly (as opposed to going through `move_batch_qty`/
+  `issue_gin`-style helpers) needs to ask whether it also owes `Batch` a matching update — grep for direct
+  `Inventory.objects...qty_on_hand` mutations when auditing a new module for this pattern. Tests:
+  `TC-SO-05-009` through `013` (`stocktake/tests.py::ApplyAdjustmentServiceTest`) and `TC-SO-07-003` through
+  `005` (`CreateSessionServiceTest`).
+- **Bug fix 2026-07-27: `dashboard_kpis()`'s `near_expiry_count` leaked Kho chờ/Kho phế batches into the
+  "sắp hết hạn" KPI, breaking the very invariant this file already documents for that same function**. The
+  M6 filtering rule ("reports.services... filter `warehouse__warehouse_type=MAIN` so STAGING/SCRAP stock
+  never inflates those numbers," see the Phase-D bullet above) was correctly applied to `total_inventory_value`
+  and `low_stock_count` inside `dashboard_kpis()` — but `near_expiry_count` called
+  `inventory.services.expiring_soon_batches(days=30)` with no warehouse filter at all. A batch sitting in a
+  `STAGING` warehouse is `ACTIVE` while it waits for a QC decision (Phase D: "goods aren't invisible between
+  receipt and QC"), so it matches `expiring_soon_batches`'s `status__in=[ACTIVE, PARTIAL_USED]` filter just as
+  readily as real MAIN-warehouse stock — a batch awaiting QC with a near expiry date inflated the KPI even
+  though it isn't usable/sellable inventory yet. `reports.tests.DashboardKpisTest.test_TC_RPT_01_007_
+  excludes_staging_and_scrap_inventory` covers this exact M6 rule for the other two KPIs in the same function
+  but had no assertion for `near_expiry_count`, so the gap went unnoticed. Fixed by adding an optional
+  `warehouse_type` kwarg to `inventory.services.expiring_soon_batches(days=30, warehouse=None,
+  warehouse_type=None)` — filters `location__warehouse__warehouse_type=warehouse_type` when given, alongside
+  (not instead of) the existing single-`warehouse` filter — and calling it from `dashboard_kpis()` as
+  `expiring_soon_batches(days=30, warehouse_type=Warehouse.WarehouseType.MAIN)`. `inventory.views.batch_list`/
+  `batch_detail` (FR-INV-01/02, "quản lý lô hàng") deliberately keep calling `expiring_soon_batches()` with no
+  `warehouse_type` — that page is a company-wide batch register and must still flag a near-expiry batch sitting
+  in Kho chờ/Kho phế so someone acts on it; only the MAIN-only *KPI* needed the extra filter, not the function's
+  default behavior. Test: `TC-RPT-01-008` (`reports/tests.py::DashboardKpisTest`).
+  **General lesson**: when a function in this codebase documents/enforces a "filter to MAIN only" invariant for
+  a *set* of KPIs computed together (as `dashboard_kpis()`'s docstring/tests already claimed), a new metric
+  added to that same set inherits the invariant by convention, not by the language — it has to be filtered
+  explicitly, and a test asserting the invariant for the *other* metrics in the function is not evidence it
+  holds for a metric added later. When auditing a function like this, check every `return`/dict-key line against
+  the filter the function's own docstring or existing sibling tests claim to enforce, not just the lines a
+  recent diff touched.
+- **Bug fix 2026-07-27: `accounts.views.user_update` let an ADMIN deactivate their own account through the
+  general edit form, bypassing the self-lock guard that already existed on the quick-toggle button**.
+  `user_toggle_active` explicitly blocks `obj.pk == request.user.pk` ("tự khoá sẽ tự đăng xuất khỏi hệ thống")
+  before flipping `is_active`, but `UserUpdateForm` (used by `user_update`) also exposes `is_active` as a
+  plain checkbox with no equivalent check — unchecking it while editing your own account (or simply POSTing
+  the form with the checkbox omitted, since an unchecked HTML checkbox submits nothing) deactivated the admin
+  immediately, with no other admin left to undo it since the account it just logged out was the one editing
+  it. Fixed by adding the same guard inline in `user_update`: after `form.is_valid()`, if
+  `obj.pk == request.user.pk and not form.cleaned_data['is_active']`, show the identical error message
+  ('Không thể tự khoá tài khoản của chính bạn.') and re-render the form without saving, instead of duplicating
+  the check into the form class itself (the form has no access to `request.user`, and this view is the only
+  caller). Test: `TC-USER-01-009` (`accounts/tests.py::UserCrudTest`). **General lesson**: when a quick-action
+  view (toggle/delete button) and a general edit form both expose the same mutable field, a guard added to one
+  doesn't automatically cover the other — grep for every view that can reach a guarded field's `save()` path,
+  not just the view the original bug report was filed against.
+- **Bug fix 2026-07-27: `StocktakeSessionForm`'s `location` field let a user pick a location belonging to a
+  different warehouse than the one selected in the same form**. `stocktake.forms.StocktakeSessionForm.location`
+  queried `Location.objects.filter(is_active=True)` with no scoping to the chosen `warehouse` — this project has
+  no HTMX/JS cascading-dropdown wiring anywhere yet to filter it client-side (checked: no `hx-get`/`hx-trigger`
+  usage exists in the codebase), so the raw `<select>` listed every active location company-wide regardless of
+  warehouse. Picking kho A + a location that actually belongs to kho B fed
+  `stocktake.services.create_session()` a mismatched pair: it intersects "products with `Inventory` at
+  `warehouse` A" against "products with a `Batch` at `location`" (which is physically in warehouse B) — either
+  an empty SKU list (no overlap) or, worse, a wrong `qty_system` silently sourced from warehouse B's batch qty
+  for a session nominally scoped to warehouse A. Fixed two ways together, mirroring the existing
+  `StockTransferForm`/`GinAllocationOverrideForm` "form collects, service re-validates" boundary (see the
+  "three unrelated gaps" bug-fix bullet above): (1) `StocktakeSessionForm.clean()` now rejects the combination
+  via `location.warehouse_id != warehouse.id` (`add_error` on `location`); (2)
+  `stocktake.services.create_session()` re-checks the identical constraint itself and raises `ValidationError`
+  — the service doesn't just trust the form, same reasoning as every other guard listed in that bullet. No
+  dynamic dropdown filtering was added (would be a UI feature beyond this bug's scope) — the fix only rejects
+  the invalid combination instead of preventing it from being selectable. Test:
+  `test_TC_SO_07_006_rejects_location_from_different_warehouse`
+  (`stocktake/tests.py::CreateSessionServiceTest`). **General lesson**: any form with two `ModelChoiceField`s
+  where one is conceptually scoped inside the other (a location within a warehouse, a sub-resource within a
+  parent) needs either client-side cascading filtering or a `clean()` cross-field check — an unscoped queryset
+  alone will silently accept mismatched combinations, and per the pattern already established in this file, the
+  service layer must re-check it too, not just the form.
+- **Bug fix 2026-07-27: `StocktakeSession.save()` had no retry-on-collision for `so_no`, unlike every other
+  auto-generated sequential number in the codebase**. The "MAX+1 under concurrency" race condition already
+  documented above for `po_no`/`request_no`/`grn_no`/`gin_no`/`transfer_no` — `select_for_update()` inside
+  `generate_*_no()` can only lock rows that already exist, so it can't prevent two concurrent creates from
+  computing the same next number before either has actually `INSERT`ed — was fixed for all five of those
+  models but `stocktake.models.StocktakeSession.generate_so_no()`/`save()` was never given the same treatment,
+  so two stocktake sessions created concurrently could still collide on `so_no` and raise an unhandled
+  `IntegrityError`. Fixed identically to `StockTransfer.save()` (`inventory/models.py`): `save()` skips
+  regeneration if `so_no` is already set (plain update), otherwise loops up to 5 attempts — calls
+  `generate_so_no()`, attempts `super().save()` inside its own `transaction.atomic()` savepoint, and on
+  `IntegrityError` clears `so_no` and retries with a freshly generated number. Test:
+  `test_TC_SO_MODEL_004_so_no_retries_on_integrity_error_collision`
+  (`stocktake/tests.py::StocktakeSessionModelTest`) — mocks `generate_so_no()` with `side_effect` to return a
+  colliding number on the first call and a fresh one on the second, since reproducing the race for real would
+  need actual concurrent threads/connections. **General lesson**: when the retry-on-`IntegrityError` pattern
+  was introduced (see the earlier bullet), it should have been swept across every `generate_*_no()`-style
+  field in the codebase at once — `StocktakeSession.so_no` was added before that sweep and got missed; any
+  future audit for this pattern should grep for every model with a `unique=True` auto-generated code field,
+  not just the ones the original bug report happened to name.
+- **Bug fix 2026-07-27: a soft-deleted user still showed an "Edit" button and could have `is_active` bounced
+  back to `True` while `is_deleted` stayed `True`, letting a "deleted" account log back in**.
+  `accounts.templates.accounts.user_detail.html`/`user_list.html` rendered the "Sửa" link unconditionally
+  (no `is_deleted` guard, unlike the adjacent "Đặt mật khẩu"/"Khoá"/"Xoá" actions which already check
+  `not obj.is_deleted`), and `accounts.views.user_update` had no server-side guard either — `UserUpdateForm`
+  exposes `is_active` as a plain checkbox, so an admin (or a direct POST to the URL, bypassing the hidden
+  button entirely) could re-check it on a soft-deleted user. `accounts.backends.DirectPermissionsBackend`
+  extends `ModelBackend` with no override of `user_can_authenticate` (only `get_group_permissions`, see its
+  own docstring), so Django's default login check only looks at `is_active` — it has no idea `is_deleted`
+  exists, meaning any path that leaves `is_active=True` on a `is_deleted=True` row makes that account log in
+  again. Fixed at three layers: (1) `User.save()` (`accounts/models.py`) now enforces the invariant
+  `is_deleted=True ⇒ is_active=False` unconditionally, before every `super().save()` — this is the actual
+  fix, since it closes the hole for **every** write path (`UserUpdateForm`, Django admin's own `is_active`
+  field, which sits in a separate fieldset from `is_deleted` per `accounts/admin.py`, or any future direct
+  ORM `.save()`), not just the one view the bug was originally filed against; (2) `accounts.views.user_update`
+  now rejects editing a soft-deleted user outright (`messages.error('User đã bị xoá, không thể sửa.')` +
+  redirect to `user_detail`), mirroring the exact guard shape already used by `user_password_set`/
+  `user_toggle_active` for the same "no restore flow exists yet" reason — a deleted user is treated as frozen,
+  not partially editable; (3) `user_detail.html`/`user_list.html` now wrap the "Sửa" link in
+  `{% if not obj.is_deleted %}` (matching the pattern the other action buttons already followed) so the
+  now-guaranteed-403-via-redirect action isn't offered as a live button in the first place. Tests:
+  `test_TC_USER_01_010_cannot_update_deleted_user` (view guard) and
+  `test_TC_USER_01_011_save_invariant_forces_inactive_when_deleted` (model invariant, sets `is_active=True`
+  directly on a soft-deleted instance and asserts `save()` forces it back to `False`) in
+  `accounts/tests.py::UserCrudTest`. **General lesson**: when a soft-delete flag and a separate "active" flag
+  both exist on the same model, the flag combination that must never occur (`is_deleted ∧ is_active`) should
+  be enforced in `save()` itself, not only in the one view/form that was known to violate it — a view-level
+  guard alone leaves every other write path (admin panel, management command, future view) free to
+  reintroduce the same inconsistency; the model invariant is what makes a plain `is_active`-only login check
+  (the Django default) safe to leave unmodified.
+- **Bug fix 2026-07-27: `dashboard_kpis()`'s `low_stock_count` compared `min_level` against each per-warehouse
+  `Inventory` row individually instead of the SKU's combined stock across MAIN warehouses**.
+  `reports.services.dashboard_kpis()` looped `Inventory.objects.filter(warehouse__warehouse_type=MAIN)` and
+  incremented `low_stock_count` once per row where `inv.qty_on_hand < inv.product.min_level` — but `min_level`
+  is a per-SKU setting (`Product.min_level`), not a per-warehouse one, so a SKU stocked in 2 MAIN warehouses
+  was checked twice against the same threshold: individually-low rows summing to a healthy combined total
+  still (wrongly) counted as low-stock 1-2 times, and there was no way for a SKU to be correctly judged
+  "sufficient in aggregate but thin per-location." Fixed by aggregating `qty_on_hand` per `product_id` in a
+  dict while iterating the same queryset (no second DB round-trip — `total_inventory_value`'s per-row loop
+  was kept as-is and simply extended to also accumulate into `qty_by_product`/`products_by_id`), then counting
+  low-stock once per SKU by comparing the aggregated total against `min_level` after the loop. Tests:
+  `test_TC_RPT_01_009_low_stock_not_double_counted_across_warehouses` (same SKU under-min in 2 warehouses,
+  combined still under min → counts once, not twice) and
+  `test_TC_RPT_01_010_low_stock_uses_combined_qty_not_per_warehouse` (same SKU under-min in each of 2
+  warehouses individually, but combined total meets `min_level` → not counted at all) in
+  `reports/tests.py::DashboardKpisTest`. **General lesson**: any KPI/threshold defined per-SKU (`min_level`,
+  `max_level`, reorder point, etc.) must be compared against a SKU's *aggregated* quantity across whatever
+  scope the KPI claims to cover (here: all MAIN warehouses) — iterating per-row and checking the threshold on
+  each row independently silently turns a per-SKU rule into a per-(SKU, warehouse) rule, which both
+  double-counts split-stock SKUs that are actually fine and can also miss the reverse case a reviewer might
+  expect (a SKU thin everywhere still only counts once, which is correct — the bug was always in the
+  direction of over-counting/wrongly-flagging, not under-flagging).
+- **Bug fix 2026-07-27: `dashboard_kpis()`'s `pending_grn_count` only counted `Grn.Status.PENDING_QC`,
+  undercounting the "GRN chờ" KPI**. `Grn.Status` (`receiving/models.py`) has three distinct in-flight,
+  not-yet-`RECEIVED` states — `PENDING_APPROVAL` (Phase B: staff submitted, waiting on a WAREHOUSE department
+  manager's `Approval` decision), `PENDING_QC` (approved, waiting for QC to start), and `QC_IN_PROGRESS`
+  (QC actively inspecting, staging `Batch`/`Inventory` already created per the Phase-D "Kho chờ" design) —
+  but `dashboard_kpis()` only queried `status=PENDING_QC`, so any GRN sitting in `PENDING_APPROVAL` or
+  `QC_IN_PROGRESS` at the moment the dashboard loaded was invisible to the "GRN chờ xử lý" KPI even though
+  it is, by every other part of this codebase's own vocabulary (`Grn.current_department`, the cancel-
+  permission logic), still a pending ticket someone needs to act on. Fixed by widening the filter to
+  `status__in=[PENDING_APPROVAL, PENDING_QC, QC_IN_PROGRESS]` — `RECEIVED`/`REJECTED`/`CANCELLED`/`CLOSED`
+  remain excluded, unchanged (all four are terminal, nothing left to act on). Tests:
+  `test_TC_RPT_01_011_pending_grn_count_includes_pending_approval_and_qc_in_progress` (asserts all three
+  statuses are counted together) and `test_TC_RPT_01_012_pending_grn_count_excludes_received_and_cancelled`
+  (asserts `RECEIVED`/`CANCELLED` are still excluded) in `reports/tests.py::DashboardKpisTest`. **General
+  lesson**: a KPI/count named after a business concept ("pending", "in progress", "open") that maps to a
+  `TextChoices` enum with more than two values needs to enumerate every status that concept actually covers,
+  not just the one status that happened to exist when the KPI was first written — `Grn.Status` gained
+  `PENDING_APPROVAL` in Phase B, after `dashboard_kpis()`'s original `pending_grn_count` line was written for
+  the simpler pre-Phase-B status set, and nothing forced that call site to be revisited when the enum grew.
+  When adding a new intermediate status to an existing workflow enum, grep every `status=`/`status__in=`
+  call site that already filters that model for the concept the new status also belongs to.
+- **Bug fix 2026-07-27: `reports.views.slow_moving_view`'s `?days=` query param crashed with an unhandled
+  `ValueError` (HTTP 500) for any non-numeric value**. `days = int(request.GET.get('days', 180))` only
+  handles the *missing* case (the `180` default) — a query string like `?days=abc` still reaches `int(...)`
+  and raises. Fixed by wrapping the parse in `try/except (TypeError, ValueError)`, falling back to the same
+  `180` default on failure, mirroring how every other user-controlled numeric/enum input in this codebase is
+  validated rather than trusted raw. Tests: `test_TC_RPT_05_007_slow_moving_invalid_days_falls_back_to_default`
+  (`?days=abc` → 200, `response.context['days'] == 180`) and
+  `test_TC_RPT_05_008_slow_moving_valid_days_still_respected` (`?days=90` → 200, `days == 90`, proving the
+  fix doesn't clobber a legitimately-provided value) in `reports/tests.py::ReportsPermissionAndExportTest`.
+  **General lesson**: any `int(request.GET.get(...))`/`request.GET[...]`-style read of a query/form param
+  that isn't run through a Django `Form`/`ModelForm` (which validates for free) needs its own explicit
+  try/except or a safe-parse helper — Django never validates raw `request.GET` access, so a bare `int()` call
+  on it is a standing crash-on-bad-input bug, not just a style nitpick.

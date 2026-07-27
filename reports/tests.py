@@ -87,6 +87,83 @@ class DashboardKpisTest(TestCase):
         # self.product tồn thêm 999 ở Kho phế -> nếu không lọc, total_inventory_value sẽ tăng vọt.
         self.assertEqual(kpis['total_inventory_value'], Decimal('150000.00'))
 
+    def test_TC_RPT_01_008_near_expiry_excludes_staging_and_scrap_batches(self):
+        """M6: lô sắp hết hạn ở Kho chờ/Kho phế không được cộng vào near_expiry_count
+        — Kho chờ giữ batch ``ACTIVE`` trong lúc chờ QC (Phase D) nên vẫn khớp filter
+        status của ``expiring_soon_batches`` nếu không lọc thêm theo warehouse_type."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        staging_location = Location.objects.create(warehouse=staging, code='B-01')
+        scrap_location = Location.objects.create(warehouse=scrap, code='C-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-STG', supplier=self.supplier,
+            location=staging_location, qty_received=5,
+            exp_date=timezone.localdate() + timedelta(days=5),
+        )
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-SCR', supplier=self.supplier,
+            location=scrap_location, qty_received=5, status=Batch.Status.QUARANTINE,
+            exp_date=timezone.localdate() + timedelta(days=5),
+        )
+
+        # setUp đã tạo 1 lô sắp hết hạn ở kho MAIN -> vẫn phải đúng 1, không phải 3.
+        self.assertEqual(dashboard_kpis()['near_expiry_count'], 1)
+
+    def test_TC_RPT_01_009_low_stock_not_double_counted_across_warehouses(self):
+        """Bug fix 2026-07-27: 1 SKU nằm ở nhiều kho MAIN, mỗi kho riêng lẻ đều dưới
+        min_level, chỉ được đếm 1 lần trong low_stock_count (không nhân theo số kho)."""
+        other_warehouse = Warehouse.objects.create(code='KHO-HCM', name='Kho HCM')
+        multi_product = Product.objects.create(
+            product_code='NVL-0003', name='Muối', uom='kg', min_level=50)
+        Inventory.objects.create(product=multi_product, warehouse=self.warehouse, qty_on_hand=10)
+        Inventory.objects.create(product=multi_product, warehouse=other_warehouse, qty_on_hand=15)
+
+        # self.product (setUp, qty=10 < min=20) + multi_product (10+15=25 < min=50) -> 2, không phải 3.
+        self.assertEqual(dashboard_kpis()['low_stock_count'], 2)
+
+    def test_TC_RPT_01_010_low_stock_uses_combined_qty_not_per_warehouse(self):
+        """Bug fix 2026-07-27: SKU dưới min_level ở từng kho riêng lẻ nhưng tổng các
+        kho MAIN đã đủ Min thì không được tính vào low_stock_count."""
+        other_warehouse = Warehouse.objects.create(code='KHO-DN', name='Kho Đà Nẵng')
+        combined_product = Product.objects.create(
+            product_code='NVL-0004', name='Đường tinh', uom='kg', min_level=20)
+        Inventory.objects.create(product=combined_product, warehouse=self.warehouse, qty_on_hand=12)
+        Inventory.objects.create(product=combined_product, warehouse=other_warehouse, qty_on_hand=10)
+
+        # combined_product: 12 và 10 đều < 20 riêng lẻ, nhưng tổng 22 >= 20 -> không tính.
+        # Chỉ còn self.product (setUp, 10 < 20) -> vẫn là 1.
+        self.assertEqual(dashboard_kpis()['low_stock_count'], 1)
+
+    def test_TC_RPT_01_011_pending_grn_count_includes_pending_approval_and_qc_in_progress(self):
+        """Bug fix 2026-07-27: pending_grn_count trước đây chỉ đếm PENDING_QC, thiếu
+        PENDING_APPROVAL và QC_IN_PROGRESS -> KPI "GRN chờ" bị đếm thiếu."""
+        po = PurchaseOrder.objects.create(
+            po_no='PO-0002', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
+        Grn.objects.create(
+            po=po, supplier=self.supplier, created_by=self.creator,
+            status=Grn.Status.PENDING_APPROVAL)
+        Grn.objects.create(
+            po=po, supplier=self.supplier, created_by=self.creator,
+            status=Grn.Status.QC_IN_PROGRESS)
+
+        # setUp đã có 1 GRN PENDING_QC -> tổng 3 (PENDING_APPROVAL + PENDING_QC + QC_IN_PROGRESS).
+        self.assertEqual(dashboard_kpis()['pending_grn_count'], 3)
+
+    def test_TC_RPT_01_012_pending_grn_count_excludes_received_and_cancelled(self):
+        """GRN đã RECEIVED/CANCELLED/REJECTED/CLOSED không còn "chờ xử lý" -> không
+        được tính vào pending_grn_count."""
+        po = PurchaseOrder.objects.create(
+            po_no='PO-0003', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
+        Grn.objects.create(
+            po=po, supplier=self.supplier, created_by=self.creator, status=Grn.Status.RECEIVED)
+        Grn.objects.create(
+            po=po, supplier=self.supplier, created_by=self.creator, status=Grn.Status.CANCELLED)
+
+        # setUp đã có 1 GRN PENDING_QC -> vẫn là 1, RECEIVED/CANCELLED không được tính thêm.
+        self.assertEqual(dashboard_kpis()['pending_grn_count'], 1)
+
 
 class AbcAnalysisTest(TestCase):
     """FR-RPT-02: phân loại A/B/C theo % giá trị tồn kho tích luỹ.
@@ -306,3 +383,17 @@ class ReportsPermissionAndExportTest(TestCase):
             response['Content-Type'],
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         )
+
+    def test_TC_RPT_05_007_slow_moving_invalid_days_falls_back_to_default(self):
+        """Bug fix 2026-07-27: ?days= không phải số nguyên trước đây làm
+        int(...) raise ValueError -> HTTP 500. Nay phải fallback về mặc định 180."""
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('reports:slow_moving'), {'days': 'abc'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['days'], 180)
+
+    def test_TC_RPT_05_008_slow_moving_valid_days_still_respected(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('reports:slow_moving'), {'days': '90'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['days'], 90)

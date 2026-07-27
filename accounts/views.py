@@ -236,11 +236,24 @@ def user_create(request):
 
 @user_admin_required
 def user_update(request, pk):
-    """UPDATE — đổi role / deactivate / thông tin; ghi audit UPDATE với changes."""
+    """UPDATE — đổi role / deactivate / thông tin; ghi audit UPDATE với changes.
+
+    User đã xoá mềm không cho sửa ở đây (chưa có luồng "khôi phục" riêng — mở
+    view này ra sẽ để lộ khả năng bật lại ``is_active`` qua ``UserUpdateForm``
+    trong khi ``is_deleted`` vẫn True, bug fix 2026-07-27, xem CLAUDE.md); mirror
+    guard đã có ở ``user_password_set``/``user_toggle_active``.
+    """
     obj = get_object_or_404(User, pk=pk)
+    if obj.is_deleted:
+        messages.error(request, 'User đã bị xoá, không thể sửa.')
+        return redirect('user_detail', pk=obj.pk)
     before = {f: getattr(obj, f) for f in TRACKED_FIELDS}
     form = UserUpdateForm(request.POST or None, instance=obj)
     if request.method == 'POST' and form.is_valid():
+        if obj.pk == request.user.pk and not form.cleaned_data['is_active']:
+            messages.error(request, 'Không thể tự khoá tài khoản của chính bạn.')
+            return render(request, 'accounts/user_form.html',
+                          {'form': form, 'mode': 'update', 'obj': obj})
         user = form.save()  # kích hoạt signal đồng bộ role -> Group nếu đổi role
         changes = {
             f: [before[f], getattr(user, f)]
