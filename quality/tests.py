@@ -353,6 +353,12 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
             qc_partial_pass(
                 inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.scrap_location)
 
+    def test_TC_QC_PARTIAL_005_001_all_zero_qty_pass_raises(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_partial_pass(
+                inspection, {self.grn_item.pk: 0}, actor=self.qc_user, location=self.location)
+
 
 class WarehouseHandoffTest(QcServiceTestBase):
     """Bàn giao batch PASS/PARTIAL_PASS (``PENDING_RECEIPT``) cho kho xác nhận

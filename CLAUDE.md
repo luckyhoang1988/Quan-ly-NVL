@@ -506,3 +506,30 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   like `QUARANTINE`/`EXPIRED`/`CLOSED`, it is a normal mid-life state of an otherwise-active batch, and a
   single-status filter is fine only where the whole point is to exclude everything but a genuinely fresh batch
   (there is no such case in this codebase today).
+- **Bug fix 2026-07-27: three unrelated gaps found in manual review, all the same shape — a service silently
+  relied on a form's queryset filter instead of re-checking the constraint itself**:
+  1. `inventory.forms.StockTransferForm`'s batch queryset only allowed `ACTIVE`/`PARTIAL_USED`, excluding
+     `PENDING_RECEIPT` — so the manual-transfer path this doc already promises for a batch left
+     `PENDING_RECEIPT` after `reject_handoff(..., BACK_TO_QC)` (see the Phase-D bullet above) was unreachable
+     from the UI even though `transfer_stock`/`move_batch_qty`'s status guard already accepted
+     `PENDING_RECEIPT` as a source. Fixed by widening the form's `status__in` to include `PENDING_RECEIPT`;
+     `transfer_stock`'s own guards (blocks a STAGING source, blocks `PENDING_RECEIPT` with a still-`PENDING`
+     handoff) remain the real gatekeeper, unchanged.
+  2. `quality.services.qc_partial_pass` accepted an `item_results` where every item's `qty_pass` was `0` —
+     functionally identical to `qc_fail` (every item ends `REJECTED`, all qty moved to `QUARANTINE`) but the
+     GRN was left `RECEIVED` with no `GrnReturn` created, unlike `qc_fail`'s `REJECTED` + `GrnReturn`. Fixed
+     by raising `ValidationError` up front when `sum(item_results.values()) == 0`, forcing the caller to use
+     the `fail` action instead of disguising a full fail as a partial pass — a deliberate choice over
+     auto-converting to the `qc_fail` ending, to keep "which action produced this outcome" unambiguous.
+  3. `shipping.services.override_allocation` validated `new_batch` against product/status/qty but never
+     checked `new_batch.location.warehouse_id == gin.warehouse_id`. `GinAllocationOverrideForm` already
+     filters its queryset by `location__warehouse=gin.warehouse`, so the UI path (`shipping.views.
+     gin_allocation_override`) was safe, but the service itself — callable directly, same "form only collects
+     input, service re-validates" boundary both files' own docstrings already claimed — could be handed a
+     batch from a different warehouse, deducting `Inventory` at the GIN's warehouse while actually consuming
+     stock physically sitting in another one. Fixed by adding the same warehouse check alongside the existing
+     product/status/qty checks.
+  **General lesson**: when adding a new form-filtered `ModelChoiceField` (or reviewing one that already
+  exists), check that the paired service function actually re-asserts *every* constraint the queryset
+  encodes — a docstring claiming "service re-validates, doesn't fully trust the form" is not proof it does;
+  grep the service body for each filter clause in the form's queryset and confirm a matching check exists.

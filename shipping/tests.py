@@ -264,6 +264,19 @@ class GinOverrideServiceTest(TestCase):
         with self.assertRaises(ValidationError):
             override_allocation(self.allocation, wrong_product_batch, 'lý do', actor=self.manager)
 
+    def test_TC_GIN_OVERRIDE_005B_rejects_different_warehouse(self):
+        """Bug fix 2026-07-27: service phải tự kiểm tra kho, không dựa hoàn
+        toàn vào queryset đã lọc theo warehouse của GinAllocationOverrideForm —
+        gọi service trực tiếp với batch khác kho vẫn phải bị chặn."""
+        other_warehouse = Warehouse.objects.create(code='KHO-SG', name='Kho Sài Gòn')
+        other_location = Location.objects.create(warehouse=other_warehouse, code='B-01')
+        other_warehouse_batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-OTHER-WH', supplier=self.supplier,
+            location=other_location, qty_received=50, exp_date=self.today + datetime.timedelta(days=20),
+        )
+        with self.assertRaises(ValidationError):
+            override_allocation(self.allocation, other_warehouse_batch, 'lý do', actor=self.manager)
+
     def test_TC_GIN_OVERRIDE_006_rejects_quarantine_batch(self):
         quarantine_batch = self._batch('LOT-Q', 50, status=Batch.Status.QUARANTINE)
         with self.assertRaises(ValidationError):

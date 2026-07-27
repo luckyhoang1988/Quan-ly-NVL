@@ -15,6 +15,7 @@ from quality.models import QcInspection
 from receiving.models import Grn
 from warehouse.models import Location, Warehouse
 
+from .forms import StockTransferForm
 from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 from .services import (
     accept_handoff, calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, reject_handoff,
@@ -679,6 +680,17 @@ class StockTransferPendingReceiptGuardTest(TestCase):
         self.assertEqual(self.batch.status, Batch.Status.PENDING_RECEIPT)
         transfer = transfer_stock(batch=self.batch, to_location=self.location2, qty=5, actor=self.qc_user)
         self.assertEqual(transfer.new_batch.location, self.location2)
+
+    def test_TC_INV_TRF_PR_004_form_offers_pending_receipt_batch_after_back_to_qc_reject(self):
+        reject_handoff(
+            self.handoff, actor=self.qc_user, reason='Kiểm tra lại',
+            destination=WarehouseHandoff.RejectDestination.BACK_TO_QC,
+        )
+        form = StockTransferForm(data={
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 5,
+        })
+        self.assertIn(self.batch, form.fields['batch'].queryset)
+        self.assertTrue(form.is_valid(), form.errors)
 
 
 class MoveBatchQtyServiceTest(TestCase):

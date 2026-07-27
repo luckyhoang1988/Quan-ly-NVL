@@ -29,7 +29,9 @@ class StockTransferForm(forms.Form):
     """
 
     batch = forms.ModelChoiceField(
-        queryset=Batch.objects.filter(status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED])
+        queryset=Batch.objects.filter(status__in=[
+            Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
+        ])
         .select_related('product', 'location__warehouse').order_by('exp_date', 'created_at'),
         label='Batch nguồn',
     )

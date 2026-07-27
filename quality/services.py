@@ -311,6 +311,10 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
     missing = {item.pk for item in items} - set(item_results)
     if missing:
         raise ValidationError(f'Thiếu kết quả QC cho {len(missing)} item.')
+    if sum(item_results.values()) == 0:
+        raise ValidationError(
+            'Tất cả item đều có qty_pass = 0 — dùng hành động "Fail" thay vì "Partial Pass".'
+        )
 
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
