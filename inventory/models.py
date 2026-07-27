@@ -11,7 +11,7 @@ qty_reserved là computed, không phải stored input".
 """
 from django.conf import settings
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 
@@ -269,6 +269,21 @@ class StockTransfer(models.Model):
         return f'{prefix}{seq:03d}'
 
     def save(self, *args, **kwargs):
-        if not self.transfer_no:
+        """Retry-on-collision (mirror ``PurchaseOrder.save()`` bên purchasing) —
+        ``generate_transfer_no()`` chỉ khoá được các dòng đã tồn tại, không ngăn được
+        2 phiếu điều chuyển song song tính ra cùng số thứ tự trước khi lần nào INSERT
+        xong."""
+        if self.transfer_no:
+            super().save(*args, **kwargs)
+            return
+        attempts = 5
+        for attempt in range(attempts):
             self.transfer_no = self.generate_transfer_no()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+                self.transfer_no = ''

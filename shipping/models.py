@@ -15,7 +15,7 @@ cho FR-GIN-03 và dữ liệu in phiếu (FR-GIN-06) sau này.
 """
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from warehouse.models import Warehouse
@@ -80,9 +80,23 @@ class Gin(models.Model):
         return f'{prefix}{seq:03d}'
 
     def save(self, *args, **kwargs):
-        if not self.gin_no:
+        """Retry-on-collision (mirror ``PurchaseOrder.save()``) — ``generate_gin_no()``
+        chỉ khoá được các dòng đã tồn tại, không ngăn được 2 GIN song song tính ra cùng
+        số thứ tự trước khi lần nào INSERT xong."""
+        if self.gin_no:
+            super().save(*args, **kwargs)
+            return
+        attempts = 5
+        for attempt in range(attempts):
             self.gin_no = self.generate_gin_no()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+                self.gin_no = ''
 
 
 class GinItem(models.Model):

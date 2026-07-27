@@ -22,7 +22,7 @@ quyền approve (xem ``purchasing.services.submit_purchase_request``/
 ``decide_purchase_request``).
 """
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 
@@ -86,9 +86,26 @@ class PurchaseOrder(models.Model):
         return f'{prefix}{seq:04d}'
 
     def save(self, *args, **kwargs):
-        if not self.po_no:
+        """``generate_po_no()`` chỉ khoá (``select_for_update``) các dòng hiện có — không
+        thể khoá một số thứ tự chưa tồn tại, nên 2 lần tạo PO song song vẫn có thể tính
+        ra cùng ``seq`` trước khi lần nào INSERT xong. Bọc INSERT trong savepoint riêng
+        (``transaction.atomic()`` lồng) và thử lại với số mới nếu trùng ``unique`` —
+        đây là lớp phòng vệ thật sự chống trùng mã, không phải ``select_for_update``.
+        """
+        if self.po_no:
+            super().save(*args, **kwargs)
+            return
+        attempts = 5
+        for attempt in range(attempts):
             self.po_no = self.generate_po_no()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+                self.po_no = ''
 
     def delivery_status(self):
         """FR-PO-06: phân loại giao hàng On time/Delayed/Partial, tính on-the-fly
@@ -189,9 +206,23 @@ class PurchaseRequest(models.Model):
         return f'{prefix}{seq:03d}'
 
     def save(self, *args, **kwargs):
-        if not self.request_no:
+        """Retry-on-collision giống ``PurchaseOrder.save()`` — ``generate_request_no()``
+        chỉ khoá được các dòng đã tồn tại, không ngăn được 2 request song song tính ra
+        cùng số thứ tự."""
+        if self.request_no:
+            super().save(*args, **kwargs)
+            return
+        attempts = 5
+        for attempt in range(attempts):
             self.request_no = self.generate_request_no()
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                return
+            except IntegrityError:
+                if attempt == attempts - 1:
+                    raise
+                self.request_no = ''
 
 
 class PurchaseRequestItem(models.Model):

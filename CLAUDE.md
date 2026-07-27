@@ -367,3 +367,24 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   schema migration that adds `Approval` (`accounts/migrations/0011_approval.py`) and a permission-reseed
   migration (`0012_reseed_purchasing_pr_permissions.py`) are not enough on their own to cover objects that
   predate the rewire.
+- **Bug fix 2026-07-27: race condition in every auto-generated sequential number (`po_no`, `request_no`,
+  `grn_no`, `gin_no`, `transfer_no`) fixed with retry-on-collision, not tighter locking**. All five
+  `generate_*_no()` classmethods (`PurchaseOrder`/`PurchaseRequest` in `purchasing/models.py`,
+  `Grn.generate_grn_no`, `Gin.generate_gin_no`, `StockTransfer.generate_transfer_no` in `inventory/models.py`)
+  share the same shape: open their own `transaction.atomic()`, `select_for_update()` over rows matching the
+  prefix, compute `max(existing) + 1`, then return — but that block (and its locks) closes *before* `save()`
+  does the actual `INSERT`. `select_for_update()` can only lock rows that already exist; it can't lock against
+  a sequence number that doesn't have a row yet, so two concurrent creates can compute the same next number
+  and both attempt to insert it, raising `IntegrityError` on the `unique=True` constraint. Widening the
+  `select_for_update()` scope does not fix this — it is the classic "MAX+1 under concurrency" problem, not a
+  lock-granularity problem. Fixed identically in all five models' `save()`: skip regeneration if the number
+  field is already set (plain update), otherwise loop up to 5 attempts — call `generate_*_no()`, attempt
+  `super().save()` inside its own `transaction.atomic()` (a savepoint, so it doesn't poison an outer
+  transaction if `save()` was itself invoked from inside one), and on `IntegrityError` clear the field and
+  retry with a freshly generated number. The DB's `unique=True` constraint is the actual correctness
+  guarantee now; `select_for_update()` in `generate_*_no()` is kept as-is since it still reduces (does not
+  eliminate) collision likelihood under low concurrency, so it's not dead code, just no longer load-bearing.
+  **Apply the same retry-on-`IntegrityError` pattern to any future `generate_*_no()`-style sequential field**
+  instead of trying to make the locking airtight — a real DB sequence (`nextval`) or a dedicated counter row
+  would also work but weren't introduced here to avoid a new migration/model for a problem the retry loop
+  already solves at the `save()` layer.
