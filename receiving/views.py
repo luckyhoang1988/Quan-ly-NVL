@@ -15,7 +15,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect, render
 
-from accounts.approvals import latest_approval_for
+from accounts.approvals import latest_approval_for, latest_approvals_for
 from accounts.audit import client_ip, log_action
 from accounts.models import Approval, AuditLog, User
 from accounts.pagination import paginate_queryset
@@ -131,8 +131,9 @@ def grn_detail(request, pk):
         and grn.status in (Grn.Status.RECEIVED, Grn.Status.REJECTED)
     )
     returns = list(grn.returns.all())
+    latest_approvals = latest_approvals_for(GrnReturn, [ret.pk for ret in returns])
     for ret in returns:
-        ret.latest_approval = latest_approval_for(ret)
+        ret.latest_approval = latest_approvals.get(str(ret.pk))
 
     return render(request, 'receiving/grn_detail.html', {
         'grn': grn,

@@ -2,6 +2,7 @@
 riêng trong SRS gốc, nhưng GRN/PO/Inventory ở các Phase sau đều cần FK tới đây).
 """
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 
@@ -24,7 +25,8 @@ class Product(models.Model):
         help_text='Chi phí đặt hàng mỗi lần (S, VNĐ) — dùng tính EOQ (FR-INV-05).')
     holding_cost_rate = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, verbose_name='Tỷ lệ chi phí lưu kho (%)',
-        help_text='% chi phí lưu kho/năm trên đơn giá bình quân (H) — dùng tính EOQ (FR-INV-05).')
+        help_text='% chi phí lưu kho/năm trên đơn giá bình quân (H) — dùng tính EOQ (FR-INV-05).',
+        validators=[MinValueValidator(0), MaxValueValidator(100)])
     qc_sampling_method = models.CharField(
         max_length=10, choices=SamplingMethod.choices, default=SamplingMethod.PERCENT,
         verbose_name='Cách lấy mẫu QC', help_text='Cách tính cỡ mẫu QC gợi ý (mục 2b QC Criteria & Sampling).')

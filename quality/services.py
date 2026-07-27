@@ -54,12 +54,14 @@ def suggested_sample_qty(product, qty_received):
     được quyết định).
 
     PERCENT: làm tròn lên ``qty_received * value / 100``, tối thiểu 1 nếu có
-    hàng nhận. FIXED: ``value``, nhưng không vượt quá ``qty_received``.
+    hàng nhận. FIXED: ``value``, nhưng không vượt quá ``qty_received``, tối
+    thiểu 1 (đồng nhất với PERCENT — ``qc_sampling_value=0`` không nên gợi ý
+    cỡ mẫu bằng 0 khi thực tế có hàng nhận).
     """
     if qty_received <= 0:
         return 0
     if product.qc_sampling_method == Product.SamplingMethod.FIXED:
-        return min(product.qc_sampling_value, qty_received)
+        return max(1, min(product.qc_sampling_value, qty_received))
     return max(1, min(math.ceil(qty_received * product.qc_sampling_value / 100), qty_received))
 
 

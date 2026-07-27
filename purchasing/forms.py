@@ -1,8 +1,11 @@
 """Form app purchasing (PO stub — mục 1e)."""
 from django import forms
+from django.db.models import Q
 from django.forms import inlineformset_factory
 
 from accounts.models import User
+from catalog.models import Product
+from partners.models import Supplier
 from warehouse.models import Warehouse
 
 from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
@@ -30,6 +33,13 @@ class PurchaseOrderForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Chỉ cho chọn NCC đang ACTIVE khi tạo/sửa PO mới. Cộng thêm NCC hiện tại
+        # của instance (khi sửa) để không vỡ PO cũ nếu NCC đã chuyển INACTIVE/
+        # SUSPENDED sau đó — cùng convention với GrnForm.po ở receiving/forms.py.
+        queryset = Q(status=Supplier.Status.ACTIVE)
+        if self.instance.pk and self.instance.supplier_id:
+            queryset |= Q(pk=self.instance.supplier_id)
+        self.fields['supplier'].queryset = Supplier.objects.filter(queryset).distinct()
         _bootstrapify(self.fields)
 
 
@@ -40,6 +50,10 @@ class PurchaseOrderItemForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        queryset = Q(is_active=True)
+        if self.instance.pk and self.instance.product_id:
+            queryset |= Q(pk=self.instance.product_id)
+        self.fields['product'].queryset = Product.objects.filter(queryset).distinct()
         _bootstrapify(self.fields)
 
 
@@ -71,6 +85,10 @@ class PurchaseRequestItemForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        queryset = Q(is_active=True)
+        if self.instance.pk and self.instance.product_id:
+            queryset |= Q(pk=self.instance.product_id)
+        self.fields['product'].queryset = Product.objects.filter(queryset).distinct()
         _bootstrapify(self.fields)
 
 

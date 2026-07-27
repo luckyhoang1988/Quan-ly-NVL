@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q, Sum
 from django.forms import inlineformset_factory
 
+from catalog.models import Product
 from purchasing.models import PurchaseOrder
 
 from .models import Grn, GrnItem
@@ -57,6 +58,13 @@ class GrnItemForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Chỉ cho chọn SKU đang active khi tạo/sửa GRN mới. Cộng thêm product hiện
+        # tại của instance (khi sửa) để không vỡ dòng GRN cũ nếu SKU đã ngừng
+        # hoạt động sau đó — cùng convention với GrnForm.po ở trên.
+        queryset = Q(is_active=True)
+        if self.instance.pk and self.instance.product_id:
+            queryset |= Q(pk=self.instance.product_id)
+        self.fields['product'].queryset = Product.objects.filter(queryset).distinct()
         _bootstrapify(self.fields)
 
 

@@ -8,7 +8,11 @@
         <h1 class="h4 mb-4 text-center">Đăng nhập</h1>
 
         {% if form.errors %}
-          <div class="alert alert-danger py-2">Tên đăng nhập hoặc mật khẩu không đúng.</div>
+          {% if form.rate_limited %}
+            <div class="alert alert-danger py-2">Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.</div>
+          {% else %}
+            <div class="alert alert-danger py-2">Tên đăng nhập hoặc mật khẩu không đúng.</div>
+          {% endif %}
         {% endif %}
 
         <form method="post">

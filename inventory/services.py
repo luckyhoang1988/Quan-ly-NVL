@@ -230,6 +230,13 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
     khi handoff đã REJECTED với ``BACK_TO_QC`` (batch giữ nguyên
     PENDING_RECEIPT có chủ đích — xem ``reject_handoff()`` — để QC tự điều
     chuyển tay sau đó).
+
+    Vị trí đích cũng bị chặn nếu thuộc kho STAGING/SCRAP — đối xứng với chặn
+    nguồn STAGING ở trên: cả hai kho hệ thống này chỉ được nạp hàng qua đúng
+    luồng QC (``start_qc``/``qc_pass``/``qc_fail``/``qc_partial_pass``/
+    ``reject_handoff``), không qua điều chuyển tay — nếu không, batch mới sẽ
+    mang ``status=ACTIVE`` trong Kho chờ/Kho phế, vi phạm invariant "hàng ở
+    STAGING/SCRAP luôn phải qua QC quyết định trước".
     """
     batch = Batch.objects.select_for_update().get(pk=batch.pk)
     if not to_location.is_active:
@@ -240,6 +247,11 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
         raise ValidationError(
             'Không thể điều chuyển thủ công batch đang ở Kho chờ — '
             'phải xử lý qua QC (Pass/Fail/Partial Pass).'
+        )
+    if to_location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
+        raise ValidationError(
+            f'Không thể điều chuyển thủ công vào kho "{to_location.warehouse}" — '
+            'Kho chờ/Kho phế chỉ được nạp hàng qua luồng QC.'
         )
     if batch.status == Batch.Status.PENDING_RECEIPT:
         handoff = getattr(batch, 'handoff', None)

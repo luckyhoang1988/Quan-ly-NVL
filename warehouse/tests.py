@@ -7,7 +7,9 @@ from django.urls import reverse
 from accounts.models import AuditLog
 
 from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
-from .services import deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse
+from .services import (
+    activate_warehouse, deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse,
+)
 
 User = get_user_model()
 
@@ -116,6 +118,7 @@ class LocationCrudTest(TestCase):
             action=AuditLog.Action.CREATE, target_id=str(loc.pk)).exists())
 
     def test_TC_WM_02_003_toggle_active_flips_flag_and_audits(self):
+        Location.objects.create(warehouse=self.warehouse, code='A-01')  # đủ 2 vị trí active để B-01 khoá được
         loc = Location.objects.create(warehouse=self.warehouse, code='B-01')
         self.client.post(reverse('warehouse:location_toggle_active', args=[self.warehouse.pk, loc.pk]))
         loc.refresh_from_db()
@@ -125,6 +128,25 @@ class LocationCrudTest(TestCase):
         self.assertTrue(loc.is_active)
         self.assertEqual(
             AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_id=str(loc.pk)).count(), 2)
+
+    def test_TC_WM_02_005_cannot_deactivate_last_active_location(self):
+        """Bug fix: khoá hết vị trí active của 1 kho làm get_default_location()
+        vỡ ở QC/stocktake sau đó — chặn ngay tại đây thay vì để lỗi trồi lên
+        lúc chạy 1 luồng khác không liên quan."""
+        loc = Location.objects.create(warehouse=self.warehouse, code='B-01')
+        response = self.client.post(
+            reverse('warehouse:location_toggle_active', args=[self.warehouse.pk, loc.pk]), follow=True)
+        loc.refresh_from_db()
+        self.assertTrue(loc.is_active)
+        messages = list(response.context['messages'])
+        self.assertTrue(any('cuối cùng' in str(m) for m in messages))
+
+    def test_TC_WM_02_006_can_deactivate_when_another_active_location_remains(self):
+        Location.objects.create(warehouse=self.warehouse, code='A-01')
+        loc = Location.objects.create(warehouse=self.warehouse, code='B-01')
+        self.client.post(reverse('warehouse:location_toggle_active', args=[self.warehouse.pk, loc.pk]))
+        loc.refresh_from_db()
+        self.assertFalse(loc.is_active)
 
     def test_TC_WM_02_004_non_manager_forbidden(self):
         self.client.force_login(self.staff)
@@ -208,6 +230,34 @@ class WarehouseTypeSingletonTest(TestCase):
         self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[new.pk]))
         old.refresh_from_db()
         self.assertFalse(old.is_active)
+
+    def test_activate_second_staging_rejected_by_service(self):
+        Warehouse.objects.create(code='KHO-STG1', name='Kho chờ 1', warehouse_type=Warehouse.WarehouseType.STAGING)
+        old = Warehouse.objects.create(
+            code='KHO-STG2', name='Kho chờ 2', warehouse_type=Warehouse.WarehouseType.STAGING, is_active=False)
+        with self.assertRaises(ValidationError):
+            activate_warehouse(old)
+        old.refresh_from_db()
+        self.assertFalse(old.is_active)
+
+    def test_activate_second_staging_rejected_by_view_no_500(self):
+        Warehouse.objects.create(code='KHO-STG1', name='Kho chờ 1', warehouse_type=Warehouse.WarehouseType.STAGING)
+        old = Warehouse.objects.create(
+            code='KHO-STG2', name='Kho chờ 2', warehouse_type=Warehouse.WarehouseType.STAGING, is_active=False)
+        response = self.client.post(
+            reverse('warehouse:warehouse_activate', args=[old.pk]), follow=True)
+        self.assertEqual(response.status_code, 200)
+        old.refresh_from_db()
+        self.assertFalse(old.is_active)
+        messages = list(response.context['messages'])
+        self.assertTrue(any('đang hoạt động' in str(m) for m in messages))
+
+    def test_activate_ok_when_no_other_active_of_same_type(self):
+        old = Warehouse.objects.create(
+            code='KHO-STG1', name='Kho chờ 1', warehouse_type=Warehouse.WarehouseType.STAGING, is_active=False)
+        activate_warehouse(old)
+        old.refresh_from_db()
+        self.assertTrue(old.is_active)
 
     def test_warehouse_type_disabled_on_update(self):
         warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')

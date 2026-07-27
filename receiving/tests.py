@@ -452,6 +452,14 @@ class GrnViewTest(TestCase):
         response = self.client.post(reverse('receiving:grn_create'), self._create_payload())
         self.assertEqual(response.status_code, 403)
 
+    def test_TC_GRN_VIEW_001_003b_inactive_product_rejected_in_item_form(self):
+        """Bug fix: SKU đã is_active=False không được chọn cho dòng GRN mới."""
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        response = self.client.post(reverse('receiving:grn_create'), self._create_payload())
+        self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không tạo GRN
+        self.assertFalse(Grn.objects.filter(supplier=self.supplier).exists())
+
     def test_TC_GRN_VIEW_001_003_staff_can_save_draft(self):
         response = self.client.post(reverse('receiving:grn_create'), self._create_payload())
         grn = Grn.objects.get(supplier=self.supplier)

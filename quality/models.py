@@ -9,8 +9,25 @@ category sản phẩm) — không FK cứng từ ``QcInspectionItem`` vì FSD gh
 Transaction QC PASS/FAIL/PARTIAL_PASS (đổi status GRN, tạo Batch/GrnReturn, cập
 nhật Inventory) là logic nghiệp vụ — CHƯA cài ở đây, chỉ model.
 """
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
+
+MAX_IMAGE_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
+ALLOWED_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+
+
+def validate_image_upload(file):
+    """Giới hạn dung lượng + phần mở rộng cho ảnh QC upload (evidence/tham chiếu).
+
+    ``ImageField`` mặc định của Django chỉ xác nhận file mở được bằng Pillow
+    (đúng là ảnh), không giới hạn size hay whitelist phần mở rộng tường minh —
+    thiếu 2 thứ này thì 1 ảnh hợp lệ nhưng cực lớn vẫn được chấp nhận.
+    """
+    if file.size > MAX_IMAGE_UPLOAD_SIZE:
+        raise ValidationError('Dung lượng ảnh không được vượt quá 5MB.')
+    if not file.name.lower().endswith(ALLOWED_IMAGE_EXTENSIONS):
+        raise ValidationError('Chỉ chấp nhận ảnh định dạng JPG, PNG, WEBP hoặc GIF.')
 
 
 class QcCriteria(models.Model):
@@ -23,7 +40,8 @@ class QcCriteria(models.Model):
     fail_rule = models.CharField(max_length=255, blank=True, verbose_name='Điều kiện không đạt')
     reference_image = models.ImageField(
         upload_to='qc_criteria_ref/%Y/%m/', blank=True, null=True, verbose_name='Ảnh tham chiếu',
-        help_text='Ảnh mẫu minh hoạ tiêu chuẩn (vd: màu sắc đạt, seal integrity đạt).',
+        help_text='Ảnh mẫu minh hoạ tiêu chuẩn (vd: màu sắc đạt, seal integrity đạt). Tối đa 5MB, JPG/PNG/WEBP/GIF.',
+        validators=[validate_image_upload],
     )
     is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
@@ -74,6 +92,12 @@ class QcInspection(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            # Khớp đúng WHERE clause của overdue_inspections() (SLA quét
+            # PENDING_QC quá hạn) — bảng chỉ tăng dần, không có index này thì
+            # mỗi lần grn_list load là 1 full table scan.
+            models.Index(fields=['status', 'started_at']),
+        ]
         verbose_name = 'Phiếu kiểm tra QC'
         verbose_name_plural = 'Phiếu kiểm tra QC'
 
@@ -115,7 +139,8 @@ class QcInspectionItem(models.Model):
     notes = models.TextField(blank=True, verbose_name='Ghi chú')
     image = models.ImageField(
         upload_to='qc_evidence/%Y/%m/', blank=True, null=True, verbose_name='Ảnh evidence',
-        help_text='Ảnh evidence thực tế lúc kiểm (FR-QC-06).',
+        help_text='Ảnh evidence thực tế lúc kiểm (FR-QC-06). Tối đa 5MB, JPG/PNG/WEBP/GIF.',
+        validators=[validate_image_upload],
     )
 
     class Meta:

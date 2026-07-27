@@ -90,3 +90,24 @@ def latest_approval_for(target):
         .order_by('-submitted_at')
         .first()
     )
+
+
+def latest_approvals_for(model_class, pks):
+    """Bản batch của ``latest_approval_for`` — 1 query cho nhiều ``target`` cùng
+    model, tránh N+1 khi hiển thị danh sách (vd. các ``GrnReturn`` của 1 GRN ở
+    ``grn_detail``). Trả dict ``{str(pk): Approval mới nhất}``; pk không có
+    Approval nào thì vắng mặt trong dict (dùng ``.get(...)`` ở nơi gọi).
+    """
+    pks = [str(pk) for pk in pks if pk is not None]
+    if not pks:
+        return {}
+    content_type = ContentType.objects.get_for_model(model_class)
+    approvals = (
+        Approval.objects.filter(target_type=content_type, target_id__in=pks)
+        .select_related('submitted_by', 'decided_by')
+        .order_by('-submitted_at')
+    )
+    latest = {}
+    for approval in approvals:
+        latest.setdefault(approval.target_id, approval)
+    return latest

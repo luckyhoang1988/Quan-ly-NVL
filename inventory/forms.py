@@ -4,7 +4,7 @@ form ở đây chỉ thu thập input, cùng convention với ``shipping.forms``
 """
 from django import forms
 
-from warehouse.models import Location
+from warehouse.models import Location, Warehouse
 
 from .models import Batch
 
@@ -36,7 +36,9 @@ class StockTransferForm(forms.Form):
         label='Batch nguồn',
     )
     to_location = forms.ModelChoiceField(
-        queryset=Location.objects.filter(is_active=True).select_related('warehouse'),
+        queryset=Location.objects.filter(
+            is_active=True, warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
+        ).select_related('warehouse'),
         label='Vị trí đích',
     )
     qty = forms.IntegerField(min_value=1, label='Số lượng chuyển')

@@ -740,3 +740,193 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   that isn't run through a Django `Form`/`ModelForm` (which validates for free) needs its own explicit
   try/except or a safe-parse helper — Django never validates raw `request.GET` access, so a bare `int()` call
   on it is a standing crash-on-bad-input bug, not just a style nitpick.
+- **Bug fix 2026-07-27 (second pass): four more gaps found via a second manual audit of the same "form
+  queryset vs. service re-validation" and "singleton/last-active" classes of bug already documented above**:
+  1. `warehouse.views.warehouse_activate` set `is_active=True` directly with no check at all — STAGING/SCRAP
+     have a DB-level `unique_active_staging_scrap_warehouse` constraint (max 1 active/type, see the Phase-A
+     `Warehouse` docstring), so re-activating an old STAGING/SCRAP warehouse while another of the same type
+     was already active raised an unhandled `IntegrityError` (500) instead of a friendly message — the
+     mirror-image gap of `warehouse.services.deactivate_warehouse` (BR-WM-006), which already existed and
+     was tested, but had no `activate_warehouse` counterpart. Fixed by adding
+     `warehouse.services.activate_warehouse(warehouse, actor=None, ip_address=None)` — checks for another
+     active warehouse of the same STAGING/SCRAP type first and raises `ValidationError` (caught by the view
+     and shown via `messages.error`, same pattern as `warehouse_deactivate`) before setting `is_active=True`.
+     Tests: `test_activate_second_staging_rejected_by_service`/`_by_view_no_500`/
+     `test_activate_ok_when_no_other_active_of_same_type` in `warehouse/tests.py::WarehouseTypeSingletonTest`.
+  2. `inventory.services.transfer_stock` blocked STAGING as a **source** (hàng ở Kho chờ phải qua QC) but had
+     no equivalent check on the **destination** — a manual transfer could move a batch into a STAGING or
+     SCRAP location, landing it there with `status=ACTIVE` (since `transfer_stock` always sets
+     `new_status=Batch.Status.ACTIVE`), which violates the core invariant this file documents repeatedly:
+     "hàng ở STAGING/SCRAP luôn phải qua QC quyết định trước" — STAGING is only meant to be populated by
+     `start_qc()`, and SCRAP only by `qc_fail`/`qc_partial_pass`/`reject_handoff(..., TO_SCRAP)`. Fixed by
+     adding a symmetric check — `to_location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN` raises
+     `ValidationError` — right after the existing source-STAGING check in `transfer_stock`, and narrowing
+     `inventory.forms.StockTransferForm.to_location`'s queryset to
+     `warehouse__warehouse_type=Warehouse.WarehouseType.MAIN` (same "form filters, service re-validates"
+     pairing used everywhere else in this doc). Tests:
+     `test_TC_INV_TRF_016_staging_destination_rejected`/`test_TC_INV_TRF_017_scrap_destination_rejected` in
+     `inventory/tests.py::StockTransferServiceTest`.
+  3. `PurchaseOrderForm.supplier`, `PurchaseOrderItemForm`/`PurchaseRequestItemForm`/`GrnItemForm`/
+     `GinItemForm`'s `product` fields all used the Django-default unfiltered queryset (`fields = [...]` with
+     no `__init__` override), so a `Supplier` with `status` `INACTIVE`/`SUSPENDED` or a `Product` with
+     `is_active=False` could still be picked when creating a **new** PO/PR/GRN/GIN — none of these four forms
+     had ever been given the `is_active=True` filtering that e.g. `GrnForm.po` (valid PO statuses) or
+     `PurchaseRequestForm.warehouse`/`assigned_to` already had. Fixed identically in all four: restrict the
+     queryset to active (`Supplier.Status.ACTIVE` / `Product.is_active=True`) **OR** the instance's current
+     FK value (`Q(...) | Q(pk=self.instance.supplier_id)`, mirroring `GrnForm.po`'s exact pattern) so editing
+     an existing PO/PR/GRN/GIN whose supplier/product went inactive *after* creation still round-trips
+     correctly instead of silently dropping the field's initial value. Tests:
+     `test_TC_PUR_001_010_inactive_supplier_rejected_on_create`/`_011_inactive_product_rejected_on_create_item`/
+     `_012_update_keeps_existing_inactive_supplier_selectable` (`purchasing/tests.py::PurchaseOrderCrudTest`),
+     `test_TC_PR_001_003b_inactive_product_rejected_in_item_form` (`PurchaseRequestCrudTest`),
+     `test_TC_GRN_VIEW_001_003b_inactive_product_rejected_in_item_form` (`receiving/tests.py::GrnViewTest`),
+     `test_TC_GIN_VIEW_001_002b_inactive_product_rejected_in_item_form` (`shipping/tests.py::GinViewTest`).
+  4. `warehouse.views.location_toggle_active` allowed deactivating every `Location` in a warehouse down to
+     zero active ones — `warehouse.services.get_default_location()` (used by `start_qc`/QC FAIL/PARTIAL_PASS
+     for Kho chờ/Kho phế, and by `stocktake.services.apply_adjustment` for a kiểm-toàn-kho session on *any*
+     MAIN warehouse) requires at least 1 active location and already raised a clear `ValidationError` when
+     none exists — but that error only surfaced later, inside an unrelated QC/stocktake flow, instead of being
+     prevented at the point someone actually clicked "khoá" on the last one. Fixed by adding a check in
+     `location_toggle_active`: before flipping an active location to inactive, query
+     `warehouse.locations.filter(is_active=True).exclude(pk=loc.pk).exists()` — if nothing else is active,
+     reject with `messages.error` instead of saving. Only guards the deactivate direction (reactivating is
+     always safe). Tests: `test_TC_WM_02_005_cannot_deactivate_last_active_location`/
+     `test_TC_WM_02_006_can_deactivate_when_another_active_location_remains`
+     (`warehouse/tests.py::LocationCrudTest`) — `test_TC_WM_02_003_toggle_active_flips_flag_and_audits` also
+     needed a second `Location` added to its setup, since it previously (accidentally) relied on being able to
+     deactivate a warehouse's *only* location, which the fix now blocks.
+  **General lesson carried forward from both audit passes**: the recurring bug shapes in this codebase are (a)
+  a service function trusting a form's queryset filter instead of re-asserting the same constraint itself, and
+  (b) a "there can be at most/at least N of X" invariant enforced in one direction (create) but not its mirror
+  (reactivate / deactivate-the-last-one) — when reviewing any new form or toggle-style view, check both
+  directions and check whether the service layer re-validates what the form merely filters.
+- **Bug fix 2026-07-27: two Low-severity gaps from the same review pass, both missing bounds on a numeric
+  input**:
+  1. `catalog.Product.holding_cost_rate` (% chi phí lưu kho/năm, dùng tính EOQ — FR-INV-05) had no upper-bound
+     validator — `ProductForm` exposes it as a plain `DecimalField`, so a value like `150.00` (150%) or a
+     negative rate was accepted at face value and would silently distort the EOQ formula's `H` term for any
+     SKU with a nonsensical rate. Fixed by adding `validators=[MinValueValidator(0), MaxValueValidator(100)]`
+     to the model field (`django.core.validators`) — `ModelForm` validation rejects out-of-range values before
+     `save()`, no view/service change needed since `ProductForm` already just calls `is_valid()`/`save()`.
+     Migration `catalog/migrations/0005_alter_product_holding_cost_rate.py` (state-only, no `ALTER TABLE` —
+     same shape as the `verbose_name`-only migrations described in the Frontend language convention section).
+     Tests: `test_TC_CAT_001_008_holding_cost_rate_over_100_rejected`/
+     `_009_holding_cost_rate_negative_rejected`/`_010_holding_cost_rate_100_accepted` (boundary value itself
+     must still be accepted) in `catalog/tests.py::ProductCrudTest`.
+  2. `quality.services.suggested_sample_qty`'s `FIXED`-sampling-method branch
+     (`return min(product.qc_sampling_value, qty_received)`) had no floor, unlike the `PERCENT` branch
+     (`max(1, min(...))`) — a `Product` configured with `qc_sampling_method=FIXED, qc_sampling_value=0`
+     produced a suggested sample size of 0 even when `qty_received > 0`, inconsistent with `PERCENT`'s
+     guarantee that any nonzero receipt always suggests sampling at least 1 unit. Display-only/non-blocking
+     per the function's own docstring (QC can still PASS/FAIL/PARTIAL without hitting the suggested sample
+     size), so this was a suggestion-quality gap, not a data-integrity one. Fixed by wrapping the `FIXED`
+     branch in the same `max(1, ...)` floor as `PERCENT`. Test:
+     `test_TC_QC_SAMPLE_004_fixed_zero_value_floors_at_1` in `quality/tests.py::SuggestedSampleQtyTest`.
+  **General lesson**: a numeric config field or derived suggestion that has a sibling code path with a bound
+  (another field's validator, another branch's floor/cap) should get the same bound by default unless there's
+  a stated reason it shouldn't — the asymmetry itself (one branch floors at 1, the other doesn't; one rate
+  field has no cap while similar percentage-shaped fields elsewhere do) is usually the tell that the bound was
+  simply never added, not that it was deliberately omitted.
+- **Bug fix 2026-07-27: sidebar links in `base.html` were gated by hardcoded role checks
+  (`user.role != 'STAFF'`, `user.role == 'ADMIN' or ... or user.role == 'STAFF'`) instead of `user.can()`,
+  and Purchase Request had no sidebar link at all**. `base.html` renders on every page (it's the layout shell,
+  not a per-view template), so a view can't just pass a permission flag into its own context the way other
+  pages do — added `accounts.context_processors.sidebar_permissions` (registered in `config/settings.py`
+  TEMPLATES, same pattern as the existing `accounts.context_processors.notifications` badge-count processor)
+  supplying `can_read_qc`/`can_read_opname`/`can_read_pr` via `user.can('read', <module>)` for every module
+  that exists in `accounts/permissions.py` `MODULES`. The old role-hardcoded checks happened to produce the
+  same result as `user.can()` for every role under the *default* `ROLE_PERMISSIONS` matrix — the bug only
+  surfaces once an admin uses "Phân quyền chi tiết" (`views.user_permission_edit`) to grant or revoke a
+  permission for one specific user: the sidebar, having no idea that override exists, still shows/hides the
+  link based on raw `role` alone, either exposing a dead link (403 on click) or hiding a link the user
+  actually has access to. Also added a "Yêu cầu mua hàng" sidebar link (`purchasing:pr_list`, gated
+  `can_read_pr`) — the route already existed but was previously only reachable via a tab inside `po_list.html`.
+  Left three sidebar gates **unchanged** on purpose: the "Phiếu chờ nhận hàng" (handoff) gate and the
+  "Quản trị" (user management/audit log) gate are role/department checks by design, not module checks —
+  `WarehouseHandoff` has no entry in `MODULES` (see §5 of the skill file: it deliberately uses a lighter
+  PENDING/ACCEPTED/REJECTED model, not `Approval`, so there's no `user.can('approve', ...)` fallback to hang
+  a context-processor flag off), and `accounts`'s own admin pages aren't part of the `MODULES` permission
+  matrix either. The "Tồn kho"/GRN/GIN links also stayed unconditional — every role has `read` on
+  `inventory`... except `inventory` isn't in `MODULES` at all (see the `inventory/views.py` docstring:
+  no dedicated Permission Matrix column, same as `warehouse`/`catalog`), and every role already has
+  `grn`/`gin` read by default, so gating them would add a flag with no actual behavior change. **General
+  lesson**: any permission check baked directly into `base.html` (or any template rendered outside a specific
+  view's own context) needs a context processor, not a per-view context variable — and it should call
+  `user.can()`/module-based logic wherever a `MODULES` entry exists for that link, falling back to
+  role/department checks only for the handful of things (handoff, admin pages, non-`MODULES` apps) that were
+  never given a `MODULES` entry in the first place. See §6 of `.claude/skills/wms-conventions/SKILL.md` for
+  the reusable pattern before adding the next gated sidebar link.
+- **Perf/SEC sweep 2026-07-27, from a pasted code-review list — 5 perf fixes + 2 SEC hardening items**:
+  1. `purchasing.views.po_list`'s `overdue_count` looped `sum(1 for po in orders if ...)` over the FULL
+     `orders` queryset **before** `paginate_queryset` sliced it — every page load fetched and iterated every
+     matching `PurchaseOrder` row in Python just to count `DELAYED` ones. `PurchaseOrder.delivery_status()`'s
+     logic (pure Python, no query) was ported to a DB-level `Q`/`F` filter (`orders.filter(Q(status=SENT,
+     expected_delivery_date__lt=today) | Q(status__in=[RECEIVED, CLOSED], received_at__gt=F(
+     'expected_delivery_date'))).count()`) so only a `COUNT(*)` runs, not a full row fetch — the two branches
+     must stay in sync with `delivery_status()` if that method's logic ever changes.
+  2. `receiving.views.grn_detail` called `latest_approval_for(ret)` (1 query each, `accounts/approvals.py`)
+     inside a `for ret in returns` loop — N+1 for GRNs with multiple `GrnReturn`s. Added
+     `accounts.approvals.latest_approvals_for(model_class, pks)` — same lookup batched into 1 query
+     (`target_id__in=[...]`, then picks the first/latest per `target_id` in Python since `Approval` has no
+     DISTINCT ON in a portable way) — returns `{str(pk): Approval}`, use `.get(str(pk))` at the call site. Use
+     this batch version instead of looping `latest_approval_for()` any time a list of objects (not a single
+     detail page) needs its latest `Approval` displayed.
+  3. `accounts.context_processors.notifications` ran 2 queries every page load (`unread_notification_count`
+     count + `recent_notifications` slice) — but `recent_notifications` was never actually used in any
+     template (the navbar bell only links to `notification_list`, a separate page with its own query). Deleted
+     `recent_notifications` entirely rather than optimizing it into 1 query — a query nobody reads is waste at
+     any query count. Don't reintroduce it without also wiring it into `base.html`'s bell dropdown.
+  4. `accounts.views.audit_log_list` rebuilt `module_choices`/`actor_choices` (both `AuditLog.objects...
+     .distinct()` over the **entire**, ever-growing `AuditLog` table) on every request just to populate 2
+     filter `<select>`s. Cached both for 300s via Django's low-level cache API (`django.core.cache.cache`) —
+     this is the project's **first use of Django's cache framework**; it works with zero config because
+     Django's default backend (no `CACHES` setting in `config/settings.py`) is `LocMemCache`, an in-process
+     memory cache with no Redis/Memcached dependency, consistent with the "no Celery/Redis until a backlog
+     item needs it" stance. A stale filter dropdown for up to 5 minutes is acceptable for an admin lookup page;
+     don't reach for this pattern on data where staleness would be incorrect, only for expensive-but-cosmetic
+     aggregates like this.
+  5. `quality.services.overdue_inspections()` (`WHERE status='PENDING_QC' AND started_at < threshold`, called
+     fresh on every `receiving.views.grn_list` page load) had no supporting index — `QcInspection` had no
+     index on `status`/`started_at` at all, so this was a full table scan every time, and the table only grows
+     (QC inspections are never deleted). Fixed at the DB layer, not with caching (this data changes on every
+     QC decision, so caching would trade correctness for speed unnecessarily): added
+     `models.Index(fields=['status', 'started_at'])` to `QcInspection.Meta` (migration
+     `quality/migrations/0007_qcinspection_quality_qci_status_bdb30c_idx.py`), matching the exact WHERE clause.
+     **General lesson for all 5**: don't reach for caching as a default fix — check first whether the query is
+     simply missing an index (fix #5, a correctness-preserving DB fix) or is fetching more than the caller
+     needs (fixes #1/#2/#3, app-level waste with no caching required at all); reserve caching (fix #4) for
+     values that are expensive to compute *and* tolerate staleness.
+  6. **[SEC] `quality.models.QcCriteria.reference_image`/`QcInspectionItem.image`** (`ImageField`) had no
+     explicit size or extension limit — Django's `ImageField` only verifies the upload is a real image via
+     Pillow, it doesn't cap file size or whitelist extensions, so a huge (but valid) image could be uploaded
+     unchecked. Added `quality.models.validate_image_upload` (shared model validator, 5MB cap +
+     `.jpg/.jpeg/.png/.webp/.gif` whitelist — GIF included because the existing test suite's image fixtures
+     use a minimal 1x1 GIF, not because GIF was a specific requirement) applied via `validators=[...]` on both
+     fields (migration `quality/migrations/0008_alter_qccriteria_reference_image_and_more.py`). Any future
+     `ImageField`/`FileField` added anywhere in the project should reuse or mirror this validator rather than
+     relying on `ImageField`'s bare Pillow-only check.
+  7. **[SEC] no login rate-limiting** — `accounts.forms.LoginForm` (used by `django.contrib.auth.views.
+     LoginView` at `/login/`) had no brute-force protection. Added an IP-keyed counter using the same
+     zero-config `LocMemCache` from fix #4 (no new dependency like `django-ratelimit`/`django-axes`):
+     `LoginForm.clean()` checks `cache.get(f'login_rate_limit:{ip}')` against
+     `LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5` *before* calling `super().clean()` (which does the real
+     `authenticate()`); a failed attempt increments the counter with a `LOGIN_RATE_LIMIT_WINDOW_SECONDS = 900`
+     (15 min) TTL, a successful login calls `cache.delete(...)` to reset it. `registration/login.html`
+     previously showed one hardcoded generic message ("Tên đăng nhập hoặc mật khẩu không đúng.") for **any**
+     form error, by design (avoids leaking which of username/password was wrong) — rather than reusing that
+     path for the rate-limit case too (which would confuse a user with the *correct* password into thinking
+     they mistyped it), added a `LoginForm.rate_limited` boolean flag (set in `clean()`, not string-matched
+     from the error message) that the template checks to show a distinct "thử lại sau 15 phút" message instead.
+     **Test-isolation trap**: `LocMemCache` is a process-global singleton, not reset between Django test
+     methods the way the DB is (transaction rollback) — `accounts.tests.LoginAuthTest` (which posts wrong
+     passwords in several test methods, all from the test client's fixed `127.0.0.1`) needed an explicit
+     `cache.clear()` in `setUp()`, otherwise failed-login counts silently accumulate *across* test methods (and
+     would eventually trip the rate limit on an unrelated test, order-dependently) since nothing else clears
+     that cache between tests. Any future test touching a view gated by this cache-counter pattern needs the
+     same `setUp()` guard. Tests: `TC-USER-03-007`/`008` (`accounts/tests.py::LoginAuthTest`).
+  Deliberately left alone in this same pass: `config/settings.py` missing `SECURE_SSL_REDIRECT`/
+  `SESSION_COOKIE_SECURE`/`CSRF_TRUSTED_ORIGINS`/etc. and `/media/` being unauthenticated when `DEBUG=True` —
+  already reviewed and intentionally deferred (see the memory note from that review), since there is still no
+  Docker/deploy target yet for those settings to protect; re-confirmed still true on 2026-07-27 (no
+  `Dockerfile` in the repo) rather than re-fixing speculatively. Load/stress testing was also explicitly
+  scoped out of this pass (needs real infrastructure to be meaningful, not a code change).

@@ -20,7 +20,7 @@
       <div class="col-auto">
         <label class="form-label" for="category">Danh mục</label>
         <select name="category" id="category" class="form-select" onchange="this.form.submit()">
-          <option value="">-- Tất cả category --</option>
+          <option value="">-- Tất cả danh mục --</option>
           {% for cat in categories %}
             <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
           {% endfor %}

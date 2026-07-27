@@ -515,6 +515,15 @@ class GinViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('login'), response.url)
 
+    def test_TC_GIN_VIEW_001_002b_inactive_product_rejected_in_item_form(self):
+        """Bug fix: SKU đã is_active=False không được chọn cho dòng GIN mới."""
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('shipping:gin_create'), self._create_payload())
+        self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không tạo GIN
+        self.assertFalse(Gin.objects.filter(warehouse=self.warehouse).exists())
+
     def test_TC_GIN_VIEW_001_002_staff_can_create_gin(self):
         self.client.force_login(self.staff)
         response = self.client.post(reverse('shipping:gin_create'), self._create_payload())

@@ -152,6 +152,10 @@ DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt 
 5. Template: hiện `latest_approval_for(obj)` (badge trạng thái PENDING/APPROVED/REJECTED + `submitted_by`/
    `submitted_at`/`decided_by`/`decided_at`/`decision_note`) làm khung thời gian nộp/duyệt cho nhân viên tra
    cứu — không cần tạo bảng lịch sử riêng, `Approval` tự đóng vai trò đó cho transition liên quan.
+   **Hiện danh sách nhiều `obj` cùng lúc (không phải 1 trang detail)**: đừng gọi `latest_approval_for()`
+   trong vòng lặp (N+1) — dùng `accounts.approvals.latest_approvals_for(model_class, pks)` (1 query, trả
+   `{str(pk): Approval}`, `.get(str(pk))` ở nơi gọi). Bug thật: `receiving.views.grn_detail` từng lặp qua từng
+   `GrnReturn` gọi `latest_approval_for` riêng lẻ — vá 2026-07-27, xem CLAUDE.md.
 6. Đừng quên: nếu `obj` có hành động "Hủy" tách biệt (khác với từ chối duyệt), hàm hủy phải tự
    `Approval.objects.filter(target_type=..., target_id=..., status=PENDING).update(status=REJECTED, ...)` để
    không mồ côi 1 `Approval` đang chờ xử lý trên 1 `obj` đã bị hủy (xem `receiving.services.cancel_grn`).
@@ -220,3 +224,29 @@ pattern nhẹ hơn — xem `inventory.models.WarehouseHandoff` + `inventory.serv
    để phục vụ nhánh từ chối ở bước 4, mở rộng guard ngay tại primitive đó (không viết lại logic tách batch
    riêng) — xem `move_batch_qty`'s status-nguồn guard được mở rộng thêm `PENDING_RECEIPT` cho
    `reject_handoff(..., destination=TO_SCRAP)`.
+
+## 6. Gate link sidebar (`base.html`) bằng `user.can()` qua context processor, KHÔNG hardcode role
+
+`accounts/templates/base.html` render ở mọi trang (nằm trong `layout-wrapper`, không phải 1 view riêng), nên
+không thể truyền flag quyền thủ công từng view như các trang khác — phải dùng **context processor**, đúng
+pattern `accounts.context_processors.notifications` (badge thông báo) đã có sẵn. Khi thêm/sửa 1 link sidebar
+cần gate theo quyền:
+
+1. Nếu module đó đã có trong `accounts/permissions.py` `MODULES` (`grn`/`gin`/`opname`/`qc`/`pr`/`po`/
+   `reports`) — thêm 1 key vào `accounts.context_processors.sidebar_permissions()` kiểu
+   `'can_read_<module>': user.can('read', '<module>')`, rồi gate link bằng `{% if can_read_<module> %}` trong
+   `base.html`. **Không** viết `user.role == 'X'`/liệt kê role trực tiếp trong template — role cứng trùng kết
+   quả với ma trận mặc định (`ROLE_PERMISSIONS`) nhưng bỏ qua quyền chi tiết theo-user (trang "Phân quyền chi
+   tiết", `views.user_permission_edit` cho phép admin cấp/thu hồi quyền lệch khỏi role mặc định) — 1 user bị
+   thu hồi quyền vẫn thấy link rồi 403, hoặc được cấp thêm quyền mà sidebar vẫn giấu link.
+2. Nếu module đó **không** có trong `MODULES` (vd `inventory`/`warehouse`/`catalog` — theo BACKLOG Permission
+   Matrix không có cột riêng, mọi user đăng nhập đều dùng được) hoặc dùng model bàn giao nhẹ kiểu
+   `WarehouseHandoff` (không có module trong `MODULES`, xem mục 5 ở trên) — **giữ nguyên** kiểu check
+   role/department/`is_superuser` trực tiếp trong template, đây không phải là điều cần sửa; đừng cưỡng ép
+   thêm 1 module giả vào `MODULES` chỉ để gate 1 sidebar link.
+3. `sidebar_permissions()` phải tự `return {}` khi `not request.user.is_authenticated` (cùng rule
+   `notifications()` đã áp dụng) — context processor chạy trên mọi request kể cả trang login.
+
+Đã áp dụng cho "Tiêu chuẩn QC" (`can_read_qc`) và "Kiểm kê" (`can_read_opname`); "Yêu cầu mua hàng" (PR) được
+thêm link sidebar mới cùng lúc (`can_read_pr`) — trước đó PR có route (`purchasing:pr_list`) nhưng không có
+link, chỉ vào được qua tab trong `po_list.html`.

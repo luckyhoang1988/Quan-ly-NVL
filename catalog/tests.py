@@ -71,6 +71,31 @@ class ProductCrudTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(Product.objects.filter(product_code='NVL-0001').exists())
 
+    def test_TC_CAT_001_008_holding_cost_rate_over_100_rejected(self):
+        response = self.client.post(
+            reverse('catalog:product_create'),
+            self._create_payload(holding_cost_rate='150.00'),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Product.objects.filter(product_code='NVL-0001').exists())
+
+    def test_TC_CAT_001_009_holding_cost_rate_negative_rejected(self):
+        response = self.client.post(
+            reverse('catalog:product_create'),
+            self._create_payload(holding_cost_rate='-1.00'),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Product.objects.filter(product_code='NVL-0001').exists())
+
+    def test_TC_CAT_001_010_holding_cost_rate_100_accepted(self):
+        response = self.client.post(
+            reverse('catalog:product_create'),
+            self._create_payload(holding_cost_rate='100.00'),
+        )
+        product = Product.objects.get(product_code='NVL-0001')
+        self.assertRedirects(response, reverse('catalog:product_list'))
+        self.assertEqual(product.holding_cost_rate, 100)
+
     def test_TC_CAT_001_007_update_and_audit(self):
         product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         response = self.client.post(

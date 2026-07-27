@@ -622,6 +622,29 @@ class StockTransferServiceTest(TestCase):
         with self.assertRaises(ValidationError):
             transfer_stock(batch=batch, to_location=self.location2, qty=5, actor=self.user)
 
+    def test_TC_INV_TRF_016_staging_destination_rejected(self):
+        """Bug fix: điều chuyển tay vào Kho chờ (STAGING) phải bị chặn — hàng vào
+        STAGING chỉ được nạp qua ``start_qc()``, không qua điều chuyển tay."""
+        staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        staging_location = Location.objects.create(warehouse=staging_warehouse, code='A-01')
+        batch = self._batch(qty=10)
+        with self.assertRaises(ValidationError):
+            transfer_stock(batch=batch, to_location=staging_location, qty=5, actor=self.user)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        self.assertEqual(batch.qty_available, 10)
+
+    def test_TC_INV_TRF_017_scrap_destination_rejected(self):
+        """Bug fix: điều chuyển tay vào Kho phế (SCRAP) phải bị chặn — hàng vào
+        SCRAP chỉ được nạp qua QC (qc_fail/qc_partial_pass/reject_handoff)."""
+        scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        scrap_location = Location.objects.create(warehouse=scrap_warehouse, code='A-01')
+        batch = self._batch(qty=10)
+        with self.assertRaises(ValidationError):
+            transfer_stock(batch=batch, to_location=scrap_location, qty=5, actor=self.user)
+
 
 class StockTransferPendingReceiptGuardTest(TestCase):
     """Bug fix (mục 6): ``transfer_stock`` chặn STAGING nhưng trước đây không

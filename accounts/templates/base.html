@@ -44,10 +44,17 @@
 
         <li class="sidebar-section-title">Mua hàng</li>
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
+          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' and request.resolver_match.url_name != 'pr_list' and request.resolver_match.url_name != 'pr_create' and request.resolver_match.url_name != 'pr_detail' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
             <i class="bi bi-cart-check"></i> Đơn mua hàng
           </a>
         </li>
+        {% if can_read_pr %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'pr_list' %}active{% endif %}" href="{% url 'purchasing:pr_list' %}">
+            <i class="bi bi-file-earmark-text"></i> Yêu cầu mua hàng
+          </a>
+        </li>
+        {% endif %}
 
         <li class="sidebar-section-title">Nhập kho &amp; QC</li>
         <li class="nav-item">
@@ -55,7 +62,7 @@
             <i class="bi bi-clipboard-check"></i> GRN
           </a>
         </li>
-        {% if user.is_superuser or user.role != 'STAFF' %}
+        {% if can_read_qc %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'quality' %}active{% endif %}" href="{% url 'quality:qc_criteria_list' %}">
             <i class="bi bi-patch-check"></i> Tiêu chuẩn QC
@@ -81,7 +88,7 @@
             <i class="bi bi-box-arrow-up"></i> GIN
           </a>
         </li>
-        {% if user.is_superuser or user.role == 'ADMIN' or user.role == 'MANAGER' or user.role == 'STAFF' %}
+        {% if can_read_opname %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'stocktake' %}active{% endif %}" href="{% url 'stocktake:so_list' %}">
             <i class="bi bi-clipboard-data"></i> Kiểm kê

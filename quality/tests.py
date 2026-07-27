@@ -21,7 +21,7 @@ from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Location, Warehouse
 
 from .forms import QcResultForm
-from .models import QcCriteria, QcInspection, QcInspectionItem
+from .models import QcCriteria, QcInspection, QcInspectionItem, validate_image_upload
 from .services import (
     _get_staging_batch,
     overdue_inspections,
@@ -113,6 +113,12 @@ class SuggestedSampleQtyTest(TestCase):
     def test_TC_QC_SAMPLE_003_zero_qty_received_returns_zero(self):
         product = Product.objects.create(product_code='NVL-Z', name='Muối', uom='kg')
         self.assertEqual(suggested_sample_qty(product, 0), 0)
+
+    def test_TC_QC_SAMPLE_004_fixed_zero_value_floors_at_1(self):
+        product = Product.objects.create(
+            product_code='NVL-F0', name='Muối tinh', uom='kg',
+            qc_sampling_method=Product.SamplingMethod.FIXED, qc_sampling_value=0)
+        self.assertEqual(suggested_sample_qty(product, 100), 1)
 
 
 class QcServiceTestBase(TestCase):
@@ -796,6 +802,28 @@ class QcImageUploadTest(QcServiceTestBase):
         self.assertRedirects(response, self._result_url())
         item = QcInspectionItem.objects.get(inspection=self.inspection)
         self.assertFalse(item.image)
+
+
+class ImageUploadValidatorTest(TestCase):
+    """SEC: ``validate_image_upload`` (giới hạn dung lượng + phần mở rộng ảnh
+    QC evidence/reference) — ``ImageField`` mặc định của Django chỉ xác nhận
+    file mở được bằng Pillow, không tự giới hạn size/whitelist type.
+    """
+
+    def test_TC_QC_IMG_004_oversized_image_rejected(self):
+        big_content = SMALL_GIF + b'0' * (6 * 1024 * 1024)
+        image = SimpleUploadedFile('big.gif', big_content, content_type='image/gif')
+        with self.assertRaises(ValidationError):
+            validate_image_upload(image)
+
+    def test_TC_QC_IMG_005_disallowed_extension_rejected(self):
+        image = SimpleUploadedFile('evidence.bmp', SMALL_GIF, content_type='image/bmp')
+        with self.assertRaises(ValidationError):
+            validate_image_upload(image)
+
+    def test_TC_QC_IMG_006_allowed_extension_and_size_passes(self):
+        image = SimpleUploadedFile('evidence.gif', SMALL_GIF, content_type='image/gif')
+        validate_image_upload(image)
 
 
 class QcCriteriaCrudTest(TestCase):

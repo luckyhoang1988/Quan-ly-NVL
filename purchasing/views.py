@@ -12,8 +12,9 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from accounts.approvals import latest_approval_for
 from accounts.audit import client_ip, log_action
@@ -157,8 +158,18 @@ def po_list(request):
     q = request.GET.get('q', '').strip()
     if q:
         orders = orders.filter(po_no__icontains=q)
-    overdue_count = sum(
-        1 for po in orders if (po.delivery_status() or {}).get('code') == 'DELAYED')
+    # Đếm ở DB (count()) thay vì lặp Python trên toàn bộ orders trước paginate —
+    # tránh full scan/fetch hết mọi PurchaseOrder khớp filter chỉ để đếm.
+    # Logic phải khớp PurchaseOrder.delivery_status() ở model.
+    overdue_count = orders.filter(
+        Q(status=PurchaseOrder.Status.SENT,
+          expected_delivery_date__isnull=False,
+          expected_delivery_date__lt=timezone.localdate())
+        | Q(status__in=[PurchaseOrder.Status.RECEIVED, PurchaseOrder.Status.CLOSED],
+            expected_delivery_date__isnull=False,
+            received_at__isnull=False,
+            received_at__gt=F('expected_delivery_date'))
+    ).count()
     page_obj, page_size = paginate_queryset(request, orders)
     return render(request, 'purchasing/po_list.html', {
         'orders': page_obj,

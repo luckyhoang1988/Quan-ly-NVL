@@ -145,6 +145,43 @@ class PurchaseOrderCrudTest(TestCase):
         po.refresh_from_db()
         self.assertEqual(po.po_no, 'PO-0001')
 
+    def test_TC_PUR_001_010_inactive_supplier_rejected_on_create(self):
+        """Bug fix: NCC status khác ACTIVE (INACTIVE/SUSPENDED) không được chọn khi tạo PO mới."""
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        response = self.client.post(reverse('purchasing:po_create'), self._payload())
+        self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không tạo PO
+        self.assertFalse(PurchaseOrder.objects.exists())
+
+    def test_TC_PUR_001_011_inactive_product_rejected_on_create_item(self):
+        """Bug fix: SKU đã is_active=False không được chọn cho dòng PO mới."""
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        response = self.client.post(reverse('purchasing:po_create'), self._payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PurchaseOrder.objects.exists())
+
+    def test_TC_PUR_001_012_update_keeps_existing_inactive_supplier_selectable(self):
+        """Sửa PO cũ không vỡ nếu NCC/SKU của nó đã chuyển inactive sau khi PO tạo."""
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('10000.00'))
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        response = self.client.post(
+            reverse('purchasing:po_update', args=[po.pk]),
+            self._payload(**{
+                'items-INITIAL_FORMS': '1',
+                'items-0-id': item.pk,
+                'items-0-qty_ordered': 20,
+            }),
+        )
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
+        item.refresh_from_db()
+        self.assertEqual(item.qty_ordered, 20)
+
 
 class PoNoGenerationTest(TestCase):
     """``PurchaseOrder.generate_po_no``: sinh mã tự động PO-XXXX tăng dần toàn hệ
@@ -644,6 +681,14 @@ class PurchaseRequestCrudTest(TestCase):
     def test_TC_PR_001_003_requires_at_least_one_item(self):
         payload = self._payload(**{'items-0-product': '', 'items-0-qty_requested': ''})
         response = self.client.post(reverse('purchasing:pr_create'), payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PurchaseRequest.objects.exists())
+
+    def test_TC_PR_001_003b_inactive_product_rejected_in_item_form(self):
+        """Bug fix: SKU đã is_active=False không được chọn cho dòng PR mới."""
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
         self.assertEqual(response.status_code, 200)
         self.assertFalse(PurchaseRequest.objects.exists())
 

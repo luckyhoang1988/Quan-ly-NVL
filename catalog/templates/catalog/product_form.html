@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}{% if mode == 'create' %}Tạo Product{% else %}Sửa Product{% endif %} — NVL/WMS{% endblock %}
+{% block title %}{% if mode == 'create' %}Tạo sản phẩm{% else %}Sửa sản phẩm{% endif %} — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
   <a href="{% url 'catalog:product_list' %}">Sản phẩm (SKU)</a> <span class="mx-1">/</span>
@@ -11,7 +11,7 @@
     <div class="card shadow-sm">
       <div class="card-header panel-toolbar">
         <h1 class="panel-title">
-          {% if mode == 'create' %}Tạo Product mới{% else %}Sửa Product: {{ obj.product_code }}{% endif %}
+          {% if mode == 'create' %}Tạo sản phẩm mới{% else %}Sửa sản phẩm: {{ obj.product_code }}{% endif %}
         </h1>
       </div>
       <div class="card-body">
@@ -40,7 +40,7 @@
 
           <div class="d-flex gap-2 mt-4">
             <button type="submit" class="btn btn-primary">
-              {% if mode == 'create' %}Tạo Product{% else %}Lưu{% endif %}
+              {% if mode == 'create' %}Tạo sản phẩm{% else %}Lưu{% endif %}
             </button>
             <a class="btn btn-link" href="{% url 'catalog:product_list' %}">Huỷ</a>
           </div>

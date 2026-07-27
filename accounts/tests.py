@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
 from django.core import mail
+from django.core.cache import cache
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
@@ -192,6 +193,12 @@ class LoginAuthTest(TestCase):
 
     PASSWORD = 'secret-pass-123'
 
+    def setUp(self):
+        # LocMemCache không tự reset giữa các test method — xoá counter
+        # rate-limit (accounts.forms.LoginForm) để test này không bị ảnh
+        # hưởng bởi lần đăng nhập sai của test khác chạy trước (cùng IP 127.0.0.1).
+        cache.clear()
+
     def make(self, username='u_login', role='STAFF'):
         return User.objects.create_user(
             username=username, password=self.PASSWORD, role=role)
@@ -253,6 +260,40 @@ class LoginAuthTest(TestCase):
 
         self.assertEqual(resp.status_code, 302)             # @login_required chặn
         self.assertIn(reverse('login'), resp.url)
+
+    def test_TC_USER_03_007_login_blocked_after_max_failed_attempts(self):
+        self.make()
+        for _ in range(5):
+            self.client.post(
+                reverse('login'), {'username': 'u_login', 'password': 'sai-mat-khau'})
+
+        # Lần thứ 6 dù đúng mật khẩu vẫn bị chặn — rate-limit theo IP, không
+        # phải theo tài khoản.
+        resp = self.client.post(
+            reverse('login'), {'username': 'u_login', 'password': self.PASSWORD})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Đăng nhập sai quá nhiều lần')
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_TC_USER_03_008_successful_login_resets_rate_limit_counter(self):
+        self.make()
+        for _ in range(3):
+            self.client.post(
+                reverse('login'), {'username': 'u_login', 'password': 'sai-mat-khau'})
+
+        resp = self.client.post(
+            reverse('login'), {'username': 'u_login', 'password': self.PASSWORD})
+        self.assertEqual(resp.status_code, 302)  # đăng nhập thành công -> reset counter
+
+        self.client.logout()
+        resp2 = None
+        for _ in range(3):
+            resp2 = self.client.post(
+                reverse('login'), {'username': 'u_login', 'password': 'sai-mat-khau'})
+
+        self.assertEqual(resp2.status_code, 200)
+        self.assertNotContains(resp2, 'Đăng nhập sai quá nhiều lần')
 
 
 class UserCrudTest(TestCase):

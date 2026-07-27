@@ -23,7 +23,7 @@ from accounts.pagination import paginate_queryset
 
 from .forms import LocationForm, WarehouseForm
 from .models import MIN_LOCATIONS_PER_WAREHOUSE, Location, Warehouse
-from .services import deactivate_warehouse
+from .services import activate_warehouse, deactivate_warehouse
 
 User = get_user_model()
 
@@ -139,13 +139,11 @@ def warehouse_activate(request, pk):
     """Mở lại hoạt động 1 kho đã bị khoá (không cần trang xác nhận riêng)."""
     obj = get_object_or_404(Warehouse, pk=pk)
     if request.method == 'POST':
-        obj.is_active = True
-        obj.save(update_fields=['is_active'])
-        log_action(
-            request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Mở lại hoạt động kho {obj.code}',
-            ip_address=client_ip(request),
-        )
+        try:
+            activate_warehouse(obj, actor=request.user, ip_address=client_ip(request))
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+            return redirect('warehouse:warehouse_detail', pk=obj.pk)
         messages.success(request, f'Đã mở lại hoạt động kho "{obj.code}".')
     return redirect('warehouse:warehouse_detail', pk=obj.pk)
 
@@ -193,10 +191,24 @@ def location_update(request, pk, loc_pk):
 
 @warehouse_manager_required
 def location_toggle_active(request, pk, loc_pk):
-    """Bật/tắt hoạt động 1 vị trí lưu trữ (POST-only, không cần trang xác nhận)."""
+    """Bật/tắt hoạt động 1 vị trí lưu trữ (POST-only, không cần trang xác nhận).
+
+    Chặn khoá vị trí active cuối cùng của 1 kho: ``get_default_location()``
+    (dùng bởi ``start_qc``/QC FAIL/PARTIAL_PASS cho Kho chờ/Kho phế, và
+    ``stocktake.services.apply_adjustment`` cho kho MAIN khi kiểm toàn kho)
+    cần ít nhất 1 vị trí active để hoạt động — khoá hết sẽ làm những luồng đó
+    vỡ ở ``ValidationError`` khó đoán trước lúc chạy thay vì báo rõ ngay đây.
+    """
     warehouse = get_object_or_404(Warehouse, pk=pk)
     loc = get_object_or_404(Location, pk=loc_pk, warehouse=warehouse)
     if request.method == 'POST':
+        if loc.is_active and not warehouse.locations.filter(is_active=True).exclude(pk=loc.pk).exists():
+            messages.error(
+                request,
+                f'Không thể khoá vị trí "{loc.code}" — đây là vị trí đang hoạt động '
+                f'cuối cùng của kho "{warehouse.code}".',
+            )
+            return redirect('warehouse:warehouse_detail', pk=warehouse.pk)
         loc.is_active = not loc.is_active
         loc.save(update_fields=['is_active'])
         log_action(

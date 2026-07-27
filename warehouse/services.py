@@ -58,3 +58,26 @@ def deactivate_warehouse(warehouse, actor=None, ip_address=None):
     log_action(actor, AuditLog.Action.DELETE, target=warehouse,
                description=f'Khoá hoạt động kho {warehouse.code}', ip_address=ip_address)
     return warehouse
+
+
+def activate_warehouse(warehouse, actor=None, ip_address=None):
+    """Mở lại hoạt động 1 kho đã bị khoá.
+
+    STAGING/SCRAP tối đa 1 kho active/loại (``unique_active_staging_scrap_warehouse``)
+    — check trước và trả ``ValidationError`` rõ ràng thay vì để DB
+    ``IntegrityError`` (500) văng ra khi đã có kho khác cùng loại đang active.
+    """
+    if warehouse.warehouse_type in (Warehouse.WarehouseType.STAGING, Warehouse.WarehouseType.SCRAP):
+        other = Warehouse.objects.filter(
+            warehouse_type=warehouse.warehouse_type, is_active=True,
+        ).exclude(pk=warehouse.pk).first()
+        if other is not None:
+            raise ValidationError(
+                f'Đã có kho "{other.code}" loại "{warehouse.get_warehouse_type_display()}" đang '
+                f'hoạt động — khoá kho đó trước khi mở lại kho "{warehouse.code}".'
+            )
+    warehouse.is_active = True
+    warehouse.save(update_fields=['is_active'])
+    log_action(actor, AuditLog.Action.UPDATE, target=warehouse,
+               description=f'Mở lại hoạt động kho {warehouse.code}', ip_address=ip_address)
+    return warehouse

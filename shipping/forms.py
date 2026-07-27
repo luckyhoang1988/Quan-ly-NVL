@@ -3,8 +3,10 @@ PICKING (FR-GIN-03). Transaction thật (FIFO suggest, trừ Inventory/Batch) n�
 ``shipping.services`` — form ở đây chỉ thu thập input.
 """
 from django import forms
+from django.db.models import Q
 from django.forms import inlineformset_factory
 
+from catalog.models import Product
 from inventory.models import Batch
 from warehouse.models import Warehouse
 
@@ -42,6 +44,13 @@ class GinItemForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Chỉ cho chọn SKU đang active khi tạo/sửa GIN mới. Cộng thêm product hiện
+        # tại của instance (khi sửa) để không vỡ dòng GIN cũ nếu SKU đã ngừng
+        # hoạt động sau đó.
+        queryset = Q(is_active=True)
+        if self.instance.pk and self.instance.product_id:
+            queryset |= Q(pk=self.instance.product_id)
+        self.fields['product'].queryset = Product.objects.filter(queryset).distinct()
         _bootstrapify(self.fields)
 
 

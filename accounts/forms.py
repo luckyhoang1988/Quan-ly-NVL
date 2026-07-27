@@ -2,13 +2,25 @@
 from django import forms
 from django.contrib.auth import get_user_model, password_validation
 from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm, SetPasswordForm
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
+
+from .audit import client_ip
 
 User = get_user_model()
 
+# Chặn brute-force đăng nhập (SEC): tối đa N lần sai/IP trong 1 cửa sổ thời
+# gian — dùng cache có sẵn (LocMemCache mặc định, không cần Redis) thay vì
+# thêm dependency mới (django-ratelimit/axes).
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 900  # 15 phút
+
 
 class LoginForm(AuthenticationForm):
-    """Login form (FR-USER-03) — thêm class Bootstrap cho widget mặc định."""
+    """Login form (FR-USER-03) — thêm class Bootstrap cho widget mặc định +
+    rate-limit theo IP để chặn brute-force (đếm bằng cache, reset khi đăng
+    nhập thành công).
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -16,6 +28,29 @@ class LoginForm(AuthenticationForm):
             {'class': 'form-control', 'autofocus': True}
         )
         self.fields['password'].widget.attrs.update({'class': 'form-control'})
+        # Cờ riêng cho template (login.html) phân biệt "sai mật khẩu" (thông
+        # báo chung chung, tránh lộ thông tin) với "bị chặn do rate-limit"
+        # (cần thông báo rõ, không phải lỗi gõ sai) — không dò text lỗi.
+        self.rate_limited = False
+
+    def clean(self):
+        ip = client_ip(self.request) if self.request else None
+        cache_key = f'login_rate_limit:{ip}' if ip else None
+        if cache_key and cache.get(cache_key, 0) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            self.rate_limited = True
+            raise ValidationError(
+                'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.',
+                code='rate_limited',
+            )
+        try:
+            cleaned_data = super().clean()
+        except ValidationError:
+            if cache_key:
+                cache.set(cache_key, cache.get(cache_key, 0) + 1, LOGIN_RATE_LIMIT_WINDOW_SECONDS)
+            raise
+        if cache_key:
+            cache.delete(cache_key)
+        return cleaned_data
 
 
 def _bootstrapify(fields):

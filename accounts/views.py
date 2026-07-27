@@ -14,6 +14,7 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import Permission
+from django.core.cache import cache
 from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db.models import Q
@@ -430,13 +431,23 @@ def audit_log_list(request):
 
     page_obj, page_size = paginate_queryset(request, logs)
 
-    module_choices = [
-        (ct.pk, str(ct)) for ct in
-        ContentType.objects.filter(pk__in=AuditLog.objects.values_list('target_type_id', flat=True).distinct())
-    ]
-    actor_choices = User.objects.filter(
-        pk__in=AuditLog.objects.exclude(actor__isnull=True).values_list('actor_id', flat=True).distinct(),
-    ).order_by('username')
+    # 2 lựa chọn filter dropdown này quét distinct trên TOÀN BỘ bảng AuditLog
+    # (ngày càng lớn vì mọi action đều ghi log) — cache ngắn hạn (LocMemCache,
+    # mặc định của Django, không cần Redis) để tránh full scan lại mỗi request;
+    # dropdown "trễ" tối đa 5 phút là chấp nhận được cho 1 trang tra cứu.
+    module_choices = cache.get('audit_log_module_choices')
+    if module_choices is None:
+        module_choices = [
+            (ct.pk, str(ct)) for ct in
+            ContentType.objects.filter(pk__in=AuditLog.objects.values_list('target_type_id', flat=True).distinct())
+        ]
+        cache.set('audit_log_module_choices', module_choices, 300)
+    actor_choices = cache.get('audit_log_actor_choices')
+    if actor_choices is None:
+        actor_choices = list(User.objects.filter(
+            pk__in=AuditLog.objects.exclude(actor__isnull=True).values_list('actor_id', flat=True).distinct(),
+        ).order_by('username'))
+        cache.set('audit_log_actor_choices', actor_choices, 300)
 
     return render(request, 'accounts/audit_log_list.html', {
         'logs': page_obj, 'page_obj': page_obj, 'page_size': page_size,
