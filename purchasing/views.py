@@ -137,7 +137,11 @@ def po_list(request):
     """
     orders = PurchaseOrder.objects.select_related('supplier', 'created_by').all()
     if not _po_can_view_all(request.user):
-        orders = orders.filter(created_by=request.user)
+        # created_by=NULL nghĩa là không xác định được người tạo thật (dữ liệu
+        # cũ trước migration 0007, hoặc tạo qua script) — không gán bừa cho một
+        # người, nên vẫn hiển thị cho mọi nhân viên PURCHASING thay vì ẩn vĩnh
+        # viễn (xem 0009_backfill_po_created_by.py).
+        orders = orders.filter(Q(created_by=request.user) | Q(created_by__isnull=True))
     selected_status = request.GET.get('status', '')
     if selected_status:
         orders = orders.filter(status=selected_status)

@@ -198,6 +198,16 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
     audit riêng — FR-WM-06) rồi delegate phần tách batch/Inventory cho
     ``move_batch_qty()``. Batch đang ở Kho chờ (STAGING) bị chặn: hàng ở đó
     phải đi qua QC (Pass/Fail/Partial Pass), không được điều chuyển tay.
+
+    Batch ``PENDING_RECEIPT`` mà ``WarehouseHandoff`` liên quan còn PENDING
+    cũng bị chặn — hàng đó đang chờ kho Nhận/Từ chối qua
+    ``accept_handoff()``/``reject_handoff()``, điều chuyển tay lúc này sẽ đổi
+    ``status`` của batch nguồn (CLOSED/PARTIAL_USED) trong khi handoff vẫn
+    trỏ vào nó, khiến accept/reject sau đó luôn fail vì batch không còn
+    PENDING_RECEIPT — phiếu bàn giao kẹt vĩnh viễn. Vẫn cho phép điều chuyển
+    khi handoff đã REJECTED với ``BACK_TO_QC`` (batch giữ nguyên
+    PENDING_RECEIPT có chủ đích — xem ``reject_handoff()`` — để QC tự điều
+    chuyển tay sau đó).
     """
     batch = Batch.objects.select_for_update().get(pk=batch.pk)
     if not to_location.is_active:
@@ -209,6 +219,13 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
             'Không thể điều chuyển thủ công batch đang ở Kho chờ — '
             'phải xử lý qua QC (Pass/Fail/Partial Pass).'
         )
+    if batch.status == Batch.Status.PENDING_RECEIPT:
+        handoff = getattr(batch, 'handoff', None)
+        if handoff is not None and handoff.status == WarehouseHandoff.Status.PENDING:
+            raise ValidationError(
+                'Không thể điều chuyển thủ công batch đang chờ kho xác nhận nhận hàng — '
+                'phải xử lý qua phiếu bàn giao (Nhận/Từ chối) trước.'
+            )
 
     from_location = batch.location
     seq = batch.transfers_from.count() + 1

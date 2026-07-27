@@ -234,12 +234,16 @@ def product_eoq(request, pk):
 def can_decide_handoff(user, handoff):
     """Ai được Nhận/Từ chối 1 ``WarehouseHandoff`` (Phase D, mục 6):
 
-    Quản lý phòng Kho luôn được (oversight); nếu handoff chỉ định
-    ``assigned_to`` cụ thể thì chỉ đúng người đó; nếu để trống thì bất kỳ
-    nhân viên nào thuộc ``destination_warehouse.staff``, fallback toàn bộ
+    Admin/superuser luôn được (oversight toàn hệ thống, mirror sidebar gate ở
+    ``base.html`` và quy ước ``is_superuser or role == ADMIN`` dùng ở
+    ``accounts.views``); quản lý phòng Kho luôn được (oversight); nếu handoff
+    chỉ định ``assigned_to`` cụ thể thì chỉ đúng người đó; nếu để trống thì bất
+    kỳ nhân viên nào thuộc ``destination_warehouse.staff``, fallback toàn bộ
     ``department=WAREHOUSE`` nếu kho đích chưa gán ai (mirror
     ``inventory.services._handoff_recipients``).
     """
+    if user.is_superuser or user.role == User.Role.ADMIN:
+        return True
     if user.is_department_manager(User.Department.WAREHOUSE):
         return True
     if handoff.assigned_to_id:
@@ -254,12 +258,14 @@ def can_decide_handoff(user, handoff):
 def handoff_list(request):
     """Phiếu chờ nhận hàng (Phase D, mục 6): danh sách ``WarehouseHandoff``
     PENDING mà ``request.user`` có quyền quyết định (xem ``can_decide_handoff``)
-    — quản lý phòng Kho thấy toàn bộ, NV kho chỉ thấy phiếu liên quan tới mình.
+    — Admin/superuser và quản lý phòng Kho thấy toàn bộ, NV kho chỉ thấy phiếu
+    liên quan tới mình.
     """
     pending = WarehouseHandoff.objects.select_related(
         'batch__product', 'destination_warehouse', 'assigned_to', 'qc_inspection__grn',
     ).filter(status=WarehouseHandoff.Status.PENDING)
-    if request.user.is_department_manager(User.Department.WAREHOUSE):
+    if request.user.is_superuser or request.user.role == User.Role.ADMIN \
+            or request.user.is_department_manager(User.Department.WAREHOUSE):
         handoffs = list(pending)
     else:
         handoffs = [h for h in pending if can_decide_handoff(request.user, h)]

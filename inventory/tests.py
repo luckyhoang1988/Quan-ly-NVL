@@ -587,6 +587,65 @@ class StockTransferServiceTest(TestCase):
             transfer_stock(batch=batch, to_location=self.location2, qty=5, actor=self.user)
 
 
+class StockTransferPendingReceiptGuardTest(TestCase):
+    """Bug fix (mục 6): ``transfer_stock`` chặn STAGING nhưng trước đây không
+    chặn batch ``PENDING_RECEIPT`` có ``WarehouseHandoff`` còn PENDING — điều
+    chuyển tay lúc đó đổi status batch nguồn (CLOSED/PARTIAL_USED) trong khi
+    handoff vẫn trỏ vào nó, khiến ``accept_handoff``/``reject_handoff`` sau đó
+    luôn fail (phiếu bàn giao kẹt vĩnh viễn). Vẫn phải cho phép điều chuyển
+    tay khi handoff đã REJECTED với BACK_TO_QC (đường đi có chủ đích, xem
+    ``reject_handoff()``). ``TC-INV-TRF-PR-<seq>``.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        self.scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        Location.objects.create(warehouse=self.scrap_warehouse, code='A-01')
+
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.qc_user)
+        self.inspection = QcInspection.objects.create(grn=self.grn, inspector=self.qc_user)
+
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier, location=self.location,
+            qty_received=20, status=Batch.Status.PENDING_RECEIPT,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=20)
+        self.handoff = WarehouseHandoff.objects.create(
+            batch=self.batch, qc_inspection=self.inspection, destination_warehouse=self.warehouse,
+        )
+
+    def test_TC_INV_TRF_PR_001_pending_handoff_blocks_manual_transfer(self):
+        with self.assertRaises(ValidationError):
+            transfer_stock(batch=self.batch, to_location=self.location2, qty=5, actor=self.user)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.PENDING_RECEIPT)
+
+    def test_TC_INV_TRF_PR_002_handoff_still_decidable_after_blocked_transfer_attempt(self):
+        with self.assertRaises(ValidationError):
+            transfer_stock(batch=self.batch, to_location=self.location2, qty=5, actor=self.user)
+        accept_handoff(self.handoff, actor=self.user)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.ACTIVE)
+
+    def test_TC_INV_TRF_PR_003_manual_transfer_allowed_after_back_to_qc_reject(self):
+        reject_handoff(
+            self.handoff, actor=self.qc_user, reason='Kiểm tra lại',
+            destination=WarehouseHandoff.RejectDestination.BACK_TO_QC,
+        )
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.PENDING_RECEIPT)
+        transfer = transfer_stock(batch=self.batch, to_location=self.location2, qty=5, actor=self.qc_user)
+        self.assertEqual(transfer.new_batch.location, self.location2)
+
+
 class MoveBatchQtyServiceTest(TestCase):
     """``move_batch_qty`` (M3) — nguyên thủy tách batch dùng chung bởi
     ``transfer_stock`` và ``quality.services``. ``TC-INV-MBQ-<seq>``.
@@ -975,6 +1034,8 @@ class WarehouseHandoffViewTest(TestCase):
             department=User.Department.WAREHOUSE, is_manager=True)
         self.outsider = User.objects.create_user(
             username='qc2', password='qc-pass-123', role=User.Role.QC, department=User.Department.QC)
+        self.admin = User.objects.create_user(
+            username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
 
         self.batch = Batch.objects.create(
             product=self.product, batch_code='LOT-0001', supplier=self.supplier, location=self.location,
@@ -1073,3 +1134,19 @@ class WarehouseHandoffViewTest(TestCase):
         self.client.force_login(self.other_staff)
         response = self.client.get(reverse('inventory:handoff_list'))
         self.assertContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_013_admin_sees_all_pending_despite_blank_department(self):
+        # Admin không thuộc department nào (department để trống) nhưng vẫn phải
+        # thấy toàn bộ hàng chờ, giống Manager phòng Kho — bug: trước đây
+        # can_decide_handoff chỉ check is_department_manager(WAREHOUSE), không
+        # có fallback role==ADMIN/is_superuser như GRN/GIN nên Admin thấy list rỗng.
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse('inventory:handoff_list'))
+        self.assertContains(response, self.batch.batch_code)
+
+    def test_TC_INV_HANDOFF_VIEW_014_admin_can_accept_even_if_not_assigned(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse('inventory:handoff_accept', args=[self.handoff.pk]))
+        self.assertRedirects(response, reverse('inventory:handoff_list'))
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.ACTIVE)

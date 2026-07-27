@@ -274,11 +274,13 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   notifies `department=QC` to resolve it manually (e.g. a manual `transfer_stock` to `SCRAP` afterward, which
   is why `move_batch_qty`'s source-status guard was widened to accept `PENDING_RECEIPT` as a valid source,
   not just `ACTIVE`/`PARTIAL_USED`). Who may decide a handoff — `inventory.views.can_decide_handoff()` — is
+  `is_superuser`/`role==ADMIN` (system-wide oversight, added in the bug-fix bullet below) OR
   `is_department_manager('WAREHOUSE')` (oversight, sees/decides everything) OR the exact `assigned_to` user
   OR (if unassigned) anyone in `destination_warehouse.staff`, falling back to any `department=WAREHOUSE` user
-  if that kho has no staff assigned — same three-tier resolution as who gets *notified*, so "who sees it in
-  their queue" and "who was told about it" never disagree. Queue page: `inventory:handoff_list`
-  ("Phiếu chờ nhận hàng" in the sidebar, gated to `department=WAREHOUSE`/ADMIN/superuser). Unlike GRN/GIN's
+  if that kho has no staff assigned — same three-tier department resolution as who gets *notified*, so "who
+  sees it in their queue" and "who was told about it" never disagree (the ADMIN/superuser tier is oversight
+  only, not part of that notification fan-out). Queue page: `inventory:handoff_list` ("Phiếu chờ nhận hàng"
+  in the sidebar, gated to `department=WAREHOUSE`/ADMIN/superuser). Unlike GRN/GIN's
   Approval-based gates, this flow does **not** use the generic `Approval` model — a handoff is a hand-off to
   a *specific person or team*, not a request that bubbles up to one department manager's decision, so it has
   its own lighter PENDING/ACCEPTED/REJECTED model instead.
@@ -407,3 +409,43 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   filtered to a subset — grab the `ContentType` + id list of the objects you're about to delete first (before
   they're gone), then filter the log/notification table by that; never fall back to "can't scope it, wipe the
   whole table" for a table that a real environment might also be writing to.
+- **Bug fix 2026-07-27: ADMIN saw an empty "Phiếu chờ nhận hàng" queue and got 403 on Nhận/Từ chối, despite
+  the sidebar showing the link to them**. `accounts/templates/base.html` gates the sidebar entry on
+  `user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE'`, but
+  `inventory.views.can_decide_handoff()` only had the department-based three-tier resolution described above
+  (`is_department_manager('WAREHOUSE')` / exact `assigned_to` / `destination_warehouse.staff` /
+  `department=WAREHOUSE` fallback) — an ADMIN user (who conventionally has `department` left blank, per
+  `User.department`'s own help text: "Bỏ trống cho Admin") matched none of those branches, so
+  `handoff_list` filtered every pending handoff out of their view and `handoff_accept`/`handoff_reject` raised
+  `PermissionDenied`. Unlike GRN/GIN/PR (`is_department_manager(dept) or user.can('approve', <module>)`),
+  handoff has no dedicated module in `accounts/permissions.py` `MODULES` to hang a `user.can('approve', ...)`
+  fallback off, so the fix instead adds an explicit `user.is_superuser or user.role == User.Role.ADMIN` tier
+  (same pattern already used for oversight checks in `accounts/views.py`, `catalog/views.py`,
+  `partners/views.py`, `warehouse/views.py`) — first in `can_decide_handoff()` (covers `handoff_accept`/
+  `handoff_reject`, both of which already delegated to it) and mirrored in `handoff_list()`'s "sees everything"
+  branch instead of falling through to the per-item `can_decide_handoff` filter for admins. **General lesson**:
+  whenever a sidebar/nav visibility check and the view/permission check it links to are written as two
+  separate conditions (as here, and as the Phase A/B/C/D approval-gate work generally does), a role added to
+  one but not the other is a standing trap — new oversight roles (ADMIN, superuser) need to be added to both,
+  and it's worth grepping the target view's permission helper whenever a sidebar condition is touched.
+- **Bug fix 2026-07-27: PO rows with `created_by=NULL` were permanently invisible to every plain PURCHASING
+  staff member's `po_list`**. `purchasing/migrations/0007_purchaseorder_created_by.py` only did `AddField`
+  with no accompanying data migration, so every `PurchaseOrder` created before that migration landed with
+  `created_by=NULL` forever. `purchasing.views.po_list`'s visibility filter
+  (`orders.filter(created_by=request.user)`, gated behind `_po_can_view_all`) doesn't match `NULL` in SQL, so
+  those rows vanished from the list for anyone without the "see all" tier — including whoever actually
+  created them — with no way to get them back short of a Manager/Admin or the PURCHASING department manager
+  looking them up directly. Fixed two ways together: (1) `purchasing/migrations/0009_backfill_po_created_by.py`
+  (data migration) recovers the real creator where possible — for each `created_by__isnull=True` PO, find the
+  earliest `AuditLog(action='CREATE')` row targeting it via `GenericForeignKey` and copy that log's `actor` back
+  onto `created_by`; POs with no such log (e.g. rows inserted directly via `seed_demo_data`'s ORM calls, never
+  through the `po_create` view) are left `NULL` since guessing a creator would be worse than leaving it unknown.
+  (2) `purchasing.views.po_list`'s filter was widened to
+  `Q(created_by=request.user) | Q(created_by__isnull=True)` — a still-`NULL` PO now shows to every plain
+  PURCHASING user rather than being hidden from all of them, same "don't guess, but don't hide it forever
+  either" reasoning already used for `PurchaseRequest` backfill in `0008_backfill_pr_approval.py`. **General
+  lesson**: adding a nullable `created_by`/`assigned_to`-style FK to gate visibility on an existing table with
+  live rows needs a paired backfill migration in the same change (recover what's recoverable via `AuditLog`),
+  and the filter itself should treat "unknown owner" as visible-to-all rather than invisible-to-all — the same
+  class of gap as the `Approval`-retrofit lesson two bullets up, just for a plain nullable FK instead of a new
+  gating model.

@@ -188,10 +188,18 @@ pattern nhẹ hơn — xem `inventory.models.WarehouseHandoff` + `inventory.serv
    trống thì `notify()` nhóm mặc định (vd `Warehouse.staff` của đích), fallback về cả
    `department=<phòng ban>` nếu nhóm mặc định rỗng — cùng rule 3 tầng dùng lại ở bước 3 (không được để lệch
    giữa "ai được báo" và "ai được quyền quyết định").
-3. Quyền quyết định (`can_decide_x(user, obj)`, viết ở view, KHÔNG viết ở model) phải cho qua nếu: (a)
-   `user.is_department_manager(<phòng ban>)` (oversight — luôn thấy/xử lý được mọi phiếu), HOẶC (b)
-   `user.pk == obj.assigned_to_id` (nếu có chỉ định), HOẶC (c) nếu không chỉ định thì `user` thuộc nhóm mặc
-   định ở bước 2 (kể cả nhánh fallback department).
+3. Quyền quyết định (`can_decide_x(user, obj)`, viết ở view, KHÔNG viết ở model) phải cho qua nếu: (0)
+   `user.is_superuser or user.role == User.Role.ADMIN` (oversight toàn hệ thống — kiểm tra NGAY ĐẦU HÀM, xem
+   bug fix `inventory.views.can_decide_handoff` 2026-07-27 trong CLAUDE.md: model bàn giao nhẹ này không có
+   module riêng trong `accounts/permissions.py` nên không thể dùng fallback `user.can('approve', module)` như
+   GRN/GIN/PR — phải check role/superuser trực tiếp thay vào, và nhớ áp cùng điều kiện ở CẢ view liệt kê danh
+   sách (nhánh "thấy toàn bộ") lẫn view quyết định, không chỉ 1 trong 2), HOẶC (a)
+   `user.is_department_manager(<phòng ban>)` (oversight theo phòng ban — luôn thấy/xử lý được mọi phiếu),
+   HOẶC (b) `user.pk == obj.assigned_to_id` (nếu có chỉ định), HOẶC (c) nếu không chỉ định thì `user` thuộc
+   nhóm mặc định ở bước 2 (kể cả nhánh fallback department). **Lưu ý**: sidebar nav (`base.html`) thường có
+   điều kiện hiển thị link riêng (vd `user.is_superuser or user.role == 'ADMIN' or user.department == ...`)
+   — đây là 1 điều kiện TÁCH BIỆT với `can_decide_x`, dễ bị lệch nếu chỉ sửa 1 bên; luôn grep view đích khi
+   sửa điều kiện sidebar, và ngược lại.
 4. Nhánh "từ chối" nếu có nhiều phương án xử lý khác nhau (vd chuyển kho phế / trả về nơi gửi): chỉ nhánh nào
    thực sự cần đảo ngược dữ liệu (vd chuyển kho phế) mới gọi transition thật (`move_batch_qty`...); nhánh
    "trả lại thủ công" KHÔNG tự động đảo ngược transaction gốc đã hoàn tất trước đó — chỉ đổi status của bản

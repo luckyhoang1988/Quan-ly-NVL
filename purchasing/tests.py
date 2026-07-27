@@ -381,6 +381,23 @@ class PurchaseOrderVisibilityTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[new_po.pk]))
         self.assertEqual(new_po.created_by, self.purchasing_a)
 
+    def test_TC_PUR_VIS_006_null_created_by_visible_to_all_purchasing_staff(self):
+        """PO created_by=NULL (dữ liệu cũ trước migration 0007, hoặc không truy
+        ngược được người tạo qua AuditLog — xem 0009_backfill_po_created_by.py)
+        không được gán bừa cho một người, nên phải hiển thị cho MỌI nhân viên
+        PURCHASING thường, không riêng ai — filter created_by=request.user
+        không khớp NULL trong SQL nên trước đây các PO này bị ẩn vĩnh viễn."""
+        po_legacy = PurchaseOrder.objects.create(po_no='PO-0003', supplier=self.supplier)
+        self.client.force_login(self.purchasing_a)
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        orders = set(response.context['orders'])
+        self.assertEqual(orders, {self.po_a, po_legacy})
+
+        self.client.force_login(self.purchasing_b)
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        orders = set(response.context['orders'])
+        self.assertEqual(orders, {self.po_b, po_legacy})
+
 
 class DeliveryStatusTest(TestCase):
     """FR-PO-06: phân loại giao hàng On time/Delayed/Partial, tính on-the-fly từ
