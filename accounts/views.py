@@ -18,7 +18,6 @@ from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
-from django.utils.crypto import get_random_string
 
 from django.contrib.contenttypes.models import ContentType
 
@@ -83,8 +82,8 @@ def user_admin_required(view):
     return wrapper
 
 
-def _send_temp_password(user, temp_password):
-    """Gửi email mật khẩu tạm cho user mới (FR-USER-01 CREATE).
+def _send_account_created_email(user, password):
+    """Gửi email thông báo tài khoản mới cho user (FR-USER-01 CREATE).
 
     Dev dùng backend console (in ra terminal); test tự dùng locmem (mail.outbox).
     ``fail_silently=True`` để việc tạo user không đổ vỡ khi chưa cấu hình SMTP thật.
@@ -97,8 +96,8 @@ def _send_temp_password(user, temp_password):
             f'Xin chào {user.username},\n\n'
             f'Tài khoản NVL/WMS của bạn đã được tạo.\n'
             f'Tên đăng nhập: {user.username}\n'
-            f'Mật khẩu tạm thời: {temp_password}\n\n'
-            f'Vui lòng đăng nhập và đổi mật khẩu ngay.'
+            f'Mật khẩu: {password}\n\n'
+            f'Vui lòng đăng nhập và đổi mật khẩu nếu cần.'
         ),
         from_email=None,  # dùng DEFAULT_FROM_EMAIL
         recipient_list=[user.email],
@@ -108,16 +107,21 @@ def _send_temp_password(user, temp_password):
 
 @user_admin_required
 def user_list(request):
-    """READ — danh sách user (kể cả đã soft-delete, có badge phân biệt)."""
+    """READ — danh sách user. Mặc định ẩn user đã soft-delete (chỉ hiện khi lọc
+    status=deleted) để danh sách không bị "rác" bởi tài khoản đã xoá."""
     users = User.objects.order_by('username')
     role = request.GET.get('role', '')
     if role:
         users = users.filter(role=role)
     status = request.GET.get('status', '')
     if status == 'active':
-        users = users.filter(is_active=True)
+        users = users.filter(is_active=True, is_deleted=False)
     elif status == 'inactive':
-        users = users.filter(is_active=False)
+        users = users.filter(is_active=False, is_deleted=False)
+    elif status == 'deleted':
+        users = users.filter(is_deleted=True)
+    else:
+        users = users.filter(is_deleted=False)
     q = request.GET.get('q', '').strip()
     if q:
         users = users.filter(Q(username__icontains=q) | Q(email__icontains=q))
@@ -211,14 +215,12 @@ def user_permission_edit(request, pk):
 
 @user_admin_required
 def user_create(request):
-    """CREATE — admin tạo user; sinh mật khẩu tạm + gửi email + ghi audit CREATE."""
+    """CREATE — admin tạo user với mật khẩu tự chọn; gửi email + ghi audit CREATE."""
     form = UserCreateForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
-        user = form.save(commit=False)
-        temp_password = get_random_string(12)
-        user.set_password(temp_password)
-        user.save()  # kích hoạt signal đồng bộ role -> Group
-        _send_temp_password(user, temp_password)
+        password = form.cleaned_data['password1']
+        user = form.save()  # kích hoạt signal đồng bộ role -> Group
+        _send_account_created_email(user, password)
         log_action(
             request.user, AuditLog.Action.CREATE, target=user,
             description=f'Tạo user {user.username} (role {user.role or "—"})',
@@ -226,8 +228,7 @@ def user_create(request):
         )
         messages.success(
             request,
-            f'Đã tạo user "{user.username}". Mật khẩu tạm: {temp_password} '
-            f'(đã gửi email tới {user.email or "—"}).',
+            f'Đã tạo user "{user.username}" (đã gửi email thông báo tới {user.email or "—"}).',
         )
         return redirect('user_detail', pk=user.pk)
     return render(request, 'accounts/user_form.html', {'form': form, 'mode': 'create'})

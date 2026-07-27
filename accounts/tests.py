@@ -290,19 +290,20 @@ class UserCrudTest(TestCase):
 
     # --- CREATE ---
 
-    def test_TC_USER_01_003_create_generates_temp_password_emails_and_audits(self):
+    def test_TC_USER_01_003_create_with_admin_chosen_password_emails_and_audits(self):
         resp = self.client.post(reverse('user_create'), {
             'username': 'newbie', 'email': 'newbie@example.com',
-            'first_name': 'New', 'last_name': 'Bie', 'role': 'STAFF'})
+            'first_name': 'New', 'last_name': 'Bie', 'role': 'STAFF',
+            'password1': 'CorrectHorse9', 'password2': 'CorrectHorse9'})
 
         created = User.objects.get(username='newbie')
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(resp.url, reverse('user_detail', args=[created.pk]))
-        self.assertTrue(created.has_usable_password())  # có mật khẩu tạm dùng được
+        self.assertTrue(created.check_password('CorrectHorse9'))  # đúng mật khẩu admin đặt
         self.assertTrue(created.is_active)
         self.assertEqual(                                # signal đồng bộ role -> Group
             list(created.groups.values_list('name', flat=True)), ['STAFF'])
-        self.assertEqual(len(mail.outbox), 1)            # đã gửi email mật khẩu tạm
+        self.assertEqual(len(mail.outbox), 1)            # đã gửi email thông báo tài khoản
         self.assertIn('newbie@example.com', mail.outbox[0].to)
 
         entry = AuditLog.objects.filter(action='CREATE').first()
@@ -310,6 +311,16 @@ class UserCrudTest(TestCase):
         self.assertEqual(entry.actor, self.admin)        # WHO = admin đang đăng nhập
         self.assertEqual(entry.target, created)          # WHAT trên đối tượng nào
         self.assertEqual(entry.ip_address, '127.0.0.1')  # IP client
+
+    def test_TC_USER_01_003b_create_rejects_mismatched_passwords(self):
+        resp = self.client.post(reverse('user_create'), {
+            'username': 'newbie2', 'email': 'newbie2@example.com',
+            'first_name': 'New', 'last_name': 'Bie', 'role': 'STAFF',
+            'password1': 'CorrectHorse9', 'password2': 'Different9'})
+
+        self.assertEqual(resp.status_code, 200)          # ở lại form, không tạo user
+        self.assertFalse(User.objects.filter(username='newbie2').exists())
+        self.assertContains(resp, 'Hai mật khẩu không khớp nhau.')
 
     # --- READ ---
 
@@ -636,6 +647,21 @@ class UserListPaginationFilterTest(TestCase):
         response = self.client.get(
             reverse('user_list'), {'status': 'inactive', 'page_size': 50})
         self.assertTrue(all(not u.is_active for u in response.context['users']))
+
+    def test_deleted_user_hidden_from_default_list(self):
+        deleted = User.objects.get(username='user0001')
+        deleted.soft_delete()
+
+        response = self.client.get(reverse('user_list'), {'page_size': 50})
+        self.assertNotIn(deleted.pk, [u.pk for u in response.context['users']])
+
+    def test_deleted_user_visible_with_status_deleted_filter(self):
+        deleted = User.objects.get(username='user0001')
+        deleted.soft_delete()
+
+        response = self.client.get(
+            reverse('user_list'), {'status': 'deleted', 'page_size': 50})
+        self.assertEqual([u.pk for u in response.context['users']], [deleted.pk])
 
     def test_filter_search_by_username(self):
         response = self.client.get(reverse('user_list'), {'q': 'user0001'})

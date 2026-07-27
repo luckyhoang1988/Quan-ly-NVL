@@ -2,6 +2,7 @@
 from django import forms
 from django.forms import inlineformset_factory
 
+from accounts.models import User
 from warehouse.models import Warehouse
 
 from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
@@ -22,7 +23,7 @@ def _bootstrapify(fields):
 class PurchaseOrderForm(forms.ModelForm):
     class Meta:
         model = PurchaseOrder
-        fields = ['po_no', 'supplier', 'expected_delivery_date']
+        fields = ['supplier', 'expected_delivery_date']
         widgets = {
             'expected_delivery_date': forms.DateInput(attrs={'type': 'date'}),
         }
@@ -51,12 +52,15 @@ PurchaseOrderItemFormSet = inlineformset_factory(
 class PurchaseRequestForm(forms.ModelForm):
     class Meta:
         model = PurchaseRequest
-        fields = ['warehouse', 'note']
+        fields = ['warehouse', 'assigned_to', 'note']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['warehouse'].queryset = Warehouse.objects.filter(
             is_active=True, warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.fields['assigned_to'].queryset = User.objects.filter(
+            department=User.Department.PURCHASING, is_active=True)
+        self.fields['assigned_to'].required = False
         _bootstrapify(self.fields)
 
 
@@ -74,6 +78,16 @@ PurchaseRequestItemFormSet = inlineformset_factory(
     PurchaseRequest, PurchaseRequestItem, form=PurchaseRequestItemForm,
     extra=3, min_num=1, validate_min=True, can_delete=True,
 )
+
+
+class PurchaseRequestForwardForm(forms.Form):
+    staff = forms.ModelChoiceField(
+        queryset=User.objects.filter(department=User.Department.PURCHASING, is_active=True),
+        label='Chuyển tiếp cho nhân viên')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
 
 
 class PurchaseRequestRejectForm(forms.Form):

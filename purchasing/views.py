@@ -12,12 +12,12 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
 
+from accounts.approvals import latest_approval_for
 from accounts.audit import client_ip, log_action
-from accounts.models import AuditLog
+from accounts.models import Approval, AuditLog, User
 from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from partners.models import Supplier
@@ -27,11 +27,21 @@ from .forms import (
     PurchaseOrderForm,
     PurchaseOrderItemFormSet,
     PurchaseRequestForm,
+    PurchaseRequestForwardForm,
     PurchaseRequestItemFormSet,
     PurchaseRequestRejectForm,
 )
 from .models import PurchaseOrder, PurchaseRequest
-from .services import approve_po, close_po, send_po, supplier_lead_time_stats, supplier_price_history
+from .services import (
+    approve_po,
+    close_po,
+    decide_purchase_request,
+    forward_purchase_request,
+    send_po,
+    submit_purchase_request,
+    supplier_lead_time_stats,
+    supplier_price_history,
+)
 
 
 def po_permission_required(action):
@@ -70,15 +80,64 @@ def pr_permission_required(action):
     return decorator
 
 
-def _pr_pending_count():
-    """Badge số PR đang chờ duyệt — tính on-the-fly (mirror ``overdue_count`` ở po_list)."""
-    return PurchaseRequest.objects.filter(status=PurchaseRequest.Status.PENDING).count()
+def _pr_pending_count(user):
+    """Badge số PR đang chờ duyệt — tính on-the-fly (mirror ``overdue_count`` ở po_list).
+    Phải lọc theo cùng quyền xem với ``pr_list`` (``_pr_can_view_all``): nhân viên
+    phòng Mua hàng thường chỉ nên thấy số PR của chính mình đang chờ, không phải
+    tổng số PENDING toàn hệ thống — nếu không badge sẽ hiển thị con số không liên
+    quan đến hàng đợi thật của họ.
+    """
+    prs = PurchaseRequest.objects.filter(status=PurchaseRequest.Status.PENDING)
+    if not _pr_can_view_all(user):
+        prs = prs.filter(Q(requested_by=user) | Q(assigned_to=user))
+    return prs.count()
+
+
+def can_decide_pr(user):
+    """Quyền DUYỆT/từ chối PR: quản lý phòng Mua hàng (oversight, xem/quyết định mọi
+    PR) hoặc Manager/Admin (fallback 'approve' cũ) — KHÔNG còn cấp cho mọi nhân
+    viên role PURCHASING nữa (mirror ``receiving.views.can_decide_grn_submission``).
+    """
+    return user.is_department_manager(User.Department.PURCHASING) or user.can('approve', 'pr')
+
+
+def _po_can_view_all(user):
+    """PO là dữ liệu chung để mọi phòng ban đối chiếu (STAFF cần biết đơn nào sắp
+    về để tạo GRN, QC/ACCOUNTANT cần xem để đối soát) nên KHÔNG áp dụng lọc
+    "chỉ của mình" đại trà như PR — chỉ nhân viên phòng Mua hàng THƯỜNG (role
+    PURCHASING, không phải quản lý phòng) mới bị giới hạn xem đúng PO do chính
+    mình tạo (``created_by``); quản lý phòng Mua hàng vẫn cần bức tranh tổng để
+    oversight/điều phối nên không bị giới hạn.
+    """
+    if user.role != User.Role.PURCHASING:
+        return True
+    return user.is_superuser or user.is_department_manager(User.Department.PURCHASING)
+
+
+def _pr_can_view_all(user):
+    """Ai xem được TOÀN BỘ PR (không chỉ của mình): quản lý phòng Mua hàng cần
+    bức tranh tổng để duyệt/chuyển tiếp, Manager/Admin có quyền oversight sẵn
+    có. Nhân viên phòng Mua hàng thường (không phải quản lý) hay người ở phòng
+    ban khác chỉ thấy PR do chính mình tạo hoặc được chỉ định/chuyển tiếp
+    (``assigned_to`` — xem lọc ở ``pr_list``/``pr_detail``), KHÔNG còn thấy toàn
+    bộ chỉ vì cùng role PURCHASING nữa.
+    """
+    return (
+        user.is_superuser
+        or user.role in (User.Role.MANAGER, User.Role.ADMIN)
+        or user.is_department_manager(User.Department.PURCHASING)
+    )
 
 
 @po_permission_required('read')
 def po_list(request):
-    """READ — danh sách PO, kèm cờ giao hàng trễ hạn (FR-PO-06, tính on-the-fly)."""
-    orders = PurchaseOrder.objects.select_related('supplier').all()
+    """READ — danh sách PO, kèm cờ giao hàng trễ hạn (FR-PO-06, tính on-the-fly).
+    Nhân viên phòng Mua hàng thường chỉ xem PO do chính mình tạo (``_po_can_view_all``);
+    mọi role khác (STAFF/QC/ACCOUNTANT/Manager/Admin/quản lý phòng Mua hàng) xem toàn bộ.
+    """
+    orders = PurchaseOrder.objects.select_related('supplier', 'created_by').all()
+    if not _po_can_view_all(request.user):
+        orders = orders.filter(created_by=request.user)
     selected_status = request.GET.get('status', '')
     if selected_status:
         orders = orders.filter(status=selected_status)
@@ -109,7 +168,8 @@ def po_list(request):
         'selected_status': selected_status,
         'selected_supplier': selected_supplier,
         'q': q,
-        'pr_pending_count': _pr_pending_count(),
+        'pr_pending_count': _pr_pending_count(request.user),
+        'can_view_all_po': _po_can_view_all(request.user),
     })
 
 
@@ -117,9 +177,15 @@ def po_list(request):
 def po_detail(request, pk):
     """READ — chi tiết PO: item kèm Qty đã nhận/còn lại (FR-PO-04 reconciliation,
     tính on-the-fly từ GrnItem giống ``services.sync_po_status``), badge giao
-    hàng (FR-PO-06), nút chuyển trạng thái theo quyền.
+    hàng (FR-PO-06), nút chuyển trạng thái theo quyền. KHÔNG giới hạn theo
+    ``created_by`` như ``po_list`` — PO là tác vụ nhiều vai trò cùng xử lý một
+    phiếu (Manager duyệt, một nhân viên Mua hàng khác có thể là người gửi NCC),
+    và được tham chiếu trực tiếp từ ``pr_detail``/GRN, nên chặn theo người tạo ở
+    đây sẽ cản trở phối hợp thật; chỉ ``po_list`` (mục lục tổng quan) mới cần
+    thu gọn cho gọn hàng đợi của từng nhân viên.
     """
-    po = get_object_or_404(PurchaseOrder.objects.select_related('supplier').prefetch_related('items__product'), pk=pk)
+    po = get_object_or_404(
+        PurchaseOrder.objects.select_related('supplier', 'created_by').prefetch_related('items__product'), pk=pk)
 
     received_by_product = dict(
         GrnItem.objects.filter(grn__po=po)
@@ -162,16 +228,36 @@ def po_create(request):
     để so sánh giá trước khi chọn).
 
     ``?from_pr=<pk>`` (nút "Tạo PO từ yêu cầu này" ở ``pr_detail``) prefill mọi
-    dòng item từ 1 ``PurchaseRequest`` đã APPROVED; sau khi PO tạo thành công,
-    gán ``source_pr.linked_po`` để PR biết đã convert xong. Chỉ 1 trong 2 kiểu
-    prefill (``product``/``from_pr``) được dùng, không kết hợp.
+    dòng item từ 1 ``PurchaseRequest`` đã APPROVED và CHƯA có PO liên kết; sau
+    khi PO tạo thành công, gán ``source_pr.linked_po`` để PR biết đã convert
+    xong. Chỉ 1 trong 2 kiểu prefill (``product``/``from_pr``) được dùng,
+    không kết hợp.
+
+    Truy cập ``from_pr`` được khoá 2 lớp để không lách được cơ chế chuyển tiếp
+    ở ``forward_purchase_request``/``pr_detail``:
+    - Hiển thị/quyền xem: mirror đúng check ở ``pr_detail`` — chỉ người tạo,
+      người được chỉ định (``assigned_to``), quản lý phòng Mua hàng, hoặc
+      Manager/Admin mới thấy/dùng được PR này để tạo PO, dù họ có quyền
+      ``create`` chung trên module ``po``.
+    - Chống convert trùng/đua nhau: PR đã ``linked_po`` bị loại ngay ở
+      ``get_object_or_404`` (không chỉ ẩn nút trên UI); và khi POST thật sự
+      tạo PO, khoá lại PR bằng ``select_for_update()`` rồi kiểm tra lại
+      trạng thái + ``linked_po_id`` bên trong transaction — tránh 2 request
+      đồng thời cùng vượt qua check ban đầu rồi cùng tạo PO cho 1 PR.
     """
     initial = None
     source_pr = None
     from_pr_id = request.POST.get('from_pr') or request.GET.get('from_pr')
     if from_pr_id:
         source_pr = get_object_or_404(
-            PurchaseRequest, pk=from_pr_id, status=PurchaseRequest.Status.APPROVED)
+            PurchaseRequest, pk=from_pr_id, status=PurchaseRequest.Status.APPROVED, linked_po__isnull=True)
+        if (
+            not _pr_can_view_all(request.user)
+            and source_pr.requested_by_id != request.user.id
+            and source_pr.assigned_to_id != request.user.id
+        ):
+            raise PermissionDenied(
+                'Bạn chỉ tạo được PO từ yêu cầu mua hàng do chính mình tạo hoặc được giao phụ trách.')
         if request.method == 'GET':
             initial = [
                 {'product': item.product_id, 'qty_ordered': item.qty_requested}
@@ -187,13 +273,26 @@ def po_create(request):
     formset = PurchaseOrderItemFormSet(
         request.POST or None, instance=PurchaseOrder(), prefix='items', initial=initial)
     if request.method == 'POST' and form.is_valid() and formset.is_valid():
-        with transaction.atomic():
-            obj = form.save()
-            formset.instance = obj
-            formset.save()
-            if source_pr:
-                source_pr.linked_po = obj
-                source_pr.save(update_fields=['linked_po'])
+        try:
+            with transaction.atomic():
+                if source_pr:
+                    source_pr = PurchaseRequest.objects.select_for_update().get(pk=source_pr.pk)
+                    if source_pr.status != PurchaseRequest.Status.APPROVED:
+                        raise ValidationError(
+                            f'Yêu cầu "{source_pr.request_no}" không còn ở trạng thái Đã duyệt.')
+                    if source_pr.linked_po_id:
+                        raise ValidationError(f'Yêu cầu "{source_pr.request_no}" đã có PO liên kết.')
+                obj = form.save(commit=False)
+                obj.created_by = request.user
+                obj.save()
+                formset.instance = obj
+                formset.save()
+                if source_pr:
+                    source_pr.linked_po = obj
+                    source_pr.save(update_fields=['linked_po'])
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+            return redirect('purchasing:pr_detail', pk=from_pr_id)
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
             description=f'Tạo PO {obj.po_no}',
@@ -301,8 +400,13 @@ def po_supplier_performance(request):
 
 @pr_permission_required('read')
 def pr_list(request):
-    """READ — danh sách PR (Tab 1), toàn bộ trạng thái, không lọc mặc định."""
-    prs = PurchaseRequest.objects.select_related('warehouse', 'requested_by', 'linked_po').all()
+    """READ — danh sách PR (Tab 1). Nhân viên phòng Mua hàng/Manager/Admin xem
+    toàn bộ (cần bức tranh tổng để xử lý/duyệt); nhân viên phòng khác chỉ xem PR
+    do chính mình tạo (``_pr_can_view_all``).
+    """
+    prs = PurchaseRequest.objects.select_related('warehouse', 'requested_by', 'assigned_to', 'linked_po').all()
+    if not _pr_can_view_all(request.user):
+        prs = prs.filter(Q(requested_by=request.user) | Q(assigned_to=request.user))
     selected_status = request.GET.get('status', '')
     if selected_status:
         prs = prs.filter(status=selected_status)
@@ -315,38 +419,59 @@ def pr_list(request):
         'page_obj': page_obj,
         'page_size': page_size,
         'can_create': request.user.can('create', 'pr'),
+        'can_view_all': _pr_can_view_all(request.user),
         'statuses': PurchaseRequest.Status.choices,
         'selected_status': selected_status,
         'q': q,
-        'pr_pending_count': _pr_pending_count(),
+        'pr_pending_count': _pr_pending_count(request.user),
     })
 
 
 @pr_permission_required('read')
 def pr_detail(request, pk):
-    """READ — chi tiết PR: item, trạng thái duyệt, link sang PO tạo từ PR này (nếu có)."""
+    """READ — chi tiết PR: item, trạng thái duyệt (qua ``Approval``), link sang PO
+    tạo từ PR này (nếu có). Người ngoài phòng Mua hàng, hoặc nhân viên phòng Mua
+    hàng thường không được chỉ định/chuyển tiếp, chỉ xem được PR do chính mình
+    tạo (mirror lọc ở ``pr_list`` — chặn cả truy cập trực tiếp qua URL).
+    """
     obj = get_object_or_404(
         PurchaseRequest.objects
-        .select_related('warehouse', 'requested_by', 'decided_by', 'linked_po')
+        .select_related('warehouse', 'requested_by', 'assigned_to', 'decided_by', 'linked_po')
         .prefetch_related('items__product'),
         pk=pk,
     )
+    if (
+        not _pr_can_view_all(request.user)
+        and obj.requested_by_id != request.user.id
+        and obj.assigned_to_id != request.user.id
+    ):
+        raise PermissionDenied('Bạn chỉ xem được yêu cầu mua hàng do chính mình tạo hoặc được giao phụ trách.')
+    can_forward = (
+        can_decide_pr(request.user)
+        and obj.status == PurchaseRequest.Status.APPROVED
+        and not obj.linked_po_id
+    )
     return render(request, 'purchasing/pr_detail.html', {
         'obj': obj,
-        'can_approve': request.user.can('approve', 'pr') and obj.status == PurchaseRequest.Status.PENDING,
+        'approval': latest_approval_for(obj),
+        'can_approve': can_decide_pr(request.user) and obj.status == PurchaseRequest.Status.PENDING,
         'can_create_po': (
             request.user.can('create', 'po')
             and obj.status == PurchaseRequest.Status.APPROVED
             and not obj.linked_po_id
         ),
+        'can_forward': can_forward,
+        'forward_form': PurchaseRequestForwardForm() if can_forward else None,
         'reject_form': PurchaseRequestRejectForm(),
     })
 
 
 @pr_permission_required('create')
 def pr_create(request):
-    """CREATE — tiếp nhận yêu cầu mua hàng từ nhân viên kho (Tab 1), kèm nhiều
-    dòng SKU (formset). ``requested_by`` luôn là người đang đăng nhập.
+    """CREATE — tiếp nhận yêu cầu mua hàng từ nhân viên các phòng ban (Tab 1), kèm
+    nhiều dòng SKU (formset). ``requested_by`` luôn là người đang đăng nhập. Tạo
+    xong nộp thẳng vào luồng ``Approval`` (department=PURCHASING) — không có
+    bước "Nộp" riêng, tạo PR tức là gửi yêu cầu duyệt.
     """
     form = PurchaseRequestForm(request.POST or None)
     formset = PurchaseRequestItemFormSet(
@@ -358,58 +483,78 @@ def pr_create(request):
             obj.save()
             formset.instance = obj
             formset.save()
+            submit_purchase_request(obj, actor=request.user, ip_address=client_ip(request))
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
             description=f'Tạo yêu cầu mua hàng {obj.request_no}',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã tạo yêu cầu mua hàng "{obj.request_no}".')
+        messages.success(request, f'Đã gửi yêu cầu mua hàng "{obj.request_no}", chờ quản lý phòng Mua hàng duyệt.')
         return redirect('purchasing:pr_detail', pk=obj.pk)
     return render(request, 'purchasing/pr_form.html', {'form': form, 'formset': formset, 'mode': 'create'})
 
 
-@pr_permission_required('approve')
+@login_required
 def pr_approve(request, pk):
-    """PENDING -> APPROVED (POST-only)."""
+    """Quản lý phòng Mua hàng (hoặc Manager/Admin) duyệt PR: PENDING -> APPROVED (POST-only)."""
     obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not can_decide_pr(request.user):
+        raise PermissionDenied('Không có quyền duyệt yêu cầu mua hàng.')
     if request.method == 'POST':
-        if obj.status != PurchaseRequest.Status.PENDING:
-            messages.error(request, f'Yêu cầu "{obj.request_no}" không ở trạng thái Chờ duyệt.')
-        else:
-            obj.status = PurchaseRequest.Status.APPROVED
-            obj.decided_by = request.user
-            obj.decided_at = timezone.now()
-            obj.save(update_fields=['status', 'decided_by', 'decided_at'])
-            log_action(
-                request.user, AuditLog.Action.APPROVE, target=obj,
-                description=f'Duyệt yêu cầu mua hàng {obj.request_no}',
-                ip_address=client_ip(request),
-            )
+        approval = latest_approval_for(obj)
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('Yêu cầu này không có phiếu duyệt nào đang chờ xử lý.')
+            decide_purchase_request(approval, True, actor=request.user, ip_address=client_ip(request))
             messages.success(request, f'Đã duyệt yêu cầu "{obj.request_no}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:pr_detail', pk=obj.pk)
 
 
-@pr_permission_required('approve')
+@login_required
 def pr_reject(request, pk):
-    """PENDING -> REJECTED kèm lý do (POST-only)."""
+    """Quản lý phòng Mua hàng (hoặc Manager/Admin) từ chối PR kèm lý do: PENDING ->
+    REJECTED (POST-only)."""
     obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not can_decide_pr(request.user):
+        raise PermissionDenied('Không có quyền từ chối yêu cầu mua hàng.')
     if request.method == 'POST':
-        if obj.status != PurchaseRequest.Status.PENDING:
-            messages.error(request, f'Yêu cầu "{obj.request_no}" không ở trạng thái Chờ duyệt.')
-        else:
-            form = PurchaseRequestRejectForm(request.POST)
-            if form.is_valid():
-                obj.status = PurchaseRequest.Status.REJECTED
-                obj.decided_by = request.user
-                obj.decided_at = timezone.now()
-                obj.reject_reason = form.cleaned_data['reject_reason']
-                obj.save(update_fields=['status', 'decided_by', 'decided_at', 'reject_reason'])
-                log_action(
-                    request.user, AuditLog.Action.REJECT, target=obj,
-                    description=f'Từ chối yêu cầu mua hàng {obj.request_no}: {obj.reject_reason}',
-                    ip_address=client_ip(request),
-                )
-                messages.success(request, f'Đã từ chối yêu cầu "{obj.request_no}".')
-            else:
-                messages.error(request, 'Vui lòng nhập lý do từ chối.')
+        approval = latest_approval_for(obj)
+        form = PurchaseRequestRejectForm(request.POST)
+        try:
+            if approval is None or approval.status != Approval.Status.PENDING:
+                raise ValidationError('Yêu cầu này không có phiếu duyệt nào đang chờ xử lý.')
+            if not form.is_valid():
+                raise ValidationError('Vui lòng nhập lý do từ chối.')
+            decide_purchase_request(
+                approval, False, actor=request.user, note=form.cleaned_data['reject_reason'],
+                ip_address=client_ip(request),
+            )
+            messages.success(request, f'Đã từ chối yêu cầu "{obj.request_no}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:pr_detail', pk=obj.pk)
+
+
+@login_required
+def pr_forward(request, pk):
+    """Quản lý phòng Mua hàng (hoặc Manager/Admin) chuyển tiếp 1 PR đã duyệt cho
+    1 nhân viên phòng Mua hàng cụ thể tạo PO (POST-only) — xem
+    ``purchasing.services.forward_purchase_request``."""
+    obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not can_decide_pr(request.user):
+        raise PermissionDenied('Không có quyền chuyển tiếp yêu cầu mua hàng.')
+    if request.method == 'POST':
+        form = PurchaseRequestForwardForm(request.POST)
+        try:
+            if not form.is_valid():
+                raise ValidationError('Vui lòng chọn nhân viên để chuyển tiếp.')
+            forward_purchase_request(
+                obj, form.cleaned_data['staff'], actor=request.user, ip_address=client_ip(request))
+            messages.success(
+                request,
+                f'Đã chuyển tiếp yêu cầu "{obj.request_no}" cho {form.cleaned_data["staff"].username}.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:pr_detail', pk=obj.pk)

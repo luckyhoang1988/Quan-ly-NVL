@@ -30,6 +30,8 @@
               <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
             {% endif %}
           </td>
+          <th class="text-nowrap">Người quản lý</th>
+          <td>{% if obj.managed_by %}{{ obj.managed_by.get_full_name|default:obj.managed_by.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
         </tr>
       </tbody>
     </table>

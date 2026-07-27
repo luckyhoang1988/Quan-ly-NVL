@@ -1,9 +1,15 @@
 """View app partners: CRUD Supplier (mục 1d — bổ sung, không có mã FR).
 
 Phân quyền: giống catalog (mục 1c) — không có cột "Partners"/"Supplier" trong
-Permission Matrix (BACKLOG mục 1a), nên quyền tạo/sửa gán cho role MANAGER hoặc
-ADMIN; mọi user đã đăng nhập đều XEM được (GRN/PO ở Phase sau cần tham chiếu
-Supplier qua dropdown).
+Permission Matrix (BACKLOG mục 1a), nên quyền tạo/sửa gán thẳng theo role thay
+vì RBAC module thật; mọi user đã đăng nhập đều XEM được (GRN/PO ở Phase sau cần
+tham chiếu Supplier qua dropdown).
+
+Bổ sung theo yêu cầu người dùng (2026-07-26): nhân viên mua hàng (role
+PURCHASING) cũng được TẠO Supplier — NCC tạo ra tự gán ``managed_by`` = người
+tạo, và role PURCHASING chỉ SỬA được đúng NCC do chính mình tạo (không sửa
+NCC do đồng nghiệp mua hàng khác hoặc Manager tạo trước đó); MANAGER/ADMIN
+không đổi — vẫn toàn quyền sửa mọi Supplier như cũ.
 """
 from functools import wraps
 
@@ -25,18 +31,30 @@ User = get_user_model()
 
 
 def can_manage_partners(user):
-    """MANAGER hoặc ADMIN (role) hoặc Django superuser được tạo/sửa Supplier."""
+    """MANAGER hoặc ADMIN (role) hoặc Django superuser — toàn quyền mọi Supplier."""
     return user.is_superuser or user.role in (User.Role.MANAGER, User.Role.ADMIN)
 
 
-def partners_manager_required(view):
-    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không đủ quyền -> 403."""
+def can_create_supplier(user):
+    """Ai được TẠO Supplier: ``can_manage_partners`` (toàn quyền) hoặc role PURCHASING
+    (NCC tạo ra sẽ tự gán ``managed_by`` = người tạo, xem ``supplier_create``)."""
+    return can_manage_partners(user) or user.role == User.Role.PURCHASING
+
+
+def can_edit_supplier(user, supplier):
+    """Ai được SỬA 1 Supplier cụ thể: ``can_manage_partners`` sửa được mọi NCC;
+    role PURCHASING chỉ sửa được đúng NCC do chính mình tạo (``managed_by``)."""
+    return can_manage_partners(user) or (user.role == User.Role.PURCHASING and supplier.managed_by_id == user.id)
+
+
+def partners_create_required(view):
+    """Decorator: chưa đăng nhập -> về login; không đủ quyền TẠO Supplier -> 403."""
 
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
-        if not can_manage_partners(request.user):
-            raise PermissionDenied('Chỉ Quản lý (Manager) hoặc Admin được quản lý Supplier.')
+        if not can_create_supplier(request.user):
+            raise PermissionDenied('Không có quyền tạo Nhà cung cấp.')
         return view(request, *args, **kwargs)
 
     return wrapper
@@ -66,16 +84,21 @@ def supplier_detail(request, pk):
     return render(request, 'partners/supplier_detail.html', {
         'obj': obj,
         'purchase_orders': obj.purchase_orders.order_by('-created_at')[:20],
-        'can_manage': can_manage_partners(request.user),
+        'can_manage': can_edit_supplier(request.user, obj),
     })
 
 
-@partners_manager_required
+@partners_create_required
 def supplier_create(request):
-    """CREATE — tạo Supplier mới."""
+    """CREATE — tạo Supplier mới. ``managed_by`` luôn là người tạo (kể cả
+    Manager/Admin) — role PURCHASING dùng field này để giới hạn sửa sau này
+    (xem ``can_edit_supplier``); Manager/Admin không bị giới hạn bởi nó.
+    """
     form = SupplierForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
-        obj = form.save()
+        obj = form.save(commit=False)
+        obj.managed_by = request.user
+        obj.save()
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
             description=f'Tạo Nhà cung cấp {obj.supplier_code}',
@@ -86,10 +109,15 @@ def supplier_create(request):
     return render(request, 'partners/supplier_form.html', {'form': form, 'mode': 'create'})
 
 
-@partners_manager_required
+@login_required
 def supplier_update(request, pk):
-    """UPDATE — sửa Supplier (kể cả is_active, không tách khoá/mở riêng như Warehouse)."""
+    """UPDATE — sửa Supplier (kể cả is_active, không tách khoá/mở riêng như Warehouse).
+    Quyền theo ``can_edit_supplier`` (Manager/Admin sửa mọi NCC; PURCHASING chỉ
+    sửa NCC do chính mình tạo).
+    """
     obj = get_object_or_404(Supplier, pk=pk)
+    if not can_edit_supplier(request.user, obj):
+        raise PermissionDenied('Bạn không có quyền sửa Nhà cung cấp này.')
     form = SupplierForm(request.POST or None, instance=obj)
     if request.method == 'POST' and form.is_valid():
         obj = form.save()

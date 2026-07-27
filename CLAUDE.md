@@ -282,3 +282,72 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   Approval-based gates, this flow does **not** use the generic `Approval` model — a handoff is a hand-off to
   a *specific person or team*, not a request that bubbles up to one department manager's decision, so it has
   its own lighter PENDING/ACCEPTED/REJECTED model instead.
+- **PR (Yêu cầu mua hàng) routed through `Approval` + visibility scoping (Phase E, 2026-07-26)**:
+  `PurchaseRequest` gained `assigned_to` (FK User, optional — requester picks 1 PURCHASING-department staff to
+  handle the request; left blank, `create_approval` notifies the whole department). Creating a PR now calls
+  `purchasing.services.submit_purchase_request()` right away (no separate DRAFT/"submit" step — creating a PR
+  *is* submitting it), which wraps `accounts.approvals.create_approval(pr, department=PURCHASING, ...)` — same
+  mechanism as GRN submit/GIN confirm (§4 in the skill file). `ROLE_PERMISSIONS['PURCHASING']['pr']` had
+  `approve` removed (migration `accounts/migrations/0012_reseed_purchasing_pr_permissions.py` re-seeds
+  existing users) — a plain PURCHASING-role user, even one named as `assigned_to`, can no longer decide a PR
+  themselves; only `user.is_department_manager('PURCHASING')` or the Manager/Admin `can('approve','pr')`
+  fallback can, via `purchasing.services.decide_purchase_request()`. `assigned_to` is notification/display
+  only, never a decision right — mirrors how `WarehouseHandoff.assigned_to` (Phase D) is *informational*
+  while `is_department_manager` still has oversight. Visibility (`purchasing.views.pr_list`/`pr_detail`,
+  `purchasing.views._pr_can_view_all`) — a requester outside the Purchasing department only sees PRs they
+  created themselves (`requested_by`); a **plain PURCHASING-role staff member (not a department manager) only
+  sees PRs where they are `assigned_to`** — being in the PURCHASING role alone no longer grants full
+  visibility (tightened same day as the forward feature below, since "see everything" defeated the point of
+  routing specific PRs to specific staff); `is_department_manager('PURCHASING')` and Manager/Admin still see
+  every PR (need the full picture to triage/decide/forward). `pr_detail` enforces the same scoping against
+  direct URL access, not just the list filter. Kept separate from `Supplier.managed_by` (added same day): role
+  PURCHASING can now create `Supplier` rows (previously Manager/Admin only) via
+  `partners.views.can_create_supplier`; the row auto-gets `managed_by = creator`, and
+  `partners.views.can_edit_supplier` limits a PURCHASING user to editing only the suppliers they created —
+  Manager/Admin are unaffected (still edit any Supplier). Also `PurchaseOrder.po_no` is no longer typed in by
+  hand: `PurchaseOrder.generate_po_no()` auto-assigns `PO-XXXX` (a global incrementing sequence, *not*
+  month-scoped like `PR-YYYYMM-XXX` — POs don't reset per cycle) in `save()` when `po_no` is blank; the field
+  is now `editable=False` and dropped from `PurchaseOrderForm` so the create/update form no longer exposes it.
+- **PR forward-to-staff after approval, added same day as the visibility tightening above**: an APPROVED PR
+  with no `linked_po` yet can be forwarded to a specific PURCHASING-department staff member via
+  `purchasing.services.forward_purchase_request(pr, staff, actor, ip_address=None)` — it simply (re)assigns
+  `PurchaseRequest.assigned_to` (the same field the original requester can optionally set at creation time;
+  forwarding just overwrites it later) and `notify()`s that staff member, so no new field/model was needed.
+  Gated to `purchasing.views.can_decide_pr` (department manager or Manager/Admin `approve` fallback) via the
+  `pr_forward` view/URL — a plain PURCHASING staff member cannot forward to a colleague themselves, only the
+  manager routes work. Once forwarded, the assignee's `assigned_to == them` is exactly what the tightened
+  visibility rule above checks, so they immediately see the PR in their own `pr_list`/`pr_detail` and — since
+  PURCHASING already has `create` on `po` — can create the PO themselves via the existing "Tạo PO từ yêu cầu
+  này" button, no extra permission needed. Raises `ValidationError` if the PR isn't `APPROVED` yet or already
+  has a `linked_po` (mirrors the guard conditions on the "Tạo PO" button itself).
+  **Hardened 2026-07-27**: `purchasing.views.po_create`'s `?from_pr=<pk>` handling used to trust generic
+  `create`-on-`po` permission alone — any MANAGER/PURCHASING/ADMIN user could convert *any* `APPROVED` PR
+  into a PO by guessing its (sequential, guessable) pk directly, bypassing the forward/visibility
+  restriction entirely, and could even convert an already-`linked_po` PR a second time since `PurchaseRequest.status`
+  never leaves `APPROVED` after conversion (no dedicated `CONVERTED` state) and the old query only filtered
+  on `status`. Fixed by mirroring `pr_detail`'s exact visibility check (`_pr_can_view_all(user) or
+  requested_by_id == user.id or assigned_to_id == user.id`, else `PermissionDenied`) plus adding
+  `linked_po__isnull=True` to the initial `get_object_or_404` filter, and — since that initial check still
+  has a TOCTOU gap between two concurrent submits — re-validating `status`/`linked_po_id` a second time
+  inside the POST transaction after `PurchaseRequest.objects.select_for_update()`, raising `ValidationError`
+  (same "not APPROVED anymore" catch-and-`messages.error` pattern used by `po_approve`/`po_send`/`po_close`)
+  if a concurrent request won the race. Applies the same pattern already used by
+  `forward_purchase_request`/`decide_purchase_request` (`select_for_update` + re-check inside the atomic
+  block) — any future PR/PO state-transition view taking a target pk from the querystring/POST body should
+  follow this template rather than trusting a pre-transaction `get_object_or_404` alone.
+- **PO list visibility scoping, added same day (2026-07-26), asymmetric with the PR rule above on purpose**:
+  `PurchaseOrder` gained `created_by` (nullable FK to User, `SET_NULL`, set automatically in `po_create` —
+  not an exposed form field). `purchasing.views._po_can_view_all(user)` restricts **only** a plain
+  PURCHASING-role user who is *not* `is_department_manager('PURCHASING')` to their own `created_by` POs in
+  `po_list`; every other case — STAFF/QC/ACCOUNTANT (need PO visibility to cross-check GRN/công nợ),
+  MANAGER/ADMIN, and the PURCHASING department manager (oversight) — still sees every PO. This is
+  deliberately **not** a mirror of `_pr_can_view_all`: PR visibility restricts everyone who isn't a
+  manager/admin (every requester only sees their own), whereas PO read access (`ROLE_PERMISSIONS[...]['po']`)
+  is already broadly granted to every role, and multiple people legitimately act on the *same* PO across its
+  lifecycle (Manager approves, a different PURCHASING staff member may send it to the supplier) — narrowing
+  that down to "creator only" would have broken cross-role collaboration. For the same reason,
+  `purchasing.views.po_detail` (unlike `pr_detail`) applies **no** `created_by` check — direct/redirected
+  access (after `po_approve`/`po_send`, or via the "PO liên kết" link from `pr_detail`/GRN) stays open to
+  anyone with base `read` on `po`; only `po_list` (the browsing/queue view) is scoped down, so a PURCHASING
+  staff member's list isn't cluttered with every colleague's PO but they can still open one directly when
+  their job requires it (e.g. sending a PO a manager created).

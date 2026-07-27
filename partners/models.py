@@ -68,6 +68,11 @@ class Supplier(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, verbose_name='Trạng thái')
     internal_note = models.TextField(
         blank=True, verbose_name='Ghi chú nội bộ', help_text='Ghi chú nội bộ (đánh giá, lưu ý đặc biệt...).')
+    managed_by = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='managed_suppliers', verbose_name='Người quản lý',
+        help_text='Nhân viên mua hàng đã tạo NCC này — chỉ người này (hoặc Manager/Admin) được sửa. '
+                   'Tự gán khi tạo, không sửa tay qua form.')
 
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 

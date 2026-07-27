@@ -19,12 +19,14 @@ from django.db import transaction
 from django.db.models import Avg, Count, Sum
 from django.utils import timezone
 
+from accounts.approvals import create_approval, decide_approval
 from accounts.audit import log_action
-from accounts.models import AuditLog
+from accounts.models import AuditLog, User
+from accounts.notifications import notify
 from partners.models import Supplier
 from receiving.models import GrnItem
 
-from .models import PurchaseOrder, PurchaseOrderItem
+from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest
 
 
 def sync_po_status(po):
@@ -189,3 +191,74 @@ def supplier_lead_time_stats():
             'delayed_count': delayed_count,
         })
     return results
+
+
+@transaction.atomic
+def submit_purchase_request(pr, actor, ip_address=None):
+    """Nộp PR (gọi ngay sau khi tạo, ``pr.status`` đã là PENDING — không có state
+    DRAFT riêng vì tạo PR và nộp là 1 thao tác): tạo ``Approval`` cho
+    ``department=PURCHASING`` (tự báo toàn bộ quản lý phòng Mua hàng qua
+    ``create_approval``), cộng thêm báo riêng ``pr.assigned_to`` nếu người tạo
+    có chỉ định — ``assigned_to`` chỉ để biết ai sẽ xử lý, không tự có quyền
+    duyệt (xem module docstring).
+    """
+    create_approval(
+        pr, department=User.Department.PURCHASING,
+        action_label=f'Yêu cầu mua hàng {pr.request_no}', submitted_by=actor, ip_address=ip_address,
+    )
+    if pr.assigned_to_id:
+        notify(
+            pr.assigned_to, f'{actor.username} gửi yêu cầu mua hàng {pr.request_no} cần bạn xử lý.', target=pr)
+    return pr
+
+
+@transaction.atomic
+def forward_purchase_request(pr, staff, actor, ip_address=None):
+    """Quản lý phòng Mua hàng (hoặc Manager/Admin) chuyển tiếp 1 PR đã ``APPROVED``
+    cho 1 nhân viên phòng Mua hàng cụ thể để tạo PO — set/ghi đè ``assigned_to``
+    (cùng field với chỉ định lúc tạo PR, xem ``PurchaseRequest.assigned_to``),
+    quyết định hiển thị PR cho nhân viên đó ở ``purchasing.views._pr_can_view_all``.
+    """
+    pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+    if pr.status != PurchaseRequest.Status.APPROVED:
+        raise ValidationError(f'Chỉ chuyển tiếp được yêu cầu đã duyệt (hiện tại: {pr.get_status_display()}).')
+    if pr.linked_po_id:
+        raise ValidationError('Yêu cầu này đã có PO liên kết, không cần chuyển tiếp nữa.')
+
+    pr.assigned_to = staff
+    pr.save(update_fields=['assigned_to'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=pr,
+        description=f'Chuyển tiếp yêu cầu mua hàng {pr.request_no} cho {staff.username} tạo PO.',
+        ip_address=ip_address,
+    )
+    notify(staff, f'{actor.username} chuyển tiếp yêu cầu mua hàng {pr.request_no} cho bạn tạo PO.', target=pr)
+    return pr
+
+
+@transaction.atomic
+def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
+    """Quản lý phòng Mua hàng (hoặc Manager/Admin) duyệt/từ chối 1 PR đang chờ,
+    thông qua ``Approval`` (xem ``accounts.approvals.decide_approval``)."""
+    pr = PurchaseRequest.objects.select_for_update().get(pk=approval.target_id)
+    if pr.status != PurchaseRequest.Status.PENDING:
+        raise ValidationError(f'Yêu cầu "{pr.request_no}" không ở trạng thái Chờ duyệt.')
+
+    def on_approve():
+        pr.status = PurchaseRequest.Status.APPROVED
+        pr.decided_by = actor
+        pr.decided_at = timezone.now()
+        pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+
+    def on_reject():
+        pr.status = PurchaseRequest.Status.REJECTED
+        pr.decided_by = actor
+        pr.decided_at = timezone.now()
+        pr.reject_reason = note
+        pr.save(update_fields=['status', 'decided_by', 'decided_at', 'reject_reason'])
+
+    decide_approval(
+        approval, approved, actor=actor, note=note,
+        on_approve=on_approve, on_reject=on_reject, ip_address=ip_address,
+    )
+    return pr

@@ -7,10 +7,19 @@ PARTIAL_RECEIVED/RECEIVED (tự động theo Qty GRN thực nhận, xem
 ``services.sync_po_status``) -> CLOSED (archive).
 
 ``PurchaseRequest``/``PurchaseRequestItem`` (bổ sung ngoài FR, không có mã FR
-riêng) là "Yêu cầu mua hàng" nhân viên kho gửi lên trước khi có PO — tách biệt
-với PO thật: PENDING -> APPROVED/REJECTED, và 1 PR đã duyệt convert thành đúng
-1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``. Không
-tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
+riêng) là "Yêu cầu mua hàng" nhân viên các phòng ban gửi lên trước khi có PO —
+tách biệt với PO thật: PENDING -> APPROVED/REJECTED, và 1 PR đã duyệt convert
+thành đúng 1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``.
+Không tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
+
+Duyệt PR đi qua cơ chế ``accounts.approvals`` dùng chung với GRN submit/GIN
+confirm (xem CLAUDE.md "Department-manager approval axis"): người tạo có thể
+chọn 1 ``assigned_to`` (nhân viên phòng Mua hàng cụ thể, tuỳ chọn — để trống
+thì báo cả phòng) để biết ai sẽ xử lý, nhưng chỉ quản lý phòng Mua hàng
+(``is_department_manager('PURCHASING')``) hoặc Manager/Admin mới thật sự
+DUYỆT/từ chối — ``assigned_to`` chỉ mang tính thông báo/hiển thị, không tự có
+quyền approve (xem ``purchasing.services.submit_purchase_request``/
+``decide_purchase_request``).
 """
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
@@ -26,7 +35,9 @@ class PurchaseOrder(models.Model):
         RECEIVED = 'RECEIVED', 'Đã nhận đủ'
         CLOSED = 'CLOSED', 'Đã đóng'
 
-    po_no = models.CharField(max_length=30, unique=True, verbose_name='Mã PO', help_text='Mã PO, vd PO-0001.')
+    po_no = models.CharField(
+        max_length=30, unique=True, editable=False, verbose_name='Mã PO',
+        help_text='Tự sinh: PO-XXXX (tăng dần toàn hệ thống, không nhập tay — tránh trùng mã).')
     supplier = models.ForeignKey(
         'partners.Supplier', on_delete=models.PROTECT, related_name='purchase_orders', verbose_name='Nhà cung cấp')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
@@ -36,6 +47,11 @@ class PurchaseOrder(models.Model):
     received_at = models.DateField(
         null=True, blank=True, verbose_name='Ngày nhận đủ',
         help_text='Ngày PO chuyển sang RECEIVED (set tự động 1 lần, dùng tính lead-time thực tế FR-PO-05).')
+    created_by = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='purchase_orders_created', verbose_name='Người tạo',
+        help_text='Set tự động = người bấm Tạo PO — dùng để giới hạn nhân viên phòng Mua hàng '
+                   'thường chỉ xem PO do chính mình tạo (xem purchasing.views._po_can_view_all).')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:
@@ -45,6 +61,34 @@ class PurchaseOrder(models.Model):
 
     def __str__(self):
         return self.po_no
+
+    @classmethod
+    def generate_po_no(cls):
+        """Sinh mã PO tự động PO-XXXX, tăng dần TOÀN hệ thống (không theo tháng
+        như PR — PO không lặp lại theo chu kỳ). Duyệt qua từng ``po_no`` thay vì
+        ``order_by('-po_no')`` để tránh so sánh chuỗi sai khi số chữ số khác nhau
+        (vd 'PO-99999' > 'PO-100000' theo thứ tự chuỗi dù nhỏ hơn theo số); chỉ
+        tính các mã có phần đuôi thuần số (bỏ qua mã test/import kiểu 'PO-TEST-0001').
+        """
+        prefix = 'PO-'
+        with transaction.atomic():
+            max_seq = 0
+            po_nos = (
+                cls.objects.select_for_update()
+                .filter(po_no__startswith=prefix)
+                .values_list('po_no', flat=True)
+            )
+            for po_no in po_nos:
+                suffix = po_no[len(prefix):]
+                if suffix.isdigit():
+                    max_seq = max(max_seq, int(suffix))
+            seq = max_seq + 1
+        return f'{prefix}{seq:04d}'
+
+    def save(self, *args, **kwargs):
+        if not self.po_no:
+            self.po_no = self.generate_po_no()
+        super().save(*args, **kwargs)
 
     def delivery_status(self):
         """FR-PO-06: phân loại giao hàng On time/Delayed/Partial, tính on-the-fly
@@ -102,6 +146,11 @@ class PurchaseRequest(models.Model):
         help_text='Tự sinh: PR-YYYYMM-XXX.')
     requested_by = models.ForeignKey(
         'accounts.User', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Người yêu cầu')
+    assigned_to = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='assigned_purchase_requests', verbose_name='Nhân viên mua hàng phụ trách',
+        help_text='Chọn 1 nhân viên phòng Mua hàng cụ thể để xử lý yêu cầu này — để trống thì '
+                   'thông báo cho cả phòng Mua hàng.')
     warehouse = models.ForeignKey(
         'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Kho',
         help_text='Kho đang thiếu hàng (chỉ kho loại MAIN).')

@@ -76,6 +76,58 @@ class SupplierCrudTest(TestCase):
         self.assertTrue(AuditLog.objects.filter(
             action=AuditLog.Action.UPDATE, target_id=str(supplier.pk)).exists())
 
+    def test_TC_PTN_001_007_purchasing_can_create_and_becomes_managed_by(self):
+        """Nhân viên mua hàng (role PURCHASING) được tạo Supplier — NCC tự gán
+        ``managed_by`` = người tạo (bổ sung theo yêu cầu người dùng 2026-07-26)."""
+        purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.client.force_login(purchasing_user)
+        response = self.client.post(reverse('partners:supplier_create'), self._create_payload())
+        supplier = Supplier.objects.get(supplier_code='NCC-0001')
+        self.assertRedirects(response, reverse('partners:supplier_list'))
+        self.assertEqual(supplier.managed_by, purchasing_user)
+
+    def test_TC_PTN_001_008_purchasing_can_edit_own_supplier(self):
+        purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        supplier = Supplier.objects.create(
+            supplier_code='NCC-0001', name='Công ty TNHH ABC', managed_by=purchasing_user)
+        self.client.force_login(purchasing_user)
+        response = self.client.post(
+            reverse('partners:supplier_update', args=[supplier.pk]),
+            self._create_payload(name='Công ty TNHH ABC (đổi tên)'),
+        )
+        supplier.refresh_from_db()
+        self.assertRedirects(response, reverse('partners:supplier_list'))
+        self.assertEqual(supplier.name, 'Công ty TNHH ABC (đổi tên)')
+
+    def test_TC_PTN_001_009_purchasing_cannot_edit_others_supplier(self):
+        """Role PURCHASING không sửa được NCC do đồng nghiệp mua hàng khác (hoặc
+        Manager) tạo — chỉ sửa được đúng NCC mình quản lý."""
+        purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        other_purchasing_user = User.objects.create_user(
+            username='mua2', password='mua2-pass-123', role=User.Role.PURCHASING)
+        supplier = Supplier.objects.create(
+            supplier_code='NCC-0001', name='Công ty TNHH ABC', managed_by=other_purchasing_user)
+        self.client.force_login(purchasing_user)
+        response = self.client.post(
+            reverse('partners:supplier_update', args=[supplier.pk]), self._create_payload())
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PTN_001_010_manager_can_edit_any_supplier_regardless_of_managed_by(self):
+        purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        supplier = Supplier.objects.create(
+            supplier_code='NCC-0001', name='Công ty TNHH ABC', managed_by=purchasing_user)
+        response = self.client.post(
+            reverse('partners:supplier_update', args=[supplier.pk]),
+            self._create_payload(name='Công ty TNHH ABC (Manager sửa)'),
+        )
+        supplier.refresh_from_db()
+        self.assertRedirects(response, reverse('partners:supplier_list'))
+        self.assertEqual(supplier.name, 'Công ty TNHH ABC (Manager sửa)')
+
 
 class SupplierListPaginationFilterTest(TestCase):
     """Phân trang + bộ lọc (status/tìm kiếm) trên supplier_list."""

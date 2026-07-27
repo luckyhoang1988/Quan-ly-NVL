@@ -21,7 +21,10 @@
 </ul>
 <div class="card shadow-sm">
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
-    <h1 class="panel-title">Đơn mua hàng</h1>
+    <h1 class="panel-title">
+      Đơn mua hàng
+      {% if not can_view_all_po %}<small class="text-muted fw-normal">— chỉ hiển thị PO do bạn tạo</small>{% endif %}
+    </h1>
     <div class="page-toolbar">
       <a href="{% url 'purchasing:po_price_comparison' %}" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-bar-chart"></i> So sánh giá NCC
@@ -75,6 +78,7 @@
           <tr>
             <th>Mã PO</th>
             <th>NCC</th>
+            <th>Người tạo</th>
             <th>Trạng thái</th>
             <th>Giao hàng</th>
             <th>Số dòng</th>
@@ -88,6 +92,7 @@
           <tr>
             <td><a href="{% url 'purchasing:po_detail' po.pk %}">{{ po.po_no }}</a></td>
             <td>{{ po.supplier.name }}</td>
+            <td>{% if po.created_by %}{{ po.created_by.get_full_name|default:po.created_by.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
             <td>
               {% if delivery %}
@@ -107,7 +112,7 @@
           </tr>
           {% endwith %}
           {% empty %}
-          <tr><td colspan="7" class="text-center text-muted">Chưa có PO nào.</td></tr>
+          <tr><td colspan="8" class="text-center text-muted">Chưa có PO nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

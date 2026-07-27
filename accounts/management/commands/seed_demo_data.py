@@ -9,23 +9,34 @@ Batch/Inventory -> GIN (FIFO) -> Stocktake — mirror cách các *_test.py trong
 app dựng fixture (xem CLAUDE.md: GRN/QC/Batch/Inventory là 1 transaction).
 
 Mọi bản ghi demo dùng prefix ``DEMO-`` trên mã (code/supplier_code/product_code/
-po_no) hoặc username ``demo_*`` để ``--flush`` xoá đúng phạm vi, không đụng dữ
-liệu thật.
+po_no) để ``--flush`` xoá đúng phạm vi, không đụng dữ liệu thật (kho/NCC/SP khác
+DEMO- code). ``--flush`` cũng dọn sạch AuditLog/Notification/Approval (log của
+dữ liệu demo cũ, không còn target sau khi xoá thì chỉ là rác) — không dùng
+cho môi trường có dữ liệu thật cần giữ audit trail.
+
+KHÔNG tạo tài khoản demo_* riêng nữa — script này dùng thẳng các tài khoản THẬT
+đã được tạo sẵn trong Quản lý User (mỗi phòng ban 1 quản lý + 1 nhân viên, xem
+``REQUIRED_USERS`` bên dưới), để Approval/Notification phát sinh trong lúc seed
+rơi đúng vào tài khoản người dùng thực sự đang test, không phải tài khoản
+demo_* dùng-rồi-bỏ. Nếu thiếu tài khoản nào, lệnh sẽ báo lỗi rõ cần tạo trước.
 """
 import datetime
 from decimal import Decimal
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from accounts.models import User
+from accounts.approvals import latest_approval_for
+from accounts.models import Approval, AuditLog, Notification, User
 from catalog.models import Product
-from inventory.models import Batch, Inventory, StockMovement
+from inventory.models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 from inventory.services import accept_handoff, sync_expired_batches
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
-from purchasing.services import approve_po, close_po, send_po, sync_po_status
+from purchasing.services import (
+    approve_po, close_po, decide_purchase_request, send_po, submit_purchase_request, sync_po_status,
+)
 from quality.models import QcCriteria, QcInspection, QcInspectionItem
 from quality.services import qc_fail, qc_partial_pass, qc_pass, start_qc
 from receiving.models import Grn, GrnItem, GrnReturn
@@ -38,7 +49,23 @@ from stocktake.services import (
 )
 from warehouse.models import Location, Warehouse
 
-DEMO_PASSWORD = 'Demo@12345'
+# Tài khoản THẬT đã tạo sẵn trong Quản lý User, theo phòng ban (xem CLAUDE.md
+# "Department-manager approval axis") — key -> (username, mô tả cho thông báo lỗi).
+# Không tạo mới ở đây; script chỉ fetch và dùng làm actor cho các thao tác demo.
+REQUIRED_USERS = [
+    ('warehouse_manager', 'khoadmin', 'Quản lý kho (WAREHOUSE, is_manager)'),
+    ('warehouse_staff', 'nvkho1', 'Nhân viên kho (STAFF, dept WAREHOUSE)'),
+    ('purchasing_manager', 'puradmin', 'Quản lý mua hàng (dept PURCHASING, is_manager)'),
+    ('purchasing_staff', 'pur1', 'Nhân viên mua hàng (PURCHASING, dept PURCHASING)'),
+    ('qc_staff', 'qc1', 'Nhân viên QC (QC, dept QC)'),
+]
+
+# Tài khoản demo_* cũ (tạo bởi phiên bản trước của script này) — không còn được
+# seed script tham chiếu tới nữa kể từ khi chuyển sang dùng REQUIRED_USERS ở trên;
+# --flush xoá cứng luôn cho gọn (đã được người dùng xác nhận, không phải đoán).
+OBSOLETE_DEMO_USERNAMES = [
+    'demo_admin', 'demo_manager', 'demo_purchasing', 'demo_qc', 'demo_staff', 'demo_accountant',
+]
 
 WAREHOUSES = [
     ('DEMO-KHO-01', 'Kho Hà Nội (Demo)'),
@@ -161,35 +188,28 @@ class Command(BaseCommand):
             'Đã tạo dữ liệu mẫu: 5 kho thành phẩm + Kho chờ + Kho phế, 12 NCC, 28 sản phẩm, '
             '45 PO, 20 yêu cầu mua hàng (PR), GIN, kiểm kê.'
         ))
-        self.stdout.write('Đăng nhập demo (password chung): ' + DEMO_PASSWORD)
-        for username, role in [
-            ('demo_admin', 'ADMIN'), ('demo_manager', 'MANAGER'), ('demo_purchasing', 'PURCHASING'),
-            ('demo_qc', 'QC'), ('demo_staff', 'STAFF'), ('demo_accountant', 'ACCOUNTANT'),
-        ]:
-            self.stdout.write(f'  {username} ({role})')
+        self.stdout.write('Dữ liệu demo được gắn với các tài khoản thật đã có sẵn (đăng nhập bằng mật khẩu bạn đã đặt):')
+        for key, username, label in REQUIRED_USERS:
+            self.stdout.write(f'  {username} — {label}')
 
     # ------------------------------------------------------------------ users
     def _create_users(self):
-        specs = [
-            ('demo_admin', User.Role.ADMIN),
-            ('demo_manager', User.Role.MANAGER),
-            ('demo_purchasing', User.Role.PURCHASING),
-            ('demo_qc', User.Role.QC),
-            ('demo_staff', User.Role.STAFF),
-            ('demo_accountant', User.Role.ACCOUNTANT),
-        ]
         users = {}
-        for username, role in specs:
-            user = User.objects.filter(username=username).first()
+        missing = []
+        for key, username, label in REQUIRED_USERS:
+            user = User.objects.filter(username=username, is_deleted=False, is_active=True).first()
             if user is None:
-                user = User.objects.create_user(username=username, password=DEMO_PASSWORD, role=role)
-            elif user.is_deleted or not user.is_active:
-                user.is_deleted = False
-                user.is_active = True
-                user.role = role
-                user.save(update_fields=['is_deleted', 'is_active', 'role'])
-            users[role] = user
-        self.stdout.write(f'Users: {len(users)} tài khoản demo sẵn sàng.')
+                missing.append(f'{username} ({label})')
+            else:
+                users[key] = user
+        if missing:
+            raise CommandError(
+                'Thiếu tài khoản thật cần thiết trong Quản lý User (chưa tạo, hoặc đã bị khoá/xoá): '
+                + '; '.join(missing)
+                + '. Hãy tạo/kích hoạt các tài khoản này (đúng role + phòng ban + is_manager) '
+                  'trước khi chạy lại seed_demo_data.'
+            )
+        self.stdout.write('Users: dùng ' + ', '.join(u.username for u in users.values()) + ' (tài khoản thật có sẵn).')
         return users
 
     # ------------------------------------------------------------- warehouses
@@ -255,9 +275,9 @@ class Command(BaseCommand):
 
     # -------------------------------------------------------- purchase requests
     def _create_purchase_requests(self, users, warehouses, products, suppliers):
-        staff = users[User.Role.STAFF]
-        purchasing_user = users[User.Role.PURCHASING]
-        manager = users[User.Role.MANAGER]
+        staff = users['warehouse_staff']
+        purchasing_manager = users['purchasing_manager']
+        manager = users['warehouse_manager']
         now = timezone.now()
 
         # 20 PR: 10 chờ duyệt, 6 đã duyệt (4 chưa tạo PO, 2 đã tạo PO), 4 từ chối.
@@ -277,24 +297,36 @@ class Command(BaseCommand):
                 PurchaseRequestItem.objects.create(
                     purchase_request=pr, product=product, qty_requested=20 + (i * 7 + j * 11) % 180,
                 )
+            # Tạo PR tức là nộp (giống pr_create thật) -> luôn có Approval PENDING
+            # đi kèm, nếu không thì "Duyệt"/"Từ chối" ở UI sẽ báo lỗi thiếu phiếu duyệt.
+            submit_purchase_request(pr, actor=staff)
 
             if state == 'PENDING':
                 prs.append(pr)
                 continue
 
+            approval = latest_approval_for(pr)
+            decided_at = now - datetime.timedelta(days=(i % 10) + 1)
+
             if state == 'REJECTED':
-                pr.status = PurchaseRequest.Status.REJECTED
-                pr.decided_by = manager
-                pr.decided_at = now - datetime.timedelta(days=(i % 10) + 1)
-                pr.reject_reason = PR_REJECT_REASONS[i % len(PR_REJECT_REASONS)]
-                pr.save(update_fields=['status', 'decided_by', 'decided_at', 'reject_reason'])
+                pr = decide_purchase_request(
+                    approval, False, actor=manager,
+                    note=PR_REJECT_REASONS[i % len(PR_REJECT_REASONS)],
+                )
+                pr.decided_at = decided_at
+                pr.save(update_fields=['decided_at'])
+                approval.refresh_from_db()
+                approval.decided_at = decided_at
+                approval.save(update_fields=['decided_at'])
                 prs.append(pr)
                 continue
 
-            pr.status = PurchaseRequest.Status.APPROVED
-            pr.decided_by = purchasing_user
-            pr.decided_at = now - datetime.timedelta(days=(i % 10) + 1)
-            pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+            pr = decide_purchase_request(approval, True, actor=purchasing_manager)
+            pr.decided_at = decided_at
+            pr.save(update_fields=['decided_at'])
+            approval.refresh_from_db()
+            approval.decided_at = decided_at
+            approval.save(update_fields=['decided_at'])
 
             if state == 'APPROVED_CONVERTED':
                 po = PurchaseOrder.objects.create(
@@ -320,9 +352,9 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------- PO -> GRN -> QC
     def _run_po_to_qc_workflow(self, users, warehouses, locations, suppliers, products):
-        manager = users[User.Role.MANAGER]
-        purchasing_user = users[User.Role.PURCHASING]
-        qc_user = users[User.Role.QC]
+        manager = users['warehouse_manager']
+        purchasing_staff = users['purchasing_staff']
+        qc_user = users['qc_staff']
         today = timezone.localdate()
 
         # 45 PO: 3 DRAFT, 2 APPROVED, 10 SENT (chưa có GRN), 30 đã qua GRN/QC
@@ -358,7 +390,7 @@ class Command(BaseCommand):
             if group == 'APPROVED':
                 continue
 
-            send_po(po, actor=purchasing_user)
+            send_po(po, actor=purchasing_staff)
             if group == 'SENT_ONLY':
                 continue
 
@@ -370,12 +402,12 @@ class Command(BaseCommand):
             else:
                 exp_date = today + datetime.timedelta(days=365)
 
-            grn = Grn.objects.create(po=po, supplier=supplier, created_by=purchasing_user)
+            grn = Grn.objects.create(po=po, supplier=supplier, created_by=purchasing_staff)
             grn_item = GrnItem.objects.create(
                 grn=grn, product=product, qty_ordered=qty_ordered, qty_received=qty_received,
                 unit_price=unit_price, mfg_date=today - datetime.timedelta(days=30), exp_date=exp_date,
             )
-            submit_to_pending_qc(grn, actor=purchasing_user)
+            submit_to_pending_qc(grn, actor=purchasing_staff)
             inspection = start_qc(grn, qc_user, actor=qc_user)
 
             if group == 'FAIL':
@@ -424,8 +456,8 @@ class Command(BaseCommand):
 
     # -------------------------------------------------------------------- GIN
     def _create_gins(self, users, available_batches, products):
-        manager = users[User.Role.MANAGER]
-        staff = users[User.Role.STAFF]
+        manager = users['warehouse_manager']
+        staff = users['warehouse_staff']
         never_issued_code = products[NEVER_ISSUED_PRODUCT_INDEX].product_code
         issued_long_ago_code = products[ISSUED_LONG_AGO_PRODUCT_INDEX].product_code
 
@@ -483,8 +515,8 @@ class Command(BaseCommand):
 
     # --------------------------------------------------------------- stocktake
     def _create_stocktake(self, users, warehouses):
-        manager = users[User.Role.MANAGER]
-        staff = users[User.Role.STAFF]
+        manager = users['warehouse_manager']
+        staff = users['warehouse_staff']
 
         # Phiên 1 (kho #1): chạy hết vòng đời tới ADJUSTMENT.
         session1 = create_session(warehouse=warehouses[0], created_by=manager, actor=manager)
@@ -521,41 +553,62 @@ class Command(BaseCommand):
 
         if not (demo_warehouses.exists() or demo_suppliers.exists() or demo_products.exists()):
             self.stdout.write('Không có dữ liệu demo để xoá.')
-            return
+        else:
+            StocktakeItem.objects.filter(session__warehouse__in=demo_warehouses).delete()
+            StocktakeSession.objects.filter(warehouse__in=demo_warehouses).delete()
 
-        StocktakeItem.objects.filter(session__warehouse__in=demo_warehouses).delete()
-        StocktakeSession.objects.filter(warehouse__in=demo_warehouses).delete()
+            GinBatchAllocation.objects.filter(gin_item__gin__warehouse__in=demo_warehouses).delete()
+            GinItem.objects.filter(gin__warehouse__in=demo_warehouses).delete()
+            Gin.objects.filter(warehouse__in=demo_warehouses).delete()
 
-        GinBatchAllocation.objects.filter(gin_item__gin__warehouse__in=demo_warehouses).delete()
-        GinItem.objects.filter(gin__warehouse__in=demo_warehouses).delete()
-        Gin.objects.filter(warehouse__in=demo_warehouses).delete()
+            StockMovement.objects.filter(warehouse__in=demo_warehouses).delete()
+            StockTransfer.objects.filter(batch__product__in=demo_products).delete()
 
-        StockMovement.objects.filter(warehouse__in=demo_warehouses).delete()
+            # WarehouseHandoff.batch là OneToOne PROTECT (Phase D) -> phải xoá handoff
+            # trước Batch, nếu không .delete() bên dưới raise ProtectedError (bug cũ:
+            # hàm này chưa được cập nhật khi WarehouseHandoff ra đời).
+            WarehouseHandoff.objects.filter(batch__product__in=demo_products).delete()
 
-        # Batch.grn_item là PROTECT -> phải xoá Batch trước GrnItem (batch ở Kho
-        # chờ/Kho phế đều trace về grn_item nguồn qua move_batch_qty, xem M4).
-        Batch.objects.filter(product__in=demo_products).delete()
-        Inventory.objects.filter(product__in=demo_products).delete()
+            # Batch.grn_item là PROTECT -> phải xoá Batch trước GrnItem (batch ở Kho
+            # chờ/Kho phế đều trace về grn_item nguồn qua move_batch_qty, xem M4).
+            Batch.objects.filter(product__in=demo_products).delete()
+            Inventory.objects.filter(product__in=demo_products).delete()
 
-        QcInspectionItem.objects.filter(inspection__grn__po__in=demo_pos).delete()
-        QcInspection.objects.filter(grn__po__in=demo_pos).delete()
+            QcInspectionItem.objects.filter(inspection__grn__po__in=demo_pos).delete()
+            QcInspection.objects.filter(grn__po__in=demo_pos).delete()
 
-        GrnReturn.objects.filter(grn__po__in=demo_pos).delete()
-        GrnItem.objects.filter(grn__po__in=demo_pos).delete()
-        Grn.objects.filter(po__in=demo_pos).delete()
+            GrnReturn.objects.filter(grn__po__in=demo_pos).delete()
+            GrnItem.objects.filter(grn__po__in=demo_pos).delete()
+            Grn.objects.filter(po__in=demo_pos).delete()
 
-        PurchaseOrderItem.objects.filter(purchase_order__in=demo_pos).delete()
-        demo_pos.delete()
+            PurchaseOrderItem.objects.filter(purchase_order__in=demo_pos).delete()
+            demo_pos.delete()
 
-        # PurchaseRequest.warehouse la PROTECT -> phai xoa truoc demo_warehouses;
-        # linked_po la SET_NULL nen khong phu thuoc thu tu voi demo_pos.delete() o tren.
-        PurchaseRequestItem.objects.filter(purchase_request__warehouse__in=demo_warehouses).delete()
-        PurchaseRequest.objects.filter(warehouse__in=demo_warehouses).delete()
+            # PurchaseRequest.warehouse la PROTECT -> phai xoa truoc demo_warehouses;
+            # linked_po la SET_NULL nen khong phu thuoc thu tu voi demo_pos.delete() o tren.
+            PurchaseRequestItem.objects.filter(purchase_request__warehouse__in=demo_warehouses).delete()
+            PurchaseRequest.objects.filter(warehouse__in=demo_warehouses).delete()
 
-        Location.objects.filter(warehouse__in=demo_warehouses).delete()
-        demo_warehouses.delete()
-        demo_products.delete()
-        demo_suppliers.delete()
-        QcCriteria.objects.filter(category__startswith='DEMO-').delete()
+            Location.objects.filter(warehouse__in=demo_warehouses).delete()
+            demo_warehouses.delete()
+            demo_products.delete()
+            demo_suppliers.delete()
+            QcCriteria.objects.filter(category__startswith='DEMO-').delete()
 
-        self.stdout.write(self.style.WARNING('Đã xoá toàn bộ dữ liệu demo cũ.'))
+            self.stdout.write(self.style.WARNING('Đã xoá toàn bộ dữ liệu demo cũ.'))
+
+        # Notification/Approval/AuditLog gắn với dữ liệu demo qua GenericFK, không
+        # lọc được theo prefix DEMO- -> xoá sạch mỗi lần --flush (đây là reset môi
+        # trường test, không phải xoá audit trail của dữ liệu thật đang vận hành).
+        notif_count, _ = Notification.objects.all().delete()
+        approval_count, _ = Approval.objects.all().delete()
+        audit_count, _ = AuditLog.objects.all().delete()
+        self.stdout.write(f'Đã xoá {notif_count} notification, {approval_count} approval, {audit_count} audit log cũ.')
+
+        # Tài khoản demo_* của phiên bản script cũ (đã bị thay bằng REQUIRED_USERS ở
+        # trên) -> xoá cứng luôn cho gọn, theo xác nhận của người dùng.
+        obsolete_users = User.objects.filter(username__in=OBSOLETE_DEMO_USERNAMES)
+        deleted_usernames = list(obsolete_users.values_list('username', flat=True))
+        if deleted_usernames:
+            obsolete_users.delete()
+            self.stdout.write(f'Đã xoá tài khoản demo cũ không còn dùng: {", ".join(deleted_usernames)}.')

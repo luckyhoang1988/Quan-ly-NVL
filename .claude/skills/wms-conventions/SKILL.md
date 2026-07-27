@@ -75,7 +75,7 @@ entered incorrectly.") lẫn `django.contrib.auth.password_validation` (4 valida
 `AUTH_PASSWORD_VALIDATORS`: too short/too similar/too common/entirely numeric). Set `LANGUAGE_CODE='vi'` một
 mình sẽ để lộ các chuỗi này bằng tiếng Anh.
 
-**Cách xử lý (xem `accounts/forms.py::WmsPasswordChangeForm`/`WmsSetPasswordForm`):**
+**Cách xử lý (xem `accounts/forms.py::WmsPasswordChangeForm`/`WmsSetPasswordForm`/`UserCreateForm`):**
 - Label/help_text: ghi đè trực tiếp trong `__init__` của form con sau khi gọi `super().__init__()`.
 - `error_messages` dict (`password_mismatch`, `password_incorrect`): ghi đè bằng cách merge
   `{**ParentForm.error_messages, 'key': 'chuỗi tiếng Việt'}` trên class con.
@@ -87,6 +87,12 @@ mình sẽ để lộ các chuỗi này bằng tiếng Anh.
 - **Trước khi tin `LANGUAGE_CODE='vi'` đã dịch xong một form/thông báo built-in nào đó của Django (đặc biệt
   ngoài `django/forms/` lõi), hãy grep thử chuỗi tiếng Anh gốc trong `django.po` của bản Django đang cài để
   xác nhận, đừng giả định.**
+- Áp dụng mixin này cho một `ModelForm` thường (không kế thừa `SetPasswordForm`, vd `UserCreateForm` —
+  2026-07-26, admin tự đặt mật khẩu khi tạo user thay vì sinh tự động) thì phải gọi
+  `validate_password_for_user(self.instance, ...)` trong `_post_clean()` (sau `super()._post_clean()`), KHÔNG
+  phải trong `clean()` — `self.instance` của `ModelForm` chỉ được Django gán các field đã nhập (username,
+  email...) ở bước `_post_clean`, nên validator so sánh mật khẩu với thông tin user (`UserAttributeSimilarityValidator`)
+  gọi ở `clean()` sẽ thấy instance rỗng.
 
 ## 4. Phân quyền theo phòng ban (`department`/`is_manager`) + Thông báo trong app — hạ tầng dùng chung
 
@@ -115,8 +121,10 @@ trang tra cứu riêng.
 fallback thông báo toàn bộ `department=WAREHOUSE`.
 
 **Bọc 1 transition bằng `Approval` ("nhân viên nộp -> quản lý phòng ban duyệt")** — pattern đã dùng cho GRN
-submit + GrnReturn QC-confirm (Phase B, `receiving/services.py`) và GIN confirm (Phase C,
-`shipping/services.py`), dùng lại y hệt cho mọi bước duyệt mới sau này:
+submit + GrnReturn QC-confirm (Phase B, `receiving/services.py`), GIN confirm (Phase C,
+`shipping/services.py`), và PR submit (Phase E, `purchasing/services.py::submit_purchase_request`/
+`decide_purchase_request` — lưu ý PR không cần state trung gian riêng vì tạo PR *là* nộp PR, không có bước
+DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt mới sau này:
 
 1. Thêm 1 state trung gian vào `Status` enum của model đó (vd `PENDING_APPROVAL`) — KHÔNG tự chuyển thẳng
    sang state kế tiếp trong view/service khi user bấm nút "Nộp"/"Xác nhận".
@@ -147,6 +155,13 @@ submit + GrnReturn QC-confirm (Phase B, `receiving/services.py`) và GIN confirm
 6. Đừng quên: nếu `obj` có hành động "Hủy" tách biệt (khác với từ chối duyệt), hàm hủy phải tự
    `Approval.objects.filter(target_type=..., target_id=..., status=PENDING).update(status=REJECTED, ...)` để
    không mồ côi 1 `Approval` đang chờ xử lý trên 1 `obj` đã bị hủy (xem `receiving.services.cancel_grn`).
+7. Nếu muốn thêm "báo riêng 1 người cụ thể" bên CẠNH việc bubble lên quản lý phòng ban (chứ không thay thế),
+   thêm 1 field `assigned_to` (FK User, `null=True`, tuỳ chọn) ngay trên `obj`, KHÔNG phải trên `Approval` —
+   `assigned_to` chỉ để `notify()` thêm người đó và hiển thị "ai sẽ xử lý", KHÔNG tự có quyền quyết định:
+   quyền quyết định thật vẫn chỉ đi qua `is_department_manager(department)`/`can('approve', module)` ở bước
+   4 — đừng để `user.pk == obj.assigned_to_id` lọt vào điều kiện cho phép duyệt (khác pattern §5 bên dưới, nơi
+   `assigned_to` CÓ quyền quyết định) (xem `PurchaseRequest.assigned_to` + `purchasing.views.can_decide_pr`,
+   Phase E).
 
 ## 5. Bàn giao trực tiếp cho 1 người/nhóm cụ thể — KHÔNG dùng `Approval` (pattern Phase D)
 

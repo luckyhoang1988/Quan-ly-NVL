@@ -84,10 +84,14 @@ ROLE_PERMISSIONS = {
         'gin': {'read'},                                    # R
         'opname': set(),                                    # –
         'qc': {'read'},                                     # R
-        # 'approve' ở đây là duyệt PR (bước "đồng ý mua" nội bộ, Purchasing tự
-        # quyết); duyệt PO thật (approve_po, gửi NCC) vẫn giữ riêng cho
-        # Manager/Admin — 2 lớp kiểm soát tách biệt, không hạ guard PO hiện có.
-        'pr': {'read', 'update', 'approve'},                # R + duyệt/từ chối PR
+        # 'approve' PR KHÔNG còn gán cho cả role PURCHASING nữa (trước đây mọi
+        # nhân viên mua hàng tự duyệt được) — duyệt PR giờ đi qua Approval,
+        # chỉ quản lý phòng Mua hàng (``is_department_manager('PURCHASING')``,
+        # xem accounts/models.py) hoặc Manager/Admin (fallback 'approve' ở
+        # dòng MANAGER/ADMIN bên dưới) được quyết định. Duyệt PO thật
+        # (approve_po, gửi NCC) vẫn giữ riêng cho Manager/Admin — 2 lớp kiểm
+        # soát tách biệt, không hạ guard PO hiện có.
+        'pr': {'read', 'update'},                           # R + U (không tự approve)
         'po': {'create', 'read', 'update', 'delete'},       # CRUD (approve -> Manager/Admin)
         'reports': {'read'},                                # R
     },

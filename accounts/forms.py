@@ -30,43 +30,7 @@ def _bootstrapify(fields):
             widget.attrs.setdefault('class', 'form-control')
 
 
-class UserCreateForm(forms.ModelForm):
-    """Admin tạo user (FR-USER-01 CREATE).
-
-    KHÔNG có ô mật khẩu: mật khẩu tạm được sinh tự động trong view rồi gửi email —
-    admin không tự đặt (tránh mật khẩu yếu/đoán được, buộc user đổi khi đăng nhập).
-    ``email`` bắt buộc vì là nơi nhận mật khẩu tạm; ``role`` bắt buộc để user mới có
-    quyền rõ ràng ngay.
-    """
-
-    class Meta:
-        model = User
-        fields = ['username', 'email', 'first_name', 'last_name', 'role', 'department', 'is_manager']
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields['email'].required = True
-        self.fields['role'].required = True
-        _bootstrapify(self.fields)
-
-
-class UserUpdateForm(forms.ModelForm):
-    """Admin sửa user (FR-USER-01 UPDATE): đổi role, deactivate (is_active), thông tin.
-
-    Không cho sửa ``username`` (khoá định danh) và không đụng mật khẩu ở đây.
-    "Gán warehouse" (theo BACKLOG) hoãn tới khi có app warehouse (mục 1b).
-    """
-
-    class Meta:
-        model = User
-        fields = ['email', 'first_name', 'last_name', 'role', 'department', 'is_manager', 'is_active']
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        _bootstrapify(self.fields)
-
-
-# --- Đổi mật khẩu ---
+# --- Mật khẩu ---
 #
 # Django dịch sẵn "This field is required." qua LANGUAGE_CODE='vi' (catalog forms lõi
 # khá đầy đủ), nhưng catalog vi.po lại KHÔNG có bản dịch cho các chuỗi của
@@ -97,6 +61,69 @@ class _VietnamesePasswordValidationMixin:
         except ValidationError as error:
             messages = [_PASSWORD_ERROR_MESSAGES_VI.get(e.code, e.message) for e in error.error_list]
             self.add_error(password_field_name, messages)
+
+
+class UserCreateForm(_VietnamesePasswordValidationMixin, forms.ModelForm):
+    """Admin tạo user (FR-USER-01 CREATE).
+
+    Admin tự đặt mật khẩu ban đầu cho user (không còn sinh tự động) — validate độ
+    mạnh qua ``AUTH_PASSWORD_VALIDATORS`` giống ``WmsSetPasswordForm``. ``email`` bắt
+    buộc để gửi thông báo tài khoản; ``role`` bắt buộc để user mới có quyền rõ ràng ngay.
+    """
+
+    password1 = forms.CharField(
+        label='Mật khẩu', widget=forms.PasswordInput, help_text=_PASSWORD_HELP_TEXT,
+    )
+    password2 = forms.CharField(
+        label='Xác nhận mật khẩu', widget=forms.PasswordInput,
+        help_text='Nhập lại đúng mật khẩu ở trên.',
+    )
+
+    class Meta:
+        model = User
+        fields = ['username', 'email', 'first_name', 'last_name', 'role', 'department', 'is_manager']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['email'].required = True
+        self.fields['role'].required = True
+        _bootstrapify(self.fields)
+
+    def clean_password2(self):
+        password1 = self.cleaned_data.get('password1')
+        password2 = self.cleaned_data.get('password2')
+        if password1 and password2 and password1 != password2:
+            raise ValidationError('Hai mật khẩu không khớp nhau.', code='password_mismatch')
+        return password2
+
+    def _post_clean(self):
+        super()._post_clean()
+        # self.instance đã được gán username/email/... tại đây nên validate độ mạnh
+        # (vd UserAttributeSimilarityValidator) so sánh được với thông tin user mới.
+        self.validate_password_for_user(self.instance, password_field_name='password2')
+
+    def save(self, commit=True):
+        user = super().save(commit=False)
+        user.set_password(self.cleaned_data['password1'])
+        if commit:
+            user.save()
+        return user
+
+
+class UserUpdateForm(forms.ModelForm):
+    """Admin sửa user (FR-USER-01 UPDATE): đổi role, deactivate (is_active), thông tin.
+
+    Không cho sửa ``username`` (khoá định danh) và không đụng mật khẩu ở đây.
+    "Gán warehouse" (theo BACKLOG) hoãn tới khi có app warehouse (mục 1b).
+    """
+
+    class Meta:
+        model = User
+        fields = ['email', 'first_name', 'last_name', 'role', 'department', 'is_manager', 'is_active']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
 
 
 class WmsSetPasswordForm(_VietnamesePasswordValidationMixin, SetPasswordForm):

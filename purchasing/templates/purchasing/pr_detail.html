@@ -43,6 +43,12 @@
           <td>{{ obj.requested_by.get_full_name|default:obj.requested_by.username }}</td>
         </tr>
         <tr>
+          <th class="text-nowrap">Nhân viên mua hàng phụ trách</th>
+          <td colspan="3">
+            {% if obj.assigned_to %}{{ obj.assigned_to.get_full_name|default:obj.assigned_to.username }}{% else %}<span class="text-muted">Chưa chỉ định — báo cả phòng Mua hàng</span>{% endif %}
+          </td>
+        </tr>
+        <tr>
           <th class="text-nowrap">Ngày tạo</th>
           <td colspan="3">{{ obj.created_at|date:'d/m/Y H:i' }}</td>
         </tr>
@@ -52,12 +58,19 @@
           <td colspan="3">{{ obj.note }}</td>
         </tr>
         {% endif %}
-        {% if obj.decided_by %}
+        {% if approval %}
         <tr>
-          <th class="text-nowrap">Người duyệt/từ chối</th>
-          <td>{{ obj.decided_by.get_full_name|default:obj.decided_by.username }}</td>
-          <th class="text-nowrap">Ngày quyết định</th>
-          <td>{{ obj.decided_at|date:'d/m/Y H:i' }}</td>
+          <th class="text-nowrap">Yêu cầu duyệt</th>
+          <td colspan="3">
+            <span class="badge {% if approval.status == 'PENDING' %}bg-warning text-dark{% elif approval.status == 'APPROVED' %}bg-success{% else %}bg-danger{% endif %}">
+              {{ approval.get_status_display }}
+            </span>
+            — nộp bởi {{ approval.submitted_by.username }} lúc {{ approval.submitted_at|date:'d/m/Y H:i' }}
+            {% if approval.decided_at %}
+              ; quyết định bởi {{ approval.decided_by.username|default:'—' }} lúc {{ approval.decided_at|date:'d/m/Y H:i' }}
+              {% if approval.decision_note %}(<em>{{ approval.decision_note }}</em>){% endif %}
+            {% endif %}
+          </td>
         </tr>
         {% endif %}
         {% if obj.reject_reason %}
@@ -104,6 +117,28 @@
     </div>
   </div>
 </div>
+
+{% if can_forward %}
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Chuyển tiếp cho nhân viên mua hàng</h2>
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-2">Chỉ định 1 nhân viên phòng Mua hàng để tạo PO từ yêu cầu này — nhân viên đó sẽ thấy yêu cầu trong danh sách của họ.</p>
+    <form method="post" action="{% url 'purchasing:pr_forward' obj.pk %}" class="row g-2 align-items-end">
+      {% csrf_token %}
+      <div class="col-auto">
+        <label class="form-label" for="{{ forward_form.staff.id_for_label }}">{{ forward_form.staff.label }}</label>
+        {{ forward_form.staff }}
+        {% for error in forward_form.staff.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-outline-primary btn-sm"><i class="bi bi-send"></i> Chuyển tiếp</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
 
 {% if can_approve %}
 <div class="card shadow-sm mt-3">

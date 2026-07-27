@@ -15,12 +15,6 @@
         </h1>
       </div>
       <div class="card-body">
-        {% if mode == 'create' %}
-          <p class="text-muted small">
-            Mật khẩu tạm sẽ được tạo tự động và gửi tới email của user (không cần nhập tại đây).
-          </p>
-        {% endif %}
-
         <form method="post" novalidate>
           {% csrf_token %}
           {% if form.non_field_errors %}

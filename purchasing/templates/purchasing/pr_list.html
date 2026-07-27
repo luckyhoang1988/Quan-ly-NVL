@@ -21,7 +21,10 @@
 </ul>
 <div class="card shadow-sm">
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
-    <h1 class="panel-title">Yêu cầu mua hàng (PR)</h1>
+    <h1 class="panel-title">
+      Yêu cầu mua hàng (PR)
+      {% if not can_view_all %}<small class="text-muted fw-normal">— chỉ hiển thị yêu cầu do bạn tạo hoặc được giao phụ trách</small>{% endif %}
+    </h1>
     <div class="page-toolbar">
       {% if can_create %}
         <a href="{% url 'purchasing:pr_create' %}" class="btn btn-primary btn-sm">
@@ -57,6 +60,7 @@
             <th>Mã PR</th>
             <th>Kho yêu cầu</th>
             <th>Người yêu cầu</th>
+            <th>Phụ trách</th>
             <th>Trạng thái</th>
             <th>Số dòng</th>
             <th>Ngày tạo</th>
@@ -70,6 +74,7 @@
             <td><a href="{% url 'purchasing:pr_detail' pr.pk %}">{{ pr.request_no }}</a></td>
             <td>{{ pr.warehouse.name }}</td>
             <td>{{ pr.requested_by.get_full_name|default:pr.requested_by.username }}</td>
+            <td>{% if pr.assigned_to %}{{ pr.assigned_to.get_full_name|default:pr.assigned_to.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td>
               {% if pr.status == 'PENDING' %}
                 <span class="badge bg-warning text-dark">{{ pr.get_status_display }}</span>
@@ -91,7 +96,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="8" class="text-center text-muted">Chưa có yêu cầu mua hàng nào.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted">Chưa có yêu cầu mua hàng nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

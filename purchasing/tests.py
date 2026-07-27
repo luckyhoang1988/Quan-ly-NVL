@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import AuditLog
+from accounts.models import AuditLog, Notification
 from catalog.models import Product
 from partners.models import Supplier
 from receiving.models import Grn, GrnItem
@@ -17,7 +17,9 @@ from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseR
 from .services import (
     approve_po,
     close_po,
+    forward_purchase_request,
     send_po,
+    submit_purchase_request,
     supplier_lead_time_stats,
     supplier_price_history,
     sync_po_status,
@@ -49,7 +51,6 @@ class PurchaseOrderCrudTest(TestCase):
 
     def _payload(self, **overrides):
         payload = {
-            'po_no': 'PO-0001',
             'supplier': self.supplier.pk,
             'items-TOTAL_FORMS': '1',
             'items-INITIAL_FORMS': '0',
@@ -75,9 +76,10 @@ class PurchaseOrderCrudTest(TestCase):
 
     def test_TC_PUR_001_003_create_with_items_and_audit(self):
         response = self.client.post(reverse('purchasing:po_create'), self._payload())
-        po = PurchaseOrder.objects.get(po_no='PO-0001')
+        po = PurchaseOrder.objects.get()
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
         self.assertEqual(po.status, PurchaseOrder.Status.DRAFT)
+        self.assertTrue(po.po_no.startswith('PO-'))
         self.assertEqual(po.items.count(), 1)
         item = po.items.first()
         self.assertEqual(item.qty_ordered, 10)
@@ -88,15 +90,19 @@ class PurchaseOrderCrudTest(TestCase):
 
     def test_TC_PUR_001_004_manager_role_can_also_create(self):
         self.client.force_login(self.manager)
-        response = self.client.post(reverse('purchasing:po_create'), self._payload(po_no='PO-0002'))
-        po = PurchaseOrder.objects.get(po_no='PO-0002')
+        response = self.client.post(reverse('purchasing:po_create'), self._payload())
+        po = PurchaseOrder.objects.get()
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
 
-    def test_TC_PUR_001_005_duplicate_po_no_rejected(self):
+    def test_TC_PUR_001_005_po_no_auto_generated_unique_even_if_earlier_code_exists(self):
+        """``po_no`` không còn nhập tay (FR bổ sung, tránh trùng mã toàn hệ
+        thống) — tự sinh và không trùng với PO đã có sẵn."""
         PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
         response = self.client.post(reverse('purchasing:po_create'), self._payload())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(PurchaseOrder.objects.filter(po_no='PO-0001').count(), 1)
+        new_po = PurchaseOrder.objects.exclude(po_no='PO-0001').get()
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[new_po.pk]))
+        self.assertNotEqual(new_po.po_no, 'PO-0001')
+        self.assertTrue(new_po.po_no.startswith('PO-'))
 
     def test_TC_PUR_001_006_requires_at_least_one_item(self):
         payload = self._payload(**{
@@ -104,7 +110,7 @@ class PurchaseOrderCrudTest(TestCase):
         })
         response = self.client.post(reverse('purchasing:po_create'), payload)
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(PurchaseOrder.objects.filter(po_no='PO-0001').exists())
+        self.assertFalse(PurchaseOrder.objects.exists())
 
     def test_TC_PUR_001_007_readonly_role_can_view_list(self):
         PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
@@ -138,6 +144,35 @@ class PurchaseOrderCrudTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
         po.refresh_from_db()
         self.assertEqual(po.po_no, 'PO-0001')
+
+
+class PoNoGenerationTest(TestCase):
+    """``PurchaseOrder.generate_po_no``: sinh mã tự động PO-XXXX tăng dần toàn hệ
+    thống, tránh nhập tay trùng mã (bổ sung theo yêu cầu người dùng 2026-07-26).
+    """
+
+    def setUp(self):
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+
+    def test_first_po_gets_sequence_0001(self):
+        po = PurchaseOrder.objects.create(supplier=self.supplier)
+        self.assertEqual(po.po_no, 'PO-0001')
+
+    def test_sequence_increments_from_existing_max(self):
+        PurchaseOrder.objects.create(po_no='PO-0007', supplier=self.supplier)
+        po = PurchaseOrder.objects.create(supplier=self.supplier)
+        self.assertEqual(po.po_no, 'PO-0008')
+
+    def test_non_numeric_suffix_ignored(self):
+        """Mã kiểu 'PO-TEST-0001' (import/test cũ) không làm lệch số thứ tự vì
+        phần đuôi sau 'PO-' không thuần số."""
+        PurchaseOrder.objects.create(po_no='PO-TEST-0001', supplier=self.supplier)
+        po = PurchaseOrder.objects.create(supplier=self.supplier)
+        self.assertEqual(po.po_no, 'PO-0001')
+
+    def test_explicit_po_no_not_overwritten(self):
+        po = PurchaseOrder.objects.create(po_no='PO-CUSTOM-1', supplier=self.supplier)
+        self.assertEqual(po.po_no, 'PO-CUSTOM-1')
 
 
 class SyncPoStatusTest(TestCase):
@@ -276,6 +311,75 @@ class PurchaseOrderWorkflowTest(TestCase):
         self.client.force_login(self.purchasing_user)
         response = self.client.post(reverse('purchasing:po_close', args=[self.po.pk]))
         self.assertEqual(response.status_code, 403)
+
+
+class PurchaseOrderVisibilityTest(TestCase):
+    """Phạm vi xem PO ở ``po_list``: nhân viên phòng Mua hàng THƯỜNG (không phải
+    quản lý) chỉ thấy PO do chính mình tạo (``created_by``); quản lý phòng Mua
+    hàng, Manager/Admin, và mọi role khác (STAFF/QC/ACCOUNTANT — cần đối chiếu
+    GRN/công nợ) vẫn xem toàn bộ. ``po_detail`` KHÔNG bị giới hạn theo
+    ``created_by`` (PO là tác vụ nhiều vai trò cùng xử lý một phiếu).
+    ``TC-PUR-VIS-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_a = User.objects.create_user(
+            username='mua-a', password='pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.purchasing_b = User.objects.create_user(
+            username='mua-b', password='pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.purchasing_manager = User.objects.create_user(
+            username='qlmh', password='pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.staff = User.objects.create_user(
+            username='kho', password='pass-123', role=User.Role.STAFF)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.po_a = PurchaseOrder.objects.create(
+            po_no='PO-0001', supplier=self.supplier, created_by=self.purchasing_a)
+        self.po_b = PurchaseOrder.objects.create(
+            po_no='PO-0002', supplier=self.supplier, created_by=self.purchasing_b)
+
+    def test_TC_PUR_VIS_001_purchasing_staff_sees_only_own_po_in_list(self):
+        self.client.force_login(self.purchasing_a)
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        orders = set(response.context['orders'])
+        self.assertEqual(orders, {self.po_a})
+
+    def test_TC_PUR_VIS_002_purchasing_manager_sees_all_po_in_list(self):
+        self.client.force_login(self.purchasing_manager)
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        orders = set(response.context['orders'])
+        self.assertEqual(orders, {self.po_a, self.po_b})
+
+    def test_TC_PUR_VIS_003_other_role_sees_all_po_in_list(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('purchasing:po_list'), {'page_size': 50})
+        orders = set(response.context['orders'])
+        self.assertEqual(orders, {self.po_a, self.po_b})
+
+    def test_TC_PUR_VIS_004_purchasing_staff_can_still_view_others_po_detail(self):
+        """po_detail không giới hạn theo created_by — PO cần nhiều vai trò cùng
+        xử lý (gửi NCC, tham chiếu từ GRN/PR) nên không chặn truy cập trực tiếp."""
+        self.client.force_login(self.purchasing_a)
+        response = self.client.get(reverse('purchasing:po_detail', args=[self.po_b.pk]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_TC_PUR_VIS_005_created_by_set_automatically_on_create(self):
+        self.client.force_login(self.purchasing_a)
+        response = self.client.post(reverse('purchasing:po_create'), {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg').pk,
+            'items-0-qty_ordered': 5,
+            'items-0-unit_price': '5000.00',
+        })
+        new_po = PurchaseOrder.objects.exclude(pk__in=[self.po_a.pk, self.po_b.pk]).get()
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[new_po.pk]))
+        self.assertEqual(new_po.created_by, self.purchasing_a)
 
 
 class DeliveryStatusTest(TestCase):
@@ -425,6 +529,7 @@ class PoListPaginationFilterTest(TestCase):
                 po_no=f'PO-TEST-{i:04d}',
                 supplier=self.supplier_a if i % 2 == 0 else self.supplier_b,
                 status=PurchaseOrder.Status.DRAFT if i % 2 == 0 else PurchaseOrder.Status.SENT,
+                created_by=self.user,
             )
             for i in range(1, 36)
         ])
@@ -454,16 +559,23 @@ class PoListPaginationFilterTest(TestCase):
 
 
 class PurchaseRequestCrudTest(TestCase):
-    """PR (Yêu cầu mua hàng, bổ sung ngoài FR) — Tab 1 của Purchasing. STAFF tạo
-    được (không tự duyệt); PURCHASING/MANAGER duyệt hoặc từ chối, giữ tách biệt
-    với quyền duyệt PO thật. ``TC-PR-001-<seq>``.
+    """PR (Yêu cầu mua hàng, bổ sung ngoài FR) — Tab 1 của Purchasing. STAFF (hoặc
+    nhân viên phòng khác) tạo được (không tự duyệt); duyệt/từ chối đi qua
+    ``Approval`` — chỉ quản lý phòng Mua hàng (``is_department_manager``) hoặc
+    Manager/Admin (fallback) mới quyết định được, một nhân viên PURCHASING
+    thường KHÔNG tự duyệt nữa kể cả khi được ``assigned_to`` chỉ định. Giữ tách
+    biệt với quyền duyệt PO thật. ``TC-PR-001-<seq>``.
     """
 
     def setUp(self):
         self.staff = User.objects.create_user(
             username='staff', password='staff-pass-123', role=User.Role.STAFF)
         self.purchasing_user = User.objects.create_user(
-            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.purchasing_manager = User.objects.create_user(
+            username='qlmh', password='qlmh-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
         self.manager = User.objects.create_user(
             username='wm', password='wm-pass-123', role=User.Role.MANAGER)
         self.warehouse = Warehouse.objects.create(
@@ -484,6 +596,16 @@ class PurchaseRequestCrudTest(TestCase):
         }
         payload.update(overrides)
         return payload
+
+    def _pending_pr(self, assigned_to=None):
+        """PR PENDING kèm ``Approval`` PENDING thật (mirror ``submit_purchase_request``
+        production dùng khi tạo qua ``pr_create``) — cần thiết để test approve/reject
+        vì các view giờ tra ``latest_approval_for`` thay vì tự chuyển state.
+        """
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, assigned_to=assigned_to)
+        submit_purchase_request(pr, actor=self.staff)
+        return pr
 
     def test_TC_PR_001_001_staff_can_create(self):
         response = self.client.post(reverse('purchasing:pr_create'), self._payload())
@@ -509,28 +631,40 @@ class PurchaseRequestCrudTest(TestCase):
         self.assertFalse(PurchaseRequest.objects.exists())
 
     def test_TC_PR_001_004_staff_cannot_approve(self):
-        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        pr = self._pending_pr()
         response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
         self.assertEqual(response.status_code, 403)
 
     def test_TC_PR_001_005_staff_cannot_reject(self):
-        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        pr = self._pending_pr()
         response = self.client.post(
             reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'Không đủ ngân sách'})
         self.assertEqual(response.status_code, 403)
 
-    def test_TC_PR_001_006_purchasing_can_approve(self):
-        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+    def test_TC_PR_001_006_purchasing_role_alone_cannot_approve(self):
+        """Nhân viên mua hàng thường (không phải quản lý phòng) không còn tự duyệt
+        được nữa, kể cả khi PR chỉ định đúng người này (``assigned_to``)."""
+        pr = self._pending_pr(assigned_to=self.purchasing_user)
         self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
+        self.assertEqual(response.status_code, 403)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+
+    def test_TC_PR_001_007_purchasing_department_manager_can_approve(self):
+        pr = self._pending_pr(assigned_to=self.purchasing_user)
+        self.client.force_login(self.purchasing_manager)
         response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
         self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
-        self.assertEqual(pr.decided_by, self.purchasing_user)
+        self.assertEqual(pr.decided_by, self.purchasing_manager)
         self.assertIsNotNone(pr.decided_at)
 
-    def test_TC_PR_001_007_manager_can_reject_with_reason(self):
-        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+    def test_TC_PR_001_008_manager_can_reject_with_reason(self):
+        """Manager (fallback ``can('approve', 'pr')``, không cần đúng ``department``)
+        vẫn duyệt/từ chối được — không hạ quyền ai đang có (mirror GRN/GIN)."""
+        pr = self._pending_pr()
         self.client.force_login(self.manager)
         response = self.client.post(
             reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'Không đủ ngân sách'})
@@ -539,15 +673,15 @@ class PurchaseRequestCrudTest(TestCase):
         self.assertEqual(pr.status, PurchaseRequest.Status.REJECTED)
         self.assertEqual(pr.reject_reason, 'Không đủ ngân sách')
 
-    def test_TC_PR_001_008_purchasing_still_forbidden_from_po_approve(self):
+    def test_TC_PR_001_009_purchasing_still_forbidden_from_po_approve(self):
         """Giữ 2 lớp kiểm soát tách biệt: duyệt PR khác duyệt PO thật."""
         supplier = Supplier.objects.create(supplier_code='NCC-0001', name='NCC A')
         po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=supplier)
-        self.client.force_login(self.purchasing_user)
+        self.client.force_login(self.purchasing_manager)
         response = self.client.post(reverse('purchasing:po_approve', args=[po.pk]))
         self.assertEqual(response.status_code, 403)
 
-    def test_TC_PR_001_009_reject_wrong_state_shows_error(self):
+    def test_TC_PR_001_010_reject_wrong_state_shows_error(self):
         pr = PurchaseRequest.objects.create(
             requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
         self.client.force_login(self.manager)
@@ -556,6 +690,153 @@ class PurchaseRequestCrudTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
         self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+
+    def test_TC_PR_001_011_create_notifies_department_manager_and_assigned_to(self):
+        response = self.client.post(
+            reverse('purchasing:pr_create'), self._payload(assigned_to=self.purchasing_user.pk))
+        pr = PurchaseRequest.objects.get()
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertEqual(pr.assigned_to, self.purchasing_user)
+        self.assertTrue(Notification.objects.filter(recipient=self.purchasing_manager).exists())
+        self.assertTrue(Notification.objects.filter(recipient=self.purchasing_user).exists())
+
+
+class PurchaseRequestVisibilityTest(TestCase):
+    """Phạm vi xem PR: nhân viên phòng khác chỉ thấy PR do chính mình tạo; nhân
+    viên phòng Mua hàng THƯỜNG (không phải quản lý) chỉ thấy PR được chỉ định/
+    chuyển tiếp cho mình (``assigned_to``); quản lý phòng Mua hàng và Manager/
+    Admin xem toàn bộ (cần bức tranh tổng để duyệt/chuyển tiếp). ``TC-PR-002-<seq>``.
+    """
+
+    def setUp(self):
+        self.staff_a = User.objects.create_user(
+            username='kho-a', password='pass-123', role=User.Role.STAFF)
+        self.staff_b = User.objects.create_user(
+            username='kho-b', password='pass-123', role=User.Role.STAFF)
+        self.purchasing_user = User.objects.create_user(
+            username='mua', password='pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.purchasing_manager = User.objects.create_user(
+            username='qlmh', password='pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.manager = User.objects.create_user(
+            username='wm', password='pass-123', role=User.Role.MANAGER)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.pr_a = PurchaseRequest.objects.create(requested_by=self.staff_a, warehouse=self.warehouse)
+        self.pr_b = PurchaseRequest.objects.create(requested_by=self.staff_b, warehouse=self.warehouse)
+
+    def test_TC_PR_002_001_staff_sees_only_own_pr_in_list(self):
+        self.client.force_login(self.staff_a)
+        response = self.client.get(reverse('purchasing:pr_list'))
+        prs = list(response.context['prs'])
+        self.assertEqual(prs, [self.pr_a])
+
+    def test_TC_PR_002_002_purchasing_staff_sees_only_assigned_pr_in_list(self):
+        """Nhân viên mua hàng thường KHÔNG còn thấy toàn bộ PR — chỉ thấy PR
+        được chỉ định/chuyển tiếp đích danh cho mình."""
+        self.pr_b.assigned_to = self.purchasing_user
+        self.pr_b.save(update_fields=['assigned_to'])
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:pr_list'))
+        prs = set(response.context['prs'])
+        self.assertEqual(prs, {self.pr_b})
+
+    def test_TC_PR_002_003_manager_sees_all_pr_in_list(self):
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('purchasing:pr_list'))
+        prs = set(response.context['prs'])
+        self.assertEqual(prs, {self.pr_a, self.pr_b})
+
+    def test_TC_PR_002_004_staff_cannot_view_others_pr_detail(self):
+        self.client.force_login(self.staff_a)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_002_005_staff_can_view_own_pr_detail(self):
+        self.client.force_login(self.staff_a)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_a.pk]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_TC_PR_002_006_purchasing_staff_cannot_view_unassigned_pr_detail(self):
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_002_007_purchasing_staff_can_view_assigned_pr_detail(self):
+        self.pr_b.assigned_to = self.purchasing_user
+        self.pr_b.save(update_fields=['assigned_to'])
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_TC_PR_002_008_purchasing_manager_sees_all_pr_in_list(self):
+        self.client.force_login(self.purchasing_manager)
+        response = self.client.get(reverse('purchasing:pr_list'))
+        prs = set(response.context['prs'])
+        self.assertEqual(prs, {self.pr_a, self.pr_b})
+
+
+class PurchaseRequestForwardTest(TestCase):
+    """Chuyển tiếp 1 PR đã duyệt cho 1 nhân viên phòng Mua hàng cụ thể tạo PO
+    (``purchasing.services.forward_purchase_request``): chỉ quản lý phòng Mua
+    hàng/Manager/Admin chuyển tiếp được; nhân viên được chuyển tiếp thấy PR
+    trong danh sách của họ sau đó. ``TC-PR-003-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.other_purchasing_user = User.objects.create_user(
+            username='mua2', password='mua2-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.purchasing_manager = User.objects.create_user(
+            username='qlmh', password='qlmh-pass-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
+
+    def test_TC_PR_003_001_manager_can_forward_to_staff(self):
+        self.client.force_login(self.purchasing_manager)
+        response = self.client.post(
+            reverse('purchasing:pr_forward', args=[self.pr.pk]), {'staff': self.other_purchasing_user.pk})
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.assigned_to, self.other_purchasing_user)
+        self.assertTrue(Notification.objects.filter(recipient=self.other_purchasing_user).exists())
+
+    def test_TC_PR_003_002_plain_purchasing_staff_cannot_forward(self):
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(
+            reverse('purchasing:pr_forward', args=[self.pr.pk]), {'staff': self.other_purchasing_user.pk})
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_003_003_cannot_forward_pending_pr(self):
+        pending_pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        self.client.force_login(self.purchasing_manager)
+        with self.assertRaises(ValidationError):
+            forward_purchase_request(pending_pr, self.other_purchasing_user, actor=self.purchasing_manager)
+
+    def test_TC_PR_003_004_forwarded_staff_then_sees_pr_in_list_and_detail(self):
+        forward_purchase_request(self.pr, self.other_purchasing_user, actor=self.purchasing_manager)
+        self.client.force_login(self.other_purchasing_user)
+        list_response = self.client.get(reverse('purchasing:pr_list'))
+        self.assertIn(self.pr, list(list_response.context['prs']))
+        detail_response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(detail_response.status_code, 200)
+
+    def test_TC_PR_003_005_cannot_forward_when_already_linked_to_po(self):
+        supplier = Supplier.objects.create(supplier_code='NCC-0001', name='NCC A')
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=supplier)
+        self.pr.linked_po = po
+        self.pr.save(update_fields=['linked_po'])
+        with self.assertRaises(ValidationError):
+            forward_purchase_request(self.pr, self.other_purchasing_user, actor=self.purchasing_manager)
 
 
 class PoCreateFromPrTest(TestCase):
@@ -573,7 +854,8 @@ class PoCreateFromPrTest(TestCase):
         self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='NCC A')
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         self.pr = PurchaseRequest.objects.create(
-            requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
+            requested_by=self.staff, assigned_to=self.purchasing_user,
+            warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
         PurchaseRequestItem.objects.create(
             purchase_request=self.pr, product=self.product, qty_requested=30)
         self.client.force_login(self.purchasing_user)
@@ -587,7 +869,6 @@ class PoCreateFromPrTest(TestCase):
 
     def test_TC_PR_PO_002_post_creates_po_and_links_back(self):
         payload = {
-            'po_no': 'PO-0001',
             'supplier': self.supplier.pk,
             'from_pr': self.pr.pk,
             'items-TOTAL_FORMS': '1',
@@ -599,7 +880,7 @@ class PoCreateFromPrTest(TestCase):
             'items-0-unit_price': '15000.00',
         }
         response = self.client.post(reverse('purchasing:po_create'), payload)
-        po = PurchaseOrder.objects.get(po_no='PO-0001')
+        po = PurchaseOrder.objects.get()
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
         self.pr.refresh_from_db()
         self.assertEqual(self.pr.linked_po, po)
@@ -609,3 +890,22 @@ class PoCreateFromPrTest(TestCase):
         self.pr.save(update_fields=['status'])
         response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
         self.assertEqual(response.status_code, 404)
+
+    def test_TC_PR_PO_004_already_linked_pr_cannot_be_reused(self):
+        """PR đã convert thành PO rồi -> không tạo được PO thứ 2 từ cùng PR
+        (kể cả khi vẫn còn APPROVED), dù đi thẳng URL chứ không qua nút UI."""
+        other_po = PurchaseOrder.objects.create(supplier=self.supplier)
+        self.pr.linked_po = other_po
+        self.pr.save(update_fields=['linked_po'])
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        self.assertEqual(response.status_code, 404)
+
+    def test_TC_PR_PO_005_unassigned_purchasing_staff_cannot_use_others_pr(self):
+        """Nhân viên Mua hàng thường KHÔNG được chỉ định/chuyển tiếp PR này thì
+        không được tạo PO từ nó chỉ bằng cách đoán pk -- mirror quyền xem ở
+        pr_detail, chặn luôn ở po_create."""
+        other_purchasing_user = User.objects.create_user(
+            username='mua2', password='mua2-pass-123', role=User.Role.PURCHASING)
+        self.client.force_login(other_purchasing_user)
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        self.assertEqual(response.status_code, 403)

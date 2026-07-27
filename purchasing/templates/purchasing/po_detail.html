@@ -58,7 +58,9 @@
         </tr>
         <tr>
           <th class="text-nowrap">Ngày tạo</th>
-          <td colspan="3">{{ po.created_at|date:'d/m/Y H:i' }}</td>
+          <td>{{ po.created_at|date:'d/m/Y H:i' }}</td>
+          <th class="text-nowrap">Người tạo</th>
+          <td>{% if po.created_by %}{{ po.created_by.get_full_name|default:po.created_by.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
         </tr>
       </tbody>
     </table>

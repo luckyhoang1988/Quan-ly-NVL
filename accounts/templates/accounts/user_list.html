@@ -30,6 +30,7 @@
           <option value="">-- Tất cả trạng thái --</option>
           <option value="active" {% if selected_status == 'active' %}selected{% endif %}>Hoạt động</option>
           <option value="inactive" {% if selected_status == 'inactive' %}selected{% endif %}>Khoá</option>
+          <option value="deleted" {% if selected_status == 'deleted' %}selected{% endif %}>Đã xoá</option>
         </select>
       </div>
       <div class="col-auto">
