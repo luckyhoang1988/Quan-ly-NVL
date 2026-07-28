@@ -250,3 +250,25 @@ cần gate theo quyền:
 Đã áp dụng cho "Tiêu chuẩn QC" (`can_read_qc`) và "Kiểm kê" (`can_read_opname`); "Yêu cầu mua hàng" (PR) được
 thêm link sidebar mới cùng lúc (`can_read_pr`) — trước đó PR có route (`purchasing:pr_list`) nhưng không có
 link, chỉ vào được qua tab trong `po_list.html`.
+
+## 7. Topbar user-menu (bánh răng góc trên-phải) — thay cho khối user-box cuối sidebar (2026-07-28)
+
+Khối "tên user · role + nút Đổi mật khẩu + nút Đăng xuất" trước đây nằm cố định cuối sidebar (`.user-box`),
+chiếm không gian dọc cố định trên MỌI trang dù ít khi thao tác. Đã chuyển sang 1 nút icon bánh răng
+(`bi-gear`, class `.user-menu-toggle`) đặt trong `.app-topbar` — hàng đầu tiên bên trong `<main>` của
+`base.html`, canh phải bằng `dropdown ms-auto`, `position: sticky; top: 0` (định nghĩa ở
+`assets/css/custom.css`) nên luôn hiện dù cuộn trang dài. Dropdown mở ra mới hiện role
+(`dropdown-header`), rồi "Đổi mật khẩu" + form "Đăng xuất" — y hệt nội dung cũ, chỉ đổi chỗ hiển thị.
+
+- **Tên user hiển thị luôn ngoài nút** (`<span class="user-menu-name">{{ user.username }}</span>` đặt trước
+  icon `bi-gear`, cùng trong 1 `<button>`), không phải bấm mở dropdown mới thấy — bổ sung 2026-07-28 theo yêu
+  cầu người dùng. Vì vậy `.user-menu-toggle` không còn là nút tròn chỉ-icon nữa mà là pill (`border-radius:
+  999px`, `padding: .35rem .7rem`, `gap: .5rem`) tự co giãn theo độ dài username; đừng revert về kích thước
+  cố định 2.25rem trước đây, sẽ cắt mất chữ.
+- Nút bánh răng KHÔNG gắn class `dropdown-toggle` của Bootstrap (chỉ cần `data-bs-toggle="dropdown"` là đủ
+  để JS dropdown hoạt động) — tránh caret mũi tên thừa, giữ nút gọn gàng.
+- Nút toggle sidebar mobile (`#sidebarToggle`, chỉ hiện < 992px qua `.sidebar-toggle { display:none }`) nằm
+  chung hàng `.app-topbar` ở bên trái, `justify-content-between` tự đẩy 2 nút về 2 đầu khi cả 2 cùng hiện.
+- Sidebar giờ chỉ còn danh sách nav + logo/brand — không còn thông tin user ở cuối. Nếu thêm hành động
+  user mới (vd đổi ngôn ngữ, xem hồ sơ...) thì thêm `<li>` vào đúng `<ul class="dropdown-menu">` này, không
+  tạo lại khối user-box trong sidebar.

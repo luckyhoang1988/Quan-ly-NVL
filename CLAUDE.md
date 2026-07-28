@@ -150,6 +150,11 @@ from position #9 to Phase 1 because every audit trail and RBAC check needs the `
   reference page). Full pattern, density rules, and the list of pages already converted are in
   `.claude/skills/wms-conventions/SKILL.md` — follow it for any new detail page instead of reinventing the
   layout.
+- **User identity/actions live in a top-right gear dropdown, not a sidebar footer block** (2026-07-28): the
+  username/role + "Đổi mật khẩu"/"Đăng xuất" block moved out of the sidebar into a sticky `.app-topbar` at
+  the top of `<main>` (`base.html`), collapsed behind a `bi-gear` icon button (`.user-menu-toggle`) to keep
+  the sidebar to nav links only. See §7 of `.claude/skills/wms-conventions/SKILL.md` before adding another
+  user-facing action (add it to the dropdown, don't recreate a sidebar user block).
 
 ## Non-obvious cross-cutting design decisions
 

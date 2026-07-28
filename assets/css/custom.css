@@ -83,12 +83,6 @@ body {
   margin-top: 0;
 }
 
-.sidebar .user-box {
-  background-color: var(--wms-sidebar-bg-soft);
-  border-radius: .5rem;
-  padding: .6rem .8rem;
-}
-
 .sidebar-toggle {
   display: none;
 }
@@ -123,6 +117,36 @@ body {
   .sidebar-backdrop.show {
     display: block;
   }
+}
+
+/* ---- Top bar (user menu) ---- */
+.app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+  background-color: var(--wms-content-bg);
+}
+
+.user-menu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .7rem;
+  border-radius: 999px;
+  font-size: .85rem;
+}
+
+.user-menu-toggle .user-menu-name {
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.user-menu-toggle i {
+  font-size: 1.05rem;
+}
+
+.user-menu-toggle::after {
+  display: none;
 }
 
 /* ---- Breadcrumb ---- */

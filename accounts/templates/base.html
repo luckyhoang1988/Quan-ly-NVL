@@ -119,29 +119,43 @@
         </li>
         {% endif %}
       </ul>
-      <hr class="text-white-50">
-      <div class="user-box text-white-50 small mb-2 d-flex align-items-center gap-2">
-        <i class="bi bi-person-circle fs-5"></i>
-        <span>{{ user.username }} · {{ user.get_role_display|default:"chưa gán role" }}</span>
-      </div>
-      <a href="{% url 'password_change' %}" class="btn btn-sm btn-outline-light w-100 d-flex align-items-center justify-content-center gap-2 mb-2">
-        <i class="bi bi-key"></i> Đổi mật khẩu
-      </a>
-      <form method="post" action="{% url 'logout' %}" class="m-0">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-sm btn-outline-light w-100 d-flex align-items-center justify-content-center gap-2">
-          <i class="bi bi-box-arrow-right"></i> Đăng xuất
-        </button>
-      </form>
     </nav>
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
     {% endif %}
 
     <main class="container-fluid py-4 flex-grow-1">
       {% if user.is_authenticated %}
-      <button type="button" class="btn btn-sm btn-outline-secondary sidebar-toggle mb-2" id="sidebarToggle" aria-label="Mở menu">
-        <i class="bi bi-list"></i> Menu
-      </button>
+      <div class="app-topbar d-flex align-items-center justify-content-between mb-3">
+        <button type="button" class="btn btn-sm btn-outline-secondary sidebar-toggle" id="sidebarToggle" aria-label="Mở menu">
+          <i class="bi bi-list"></i> Menu
+        </button>
+        <div class="dropdown ms-auto">
+          <button type="button" class="btn btn-sm btn-outline-secondary user-menu-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Tài khoản">
+            <span class="user-menu-name">{{ user.username }}</span>
+            <i class="bi bi-gear"></i>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li class="dropdown-header d-flex align-items-center gap-2">
+              <i class="bi bi-person-circle"></i>
+              <span>{{ user.username }} · {{ user.get_role_display|default:"chưa gán role" }}</span>
+            </li>
+            <li><hr class="dropdown-divider"></li>
+            <li>
+              <a href="{% url 'password_change' %}" class="dropdown-item d-flex align-items-center gap-2">
+                <i class="bi bi-key"></i> Đổi mật khẩu
+              </a>
+            </li>
+            <li>
+              <form method="post" action="{% url 'logout' %}" class="m-0">
+                {% csrf_token %}
+                <button type="submit" class="dropdown-item d-flex align-items-center gap-2">
+                  <i class="bi bi-box-arrow-right"></i> Đăng xuất
+                </button>
+              </form>
+            </li>
+          </ul>
+        </div>
+      </div>
       {% endif %}
       <nav aria-label="breadcrumb" class="page-breadcrumb">{% block breadcrumb %}{% endblock %}</nav>
       {% if messages %}
