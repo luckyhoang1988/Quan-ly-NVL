@@ -2,12 +2,13 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import AuditLog, Notification
+from accounts.models import Approval, AuditLog, Notification
 from catalog.models import Product
 from partners.models import Supplier
 from receiving.models import Grn, GrnItem
@@ -18,6 +19,7 @@ from .services import (
     approve_po,
     close_po,
     forward_purchase_request,
+    reopen_purchase_request,
     send_po,
     submit_purchase_request,
     supplier_lead_time_stats,
@@ -79,6 +81,7 @@ class PurchaseOrderCrudTest(TestCase):
         po = PurchaseOrder.objects.get()
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
         self.assertEqual(po.status, PurchaseOrder.Status.DRAFT)
+        self.assertEqual(po.source, PurchaseOrder.Source.MANUAL)
         self.assertTrue(po.po_no.startswith('PO-'))
         self.assertEqual(po.items.count(), 1)
         item = po.items.first()
@@ -324,19 +327,87 @@ class PurchaseOrderWorkflowTest(TestCase):
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
 
+    def test_TC_PUR_WORKFLOW_007b_send_with_supplier_email_sends_mail(self):
+        """Bước G: NCC có contact_email — send_po gửi kèm 1 email best-effort."""
+        self.supplier.contact_email = 'ncc-abc@example.com'
+        self.supplier.save(update_fields=['contact_email'])
+        approve_po(self.po, actor=self.manager)
+        po = send_po(self.po, actor=self.purchasing_user)
+        self.assertTrue(po._email_sent)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertIn(self.po.po_no, sent.subject)
+        self.assertEqual(sent.to, ['ncc-abc@example.com'])
+        self.assertIn(self.product.product_code, sent.body)
+
+    def test_TC_PUR_WORKFLOW_007c_send_without_supplier_email_no_mail_still_sent(self):
+        """NCC không có contact_email — vẫn chuyển SENT, chỉ không gửi email."""
+        approve_po(self.po, actor=self.manager)
+        po = send_po(self.po, actor=self.purchasing_user)
+        self.assertFalse(po._email_sent)
+        self.assertEqual(len(mail.outbox), 0)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_WORKFLOW_007d_view_send_without_email_shows_warning(self):
+        approve_po(self.po, actor=self.manager)
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(
+            reverse('purchasing:po_send', args=[self.po.pk]), follow=True)
+        messages_list = list(response.context['messages'])
+        self.assertEqual(len(messages_list), 1)
+        self.assertEqual(messages_list[0].tags, 'warning')
+
+    def test_TC_PUR_WORKFLOW_007e_view_send_with_email_shows_success(self):
+        self.supplier.contact_email = 'ncc-abc@example.com'
+        self.supplier.save(update_fields=['contact_email'])
+        approve_po(self.po, actor=self.manager)
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(
+            reverse('purchasing:po_send', args=[self.po.pk]), follow=True)
+        messages_list = list(response.context['messages'])
+        self.assertEqual(len(messages_list), 1)
+        self.assertEqual(messages_list[0].tags, 'success')
+        self.assertEqual(len(mail.outbox), 1)
+
     def test_TC_PUR_WORKFLOW_008_close_from_sent(self):
+        """Bước F: đóng sớm từ SENT bắt buộc ``reason`` — không truyền sẽ bị
+        chặn (test 008b bên dưới), có ``reason`` thì đóng được và lưu lại."""
         self.po.status = PurchaseOrder.Status.SENT
         self.po.save(update_fields=['status'])
-        close_po(self.po, actor=self.manager)
+        close_po(self.po, actor=self.manager, reason='NCC báo hết hàng, không giao nốt phần còn lại.')
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
+        self.assertEqual(self.po.close_reason, 'NCC báo hết hàng, không giao nốt phần còn lại.')
+
+    def test_TC_PUR_WORKFLOW_008b_close_from_sent_without_reason_rejected(self):
+        self.po.status = PurchaseOrder.Status.SENT
+        self.po.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            close_po(self.po, actor=self.manager)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
 
     def test_TC_PUR_WORKFLOW_009_close_from_partial_received(self):
         self.po.status = PurchaseOrder.Status.PARTIAL_RECEIVED
         self.po.save(update_fields=['status'])
+        close_po(self.po, actor=self.manager, reason='Chỉ nhận được 1 phần, NCC không giao thêm.')
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
+
+    def test_TC_PUR_WORKFLOW_009b_close_from_partial_received_without_reason_rejected(self):
+        self.po.status = PurchaseOrder.Status.PARTIAL_RECEIVED
+        self.po.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            close_po(self.po, actor=self.manager)
+
+    def test_TC_PUR_WORKFLOW_009c_close_from_received_no_reason_required(self):
+        self.po.status = PurchaseOrder.Status.RECEIVED
+        self.po.save(update_fields=['status'])
         close_po(self.po, actor=self.manager)
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
+        self.assertEqual(self.po.close_reason, '')
 
     def test_TC_PUR_WORKFLOW_010_close_from_draft_rejected(self):
         with self.assertRaises(ValidationError):
@@ -348,6 +419,38 @@ class PurchaseOrderWorkflowTest(TestCase):
         self.client.force_login(self.purchasing_user)
         response = self.client.post(reverse('purchasing:po_close', args=[self.po.pk]))
         self.assertEqual(response.status_code, 403)
+
+    def test_TC_PUR_WORKFLOW_012_view_close_from_sent_without_reason_blocked(self):
+        """Bước F: view ``po_close`` chặn đóng sớm thiếu lý do — status không đổi,
+        có message lỗi, không 500."""
+        self.po.status = PurchaseOrder.Status.SENT
+        self.po.save(update_fields=['status'])
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('purchasing:po_close', args=[self.po.pk]))
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[self.po.pk]))
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_WORKFLOW_013_view_close_from_sent_with_reason_succeeds(self):
+        self.po.status = PurchaseOrder.Status.SENT
+        self.po.save(update_fields=['status'])
+        self.client.force_login(self.manager)
+        response = self.client.post(
+            reverse('purchasing:po_close', args=[self.po.pk]),
+            {'close_reason': 'NCC không còn hàng để giao tiếp.'})
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[self.po.pk]))
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
+        self.assertEqual(self.po.close_reason, 'NCC không còn hàng để giao tiếp.')
+
+    def test_TC_PUR_WORKFLOW_014_view_close_from_received_no_reason_needed(self):
+        self.po.status = PurchaseOrder.Status.RECEIVED
+        self.po.save(update_fields=['status'])
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('purchasing:po_close', args=[self.po.pk]))
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[self.po.pk]))
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
 
 
 class PurchaseOrderVisibilityTest(TestCase):
@@ -545,10 +648,11 @@ class SupplierPerformanceViewTest(TestCase):
         self.assertEqual(row['delayed_count'], 0)
 
 
-class PoCreatePrefillTest(TestCase):
-    """FR-PO-02: prefill dòng item đầu từ ``?product=&qty=`` (link từ dashboard
-    tồn kho dưới Min Level, xem ``inventory/views.py::inventory_list``).
-    ``TC-PUR-02-<seq>``.
+class PoCreateNoLongerHonorsMinLevelShortcutTest(TestCase):
+    """Bước E: lối tắt ``?product=&qty=`` tạo PO thẳng từ gợi ý Min Level đã bị
+    bỏ (mọi PO phát sinh từ tồn kho dưới Min Level giờ phải qua PR trước — xem
+    ``PrCreatePrefillTest``). Regression test đảm bảo ``po_create`` không còn
+    đọc các query param này nữa dù URL cũ (đã lưu bookmark/link cũ) vẫn được gọi.
     """
 
     def setUp(self):
@@ -557,16 +661,67 @@ class PoCreatePrefillTest(TestCase):
         self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
         self.client.force_login(self.user)
 
-    def test_TC_PUR_02_001_prefills_first_item_form_from_query_params(self):
+    def test_TC_PUR_02_001_product_and_qty_query_params_ignored(self):
         response = self.client.get(reverse('purchasing:po_create'), {'product': self.product.pk, 'qty': 50})
         formset = response.context['formset']
-        self.assertEqual(str(formset.forms[0].initial.get('product')), str(self.product.pk))
-        self.assertEqual(str(formset.forms[0].initial.get('qty_ordered')), '50')
+        self.assertNotIn('product', formset.forms[0].initial)
+        self.assertNotIn('qty_ordered', formset.forms[0].initial)
 
-    def test_TC_PUR_02_002_no_query_params_no_prefill(self):
-        response = self.client.get(reverse('purchasing:po_create'))
+
+class PrCreatePrefillTest(TestCase):
+    """Bước E: prefill dòng item đầu + kho từ ``?product=&qty=&warehouse=`` (link
+    từ dashboard tồn kho dưới Min Level, xem ``inventory/views.py::inventory_list``
+    — thay cho lối tắt tạo PO thẳng đã bỏ). ``TC-PUR-02-<seq>``.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.client.force_login(self.user)
+
+    def _payload(self, **overrides):
+        payload = {
+            'warehouse': self.warehouse.pk,
+            'min_level_origin': '1',
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk,
+            'items-0-qty_requested': 50,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_TC_PUR_02_002_prefills_first_item_and_warehouse_from_query_params(self):
+        response = self.client.get(
+            reverse('purchasing:pr_create'), {'product': self.product.pk, 'qty': 50, 'warehouse': self.warehouse.pk})
+        formset = response.context['formset']
+        self.assertEqual(str(formset.forms[0].initial.get('product')), str(self.product.pk))
+        self.assertEqual(str(formset.forms[0].initial.get('qty_requested')), '50')
+        self.assertEqual(str(response.context['form'].initial.get('warehouse')), str(self.warehouse.pk))
+        self.assertTrue(response.context['min_level_origin'])
+
+    def test_TC_PUR_02_003_no_query_params_no_prefill(self):
+        response = self.client.get(reverse('purchasing:pr_create'))
         formset = response.context['formset']
         self.assertNotIn('product', formset.forms[0].initial)
+        self.assertFalse(response.context['min_level_origin'])
+
+    def test_TC_PUR_02_004_post_with_hidden_flag_sets_origin_min_level(self):
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertEqual(pr.origin, PurchaseRequest.Origin.MIN_LEVEL)
+
+    def test_TC_PUR_02_005_post_without_hidden_flag_defaults_to_manual_origin(self):
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload(min_level_origin=''))
+        pr = PurchaseRequest.objects.get()
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertEqual(pr.origin, PurchaseRequest.Origin.MANUAL)
 
 
 class PoListPaginationFilterTest(TestCase):
@@ -677,16 +832,31 @@ class PurchaseRequestCrudTest(TestCase):
         submit_purchase_request(pr, actor=self.staff)
         return pr
 
+    def _rejected_pr(self, requested_by=None):
+        """PR REJECTED thật (đi qua ``_pending_pr`` + ``pr_reject`` thật) — dùng
+        cho test reopen (Bước C)."""
+        pr = self._pending_pr()
+        if requested_by is not None:
+            pr.requested_by = requested_by
+            pr.save(update_fields=['requested_by'])
+        self.client.force_login(self.manager)
+        self.client.post(reverse('purchasing:pr_reject', args=[pr.pk]), {'reject_reason': 'Không đủ ngân sách'})
+        self.client.force_login(self.staff)
+        pr.refresh_from_db()
+        return pr
+
     def test_TC_PR_001_001_staff_can_create(self):
+        """``pr_create`` chỉ lưu DRAFT — không tự nộp duyệt nữa (Bước B)."""
         response = self.client.post(reverse('purchasing:pr_create'), self._payload())
         pr = PurchaseRequest.objects.get()
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.DRAFT)
         self.assertEqual(pr.requested_by, self.staff)
         self.assertEqual(pr.items.count(), 1)
         self.assertTrue(pr.request_no.startswith('PR-'))
         log = AuditLog.objects.filter(action=AuditLog.Action.CREATE, target_id=str(pr.pk)).first()
         self.assertIsNotNone(log)
+        self.assertFalse(Approval.objects.exists())
 
     def test_TC_PR_001_002_anonymous_redirected_to_login(self):
         self.client.logout()
@@ -769,14 +939,234 @@ class PurchaseRequestCrudTest(TestCase):
         pr.refresh_from_db()
         self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
 
-    def test_TC_PR_001_011_create_notifies_department_manager_and_assigned_to(self):
-        response = self.client.post(
-            reverse('purchasing:pr_create'), self._payload(assigned_to=self.purchasing_user.pk))
+    def test_TC_PR_001_011_submit_notifies_department_manager_and_assigned_to(self):
+        """Notify chỉ phát sinh khi thật sự Nộp (``pr_submit``), không phải lúc
+        tạo nháp — mirror GRN submit."""
+        self.client.post(reverse('purchasing:pr_create'), self._payload(assigned_to=self.purchasing_user.pk))
         pr = PurchaseRequest.objects.get()
+        self.assertFalse(Notification.objects.exists())
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
-        self.assertEqual(pr.assigned_to, self.purchasing_user)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
         self.assertTrue(Notification.objects.filter(recipient=self.purchasing_manager).exists())
         self.assertTrue(Notification.objects.filter(recipient=self.purchasing_user).exists())
+
+    def test_TC_PR_001_012_update_only_allowed_while_draft_and_owner(self):
+        """``pr_update``: đúng chủ + còn DRAFT thì sửa được; sai chủ hoặc đã Nộp
+        thì bị chặn."""
+        self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+
+        response = self.client.post(
+            reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Đã sửa'))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.note, 'Đã sửa')
+
+        other_staff = User.objects.create_user(
+            username='staff-khac', password='staff-khac-123', role=User.Role.STAFF)
+        self.client.force_login(other_staff)
+        response = self.client.post(
+            reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Sửa trộm'))
+        self.assertEqual(response.status_code, 403)
+
+        self.client.force_login(self.staff)
+        submit_purchase_request(pr, actor=self.staff)
+        response = self.client.post(
+            reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Sửa sau khi nộp'))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.note, 'Đã sửa')
+
+    def test_TC_PR_001_013_submit_only_allowed_while_draft_and_owner(self):
+        self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+
+        other_staff = User.objects.create_user(
+            username='staff-khac2', password='staff-khac2-123', role=User.Role.STAFF)
+        self.client.force_login(other_staff)
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.assertEqual(response.status_code, 403)
+
+        self.client.force_login(self.staff)
+        self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+
+    def test_TC_PR_001_014_purchasing_role_can_create_edit_submit_own_pr(self):
+        """Bug-fix 2026-07-28 điểm 2: PURCHASING giờ tự tạo/sửa/nộp được PR của
+        chính mình (trước đây không có quyền ``create`` trên module ``pr``)."""
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertEqual(pr.status, PurchaseRequest.Status.DRAFT)
+
+        response = self.client.post(
+            reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Mua tự sửa'))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+
+    def test_TC_PR_001_015_owner_can_reopen_rejected_pr(self):
+        """Bước C: PR REJECTED không phải ngõ cụt — đúng chủ mở lại được về DRAFT,
+        giữ nguyên ``reject_reason``/``decided_by``/``decided_at`` làm lịch sử."""
+        pr = self._rejected_pr()
+        old_decided_by, old_decided_at = pr.decided_by, pr.decided_at
+        response = self.client.post(reverse('purchasing:pr_reopen', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.DRAFT)
+        self.assertEqual(pr.reject_reason, 'Không đủ ngân sách')
+        self.assertEqual(pr.decided_by, old_decided_by)
+        self.assertEqual(pr.decided_at, old_decided_at)
+
+    def test_TC_PR_001_016_reopen_forbidden_for_non_owner(self):
+        pr = self._rejected_pr()
+        other_staff = User.objects.create_user(
+            username='staff-khac3', password='staff-khac3-123', role=User.Role.STAFF)
+        self.client.force_login(other_staff)
+        response = self.client.post(reverse('purchasing:pr_reopen', args=[pr.pk]))
+        self.assertEqual(response.status_code, 403)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.REJECTED)
+
+    def test_TC_PR_001_017_reopen_wrong_state_shows_error(self):
+        pr = self._pending_pr()
+        response = self.client.post(reverse('purchasing:pr_reopen', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+
+    def test_TC_PR_001_018_reopen_then_edit_and_resubmit_creates_new_approval(self):
+        """Sau reopen, sửa (``pr_update``) rồi nộp lại (``pr_submit``) tạo được
+        ``Approval`` PENDING mới — không đụng ``unique_pending_approval_per_target``
+        vì ``Approval`` cũ đã REJECTED, không còn PENDING."""
+        pr = self._rejected_pr()
+        reopen_purchase_request(pr, actor=self.staff)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.DRAFT)
+
+        response = self.client.post(
+            reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Sửa lại sau khi mở lại'))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.note, 'Sửa lại sau khi mở lại')
+
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(Approval.objects.filter(target_id=str(pr.pk)).count(), 2)
+        self.assertEqual(
+            Approval.objects.filter(target_id=str(pr.pk), status=Approval.Status.PENDING).count(), 1)
+
+    def test_TC_PR_001_019_assigned_to_notified_at_approve_not_submit(self):
+        """Bug fix M1: lúc Nộp, PR còn PENDING nên ``assigned_to`` chưa tạo PO
+        được — thông báo lúc nộp không được ghi "cần bạn xử lý". Thông báo thật
+        sự "cần xử lý" (tạo PO) chỉ gửi lúc PR được duyệt (APPROVED)."""
+        pr = self._pending_pr(assigned_to=self.purchasing_user)
+        submit_notification = Notification.objects.get(recipient=self.purchasing_user)
+        self.assertIn('đang chờ duyệt', submit_notification.verb)
+        self.assertNotIn('cần bạn xử lý', submit_notification.verb)
+
+        self.client.force_login(self.purchasing_manager)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+
+        approve_notification = Notification.objects.filter(
+            recipient=self.purchasing_user, verb__contains='đã được duyệt').first()
+        self.assertIsNotNone(approve_notification)
+        self.assertIn('tạo PO', approve_notification.verb)
+
+    def test_TC_PR_001_020_reject_reason_shown_only_while_rejected(self):
+        """L1: ``pr_detail.html`` chỉ hiện "Lý do từ chối" khi PR đang REJECTED.
+        ``reject_reason`` vẫn được giữ lại trong DB sau reopen làm lịch sử (xem
+        test_TC_PR_001_015), nhưng một khi PR đã được nộp lại và duyệt thành
+        APPROVED, lý do từ chối cũ không còn phản ánh trạng thái hiện tại nên
+        không được hiển thị nữa."""
+        pr = self._rejected_pr()
+        response = self.client.get(reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertContains(response, 'Lý do từ chối')
+        self.assertContains(response, 'Không đủ ngân sách')
+
+        reopen_purchase_request(pr, actor=self.staff)
+        self.client.post(reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Sửa lại'))
+        self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.client.force_login(self.purchasing_manager)
+        self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+        self.assertEqual(pr.reject_reason, 'Không đủ ngân sách')
+
+        response = self.client.get(reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertNotContains(response, 'Lý do từ chối')
+
+    def test_TC_PR_001_021_manager_can_delete_draft_pr(self):
+        """L2: MANAGER (có quyền ``delete`` trên module ``pr`` + tầm nhìn toàn
+        bộ qua ``_pr_can_view_all``) xoá thật được 1 PR còn DRAFT."""
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('purchasing:pr_delete', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_list'))
+        self.assertFalse(PurchaseRequest.objects.filter(pk=pr.pk).exists())
+        log = AuditLog.objects.filter(action=AuditLog.Action.DELETE, target_id=str(pr.pk)).first()
+        self.assertIsNotNone(log)
+
+    def test_TC_PR_001_022_staff_owner_cannot_delete_own_draft_pr_without_permission(self):
+        """L2: STAFF không có ``delete`` trên module ``pr`` theo ma trận mặc
+        định (chỉ MANAGER/ADMIN) — kể cả là chủ PR, tự xoá bản nháp của mình
+        vẫn bị 403; quyền module ``delete`` là gate đầu tiên, đúng như đề xuất
+        review "gate _pr_can_edit + can('delete','pr')"."""
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        response = self.client.post(reverse('purchasing:pr_delete', args=[pr.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(PurchaseRequest.objects.filter(pk=pr.pk).exists())
+
+    def test_TC_PR_001_023_delete_forbidden_for_non_owner_manager_can(self):
+        """L2: 1 MANAGER khác vẫn xoá được (``_pr_can_view_all``), nhưng nếu
+        không có tầm nhìn toàn bộ và không phải chủ thì 403 — mirror check sở
+        hữu của ``pr_update``/``pr_reopen``."""
+        other_manager = User.objects.create_user(
+            username='wm-khac', password='wm-khac-123', role=User.Role.MANAGER)
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.client.force_login(other_manager)
+        response = self.client.post(reverse('purchasing:pr_delete', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_list'))
+        self.assertFalse(PurchaseRequest.objects.filter(pk=pr.pk).exists())
+
+    def test_TC_PR_001_024_delete_wrong_state_shows_error(self):
+        """L2: PR đã Nộp (PENDING) không xoá được nữa — báo lỗi, PR vẫn còn."""
+        pr = self._pending_pr()
+        self.client.force_login(self.manager)
+        response = self.client.post(reverse('purchasing:pr_delete', args=[pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertTrue(PurchaseRequest.objects.filter(pk=pr.pk).exists())
+
+    def test_TC_PR_001_025_delete_button_hidden_unless_draft_and_permitted(self):
+        """L2: nút "Xoá yêu cầu này" chỉ hiện trên trang chi tiết khi PR còn
+        DRAFT và người xem có quyền ``delete`` (ở đây: MANAGER)."""
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+        self.client.force_login(self.manager)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertContains(response, 'Xoá yêu cầu này')
+
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[pr.pk]))
+        self.assertNotContains(response, 'Xoá yêu cầu này')
 
 
 class PurchaseRequestVisibilityTest(TestCase):
@@ -987,3 +1377,33 @@ class PoCreateFromPrTest(TestCase):
         self.client.force_login(other_purchasing_user)
         response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
         self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_PO_006_created_po_has_source_from_pr(self):
+        """Bước E: PO tạo qua ?from_pr= luôn source=FROM_PR (ngược lại PO tạo
+        thủ công mặc định source=MANUAL, xem TC_PUR_001_003)."""
+        payload = {
+            'supplier': self.supplier.pk,
+            'from_pr': self.pr.pk,
+            'items-TOTAL_FORMS': '1',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk,
+            'items-0-qty_ordered': 30,
+            'items-0-unit_price': '15000.00',
+        }
+        self.client.post(reverse('purchasing:po_create'), payload)
+        po = PurchaseOrder.objects.get()
+        self.assertEqual(po.source, PurchaseOrder.Source.FROM_PR)
+
+    def test_TC_PR_PO_007_get_prefills_supplier_from_preferred_supplier(self):
+        """Bước E: dòng item đầu của PR có preferred_supplier -> form PO GET
+        gợi ý sẵn NCC đó (người dùng vẫn đổi được)."""
+        self.product.preferred_supplier = self.supplier
+        self.product.save(update_fields=['preferred_supplier'])
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        self.assertEqual(response.context['form'].initial.get('supplier'), self.supplier.pk)
+
+    def test_TC_PR_PO_008_get_no_prefill_supplier_when_product_has_none(self):
+        response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
+        self.assertNotIn('supplier', response.context['form'].initial)

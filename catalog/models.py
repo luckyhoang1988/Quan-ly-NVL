@@ -34,6 +34,10 @@ class Product(models.Model):
         default=10, verbose_name='Giá trị lấy mẫu QC',
         help_text='PERCENT: % trên qty_received (vd 10 = 10%). FIXED: số lượng cố định.')
     is_active = models.BooleanField(default=True, verbose_name='Đang hoạt động')
+    preferred_supplier = models.ForeignKey(
+        'partners.Supplier', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='preferred_for_products', verbose_name='Nhà cung cấp ưu tiên',
+        help_text='NCC ưu tiên cho SKU này — gợi ý tự động khi tạo PO từ yêu cầu mua hàng.')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
 
     class Meta:

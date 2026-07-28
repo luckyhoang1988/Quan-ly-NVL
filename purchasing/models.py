@@ -8,9 +8,13 @@ PARTIAL_RECEIVED/RECEIVED (tự động theo Qty GRN thực nhận, xem
 
 ``PurchaseRequest``/``PurchaseRequestItem`` (bổ sung ngoài FR, không có mã FR
 riêng) là "Yêu cầu mua hàng" nhân viên các phòng ban gửi lên trước khi có PO —
-tách biệt với PO thật: PENDING -> APPROVED/REJECTED, và 1 PR đã duyệt convert
-thành đúng 1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``.
-Không tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
+tách biệt với PO thật: DRAFT (sửa được, chưa có Approval nào) -> PENDING (đã
+Nộp, ``purchasing.views.pr_submit``) -> APPROVED/REJECTED; REJECTED mở lại được
+về DRAFT (``purchasing.services.reopen_purchase_request``) để sửa và nộp lại,
+không phải ngõ cụt (mirror đúng pattern DRAFT/submit/approve của GRN/GIN — xem
+CLAUDE.md "Department-manager approval axis"). 1 PR đã duyệt convert thành đúng
+1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``. Không
+tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
 
 Duyệt PR đi qua cơ chế ``accounts.approvals`` dùng chung với GRN submit/GIN
 confirm (xem CLAUDE.md "Department-manager approval axis"): người tạo có thể
@@ -36,12 +40,19 @@ class PurchaseOrder(models.Model):
         RECEIVED = 'RECEIVED', 'Đã nhận đủ'
         CLOSED = 'CLOSED', 'Đã đóng'
 
+    class Source(models.TextChoices):
+        MANUAL = 'MANUAL', 'Tự tạo'
+        FROM_PR = 'FROM_PR', 'Từ yêu cầu mua hàng'
+
     po_no = models.CharField(
         max_length=30, unique=True, editable=False, verbose_name='Mã PO',
         help_text='Tự sinh: PO-XXXX (tăng dần toàn hệ thống, không nhập tay — tránh trùng mã).')
     supplier = models.ForeignKey(
         'partners.Supplier', on_delete=models.PROTECT, related_name='purchase_orders', verbose_name='Nhà cung cấp')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
+    source = models.CharField(
+        max_length=20, choices=Source.choices, default=Source.MANUAL, verbose_name='Nguồn tạo',
+        help_text='Tự tạo trực tiếp hay chuyển đổi từ 1 Yêu cầu mua hàng đã duyệt (set tự động, không sửa tay).')
     expected_delivery_date = models.DateField(
         null=True, blank=True, verbose_name='Ngày giao hàng dự kiến',
         help_text='Ngày giao hàng dự kiến — dùng để theo dõi On time/Delayed (FR-PO-06).')
@@ -54,6 +65,10 @@ class PurchaseOrder(models.Model):
         help_text='Set tự động = người bấm Tạo PO — dùng để giới hạn nhân viên phòng Mua hàng '
                    'thường chỉ xem PO do chính mình tạo (xem purchasing.views._po_can_view_all).')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
+    close_reason = models.TextField(
+        blank=True, verbose_name='Lý do đóng sớm',
+        help_text='Bắt buộc khi đóng PO từ SENT/PARTIAL_RECEIVED (NCC chưa giao đủ hàng); '
+                   'không bắt buộc khi đóng từ RECEIVED (đã nhận đủ, chỉ archive).')
 
     class Meta:
         ordering = ['-created_at']
@@ -155,13 +170,21 @@ class PurchaseRequest(models.Model):
     """
 
     class Status(models.TextChoices):
+        DRAFT = 'DRAFT', 'Nháp'
         PENDING = 'PENDING', 'Chờ duyệt'
         APPROVED = 'APPROVED', 'Đã duyệt'
         REJECTED = 'REJECTED', 'Từ chối'
 
+    class Origin(models.TextChoices):
+        MANUAL = 'MANUAL', 'Tự đề xuất'
+        MIN_LEVEL = 'MIN_LEVEL', 'Gợi ý dưới Min Level'
+
     request_no = models.CharField(
         max_length=30, unique=True, editable=False, verbose_name='Số yêu cầu',
         help_text='Tự sinh: PR-YYYYMM-XXX.')
+    origin = models.CharField(
+        max_length=20, choices=Origin.choices, default=Origin.MANUAL, verbose_name='Nguồn tạo',
+        help_text='Tự đề xuất hay tạo từ gợi ý tồn kho dưới Min Level (set tự động, không sửa tay).')
     requested_by = models.ForeignKey(
         'accounts.User', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Người yêu cầu')
     assigned_to = models.ForeignKey(
@@ -173,7 +196,7 @@ class PurchaseRequest(models.Model):
         'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Kho',
         help_text='Kho đang thiếu hàng (chỉ kho loại MAIN).')
     note = models.TextField(blank=True, verbose_name='Ghi chú')
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
     decided_by = models.ForeignKey(
         'accounts.User', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
         verbose_name='Người duyệt')

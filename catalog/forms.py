@@ -1,5 +1,8 @@
 """Form app catalog (Product/SKU — mục 1c)."""
 from django import forms
+from django.db.models import Q
+
+from partners.models import Supplier
 
 from .models import Product
 
@@ -25,9 +28,15 @@ class ProductForm(forms.ModelForm):
         model = Product
         fields = [
             'product_code', 'name', 'category', 'uom', 'min_level', 'max_level',
-            'ordering_cost', 'holding_cost_rate', 'qc_sampling_method', 'qc_sampling_value', 'is_active',
+            'ordering_cost', 'holding_cost_rate', 'qc_sampling_method', 'qc_sampling_value',
+            'preferred_supplier', 'is_active',
         ]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        queryset = Q(status=Supplier.Status.ACTIVE)
+        if self.instance.pk and self.instance.preferred_supplier_id:
+            queryset |= Q(pk=self.instance.preferred_supplier_id)
+        self.fields['preferred_supplier'].queryset = Supplier.objects.filter(queryset)
+        self.fields['preferred_supplier'].required = False
         _bootstrapify(self.fields)

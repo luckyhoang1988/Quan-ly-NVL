@@ -26,7 +26,7 @@
           <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-send"></i> Gửi NCC</button>
         </form>
       {% endif %}
-      {% if can_close %}
+      {% if can_close and not close_reason_required %}
         <form method="post" action="{% url 'purchasing:po_close' po.pk %}" class="d-inline">
           {% csrf_token %}
           <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock"></i> Đóng PO</button>
@@ -62,6 +62,24 @@
           <th class="text-nowrap">Người tạo</th>
           <td>{% if po.created_by %}{{ po.created_by.get_full_name|default:po.created_by.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
         </tr>
+        <tr>
+          <th class="text-nowrap">Nguồn tạo</th>
+          <td colspan="3">
+            {{ po.get_source_display }}
+            {% with source_pr=po.source_requests.first %}
+              {% if source_pr %}
+                — <a href="{% url 'purchasing:pr_detail' source_pr.pk %}">{{ source_pr.request_no }}</a>
+                {% if source_pr.origin == 'MIN_LEVEL' %}<span class="text-muted">(gợi ý dưới Min Level)</span>{% endif %}
+              {% endif %}
+            {% endwith %}
+          </td>
+        </tr>
+        {% if po.close_reason %}
+        <tr>
+          <th class="text-nowrap">Lý do đóng sớm</th>
+          <td colspan="3">{{ po.close_reason }}</td>
+        </tr>
+        {% endif %}
       </tbody>
     </table>
   </div>
@@ -127,6 +145,25 @@
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+{% endif %}
+
+{% if can_close and close_reason_required %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <details>
+      <summary class="text-secondary">Đóng PO sớm (khi NCC chưa giao đủ hàng)</summary>
+      <form method="post" action="{% url 'purchasing:po_close' po.pk %}" class="mt-2">
+        {% csrf_token %}
+        <div class="mb-2">
+          <label class="form-label" for="{{ close_form.close_reason.id_for_label }}">{{ close_form.close_reason.label }}</label>
+          {{ close_form.close_reason }}
+          {% for error in close_form.close_reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <button type="submit" class="btn btn-outline-secondary btn-sm"><i class="bi bi-lock"></i> Xác nhận đóng PO</button>
+      </form>
+    </details>
   </div>
 </div>
 {% endif %}

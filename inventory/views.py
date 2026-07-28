@@ -89,6 +89,7 @@ def inventory_list(request):
         'below_min_count': below_min_count,
         'above_max_count': above_max_count,
         'q': q,
+        'can_create_pr': request.user.can('create', 'pr'),
     })
 
 

@@ -25,6 +25,7 @@ from partners.models import Supplier
 from receiving.models import GrnItem
 
 from .forms import (
+    PurchaseOrderCloseForm,
     PurchaseOrderForm,
     PurchaseOrderItemFormSet,
     PurchaseRequestForm,
@@ -37,7 +38,9 @@ from .services import (
     approve_po,
     close_po,
     decide_purchase_request,
+    delete_purchase_request,
     forward_purchase_request,
+    reopen_purchase_request,
     send_po,
     submit_purchase_request,
     supplier_lead_time_stats,
@@ -222,6 +225,7 @@ def po_detail(request, pk):
     can_approve = request.user.can('approve', 'po')
     closeable_statuses = (
         PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED, PurchaseOrder.Status.RECEIVED)
+    can_close = can_approve and po.status in closeable_statuses
     return render(request, 'purchasing/po_detail.html', {
         'po': po,
         'item_rows': item_rows,
@@ -229,24 +233,26 @@ def po_detail(request, pk):
         'can_update': can_update,
         'can_approve': can_approve,
         'can_edit': can_update and po.status == PurchaseOrder.Status.DRAFT,
-        'can_close': can_approve and po.status in closeable_statuses,
+        'can_close': can_close,
+        'close_reason_required': po.status != PurchaseOrder.Status.RECEIVED,
+        'close_form': PurchaseOrderCloseForm(po=po) if can_close else None,
     })
 
 
 @po_permission_required('create')
 def po_create(request):
     """CREATE — tạo PO kèm chi tiết đơn hàng (formset), tối thiểu 1 dòng item.
-
-    ``?product=<id>&qty=<n>`` (FR-PO-02, link từ dashboard tồn kho dưới Min
-    Level — xem ``inventory/views.py::inventory_list``) prefill sẵn dòng item
-    đầu tiên; NCC vẫn để trống, người dùng tự chọn (xem ``po_price_comparison``
-    để so sánh giá trước khi chọn).
+    Không còn lối tắt ``?product=<id>&qty=<n>`` tạo PO thẳng từ gợi ý Min Level
+    (đã bỏ — mọi PO phát sinh từ tồn kho dưới Min Level giờ phải qua PR trước,
+    xem ``pr_create``/``inventory/views.py::inventory_list``); PO tạo trực
+    tiếp ở đây luôn ``source=MANUAL``.
 
     ``?from_pr=<pk>`` (nút "Tạo PO từ yêu cầu này" ở ``pr_detail``) prefill mọi
-    dòng item từ 1 ``PurchaseRequest`` đã APPROVED và CHƯA có PO liên kết; sau
-    khi PO tạo thành công, gán ``source_pr.linked_po`` để PR biết đã convert
-    xong. Chỉ 1 trong 2 kiểu prefill (``product``/``from_pr``) được dùng,
-    không kết hợp.
+    dòng item từ 1 ``PurchaseRequest`` đã APPROVED và CHƯA có PO liên kết
+    (``source`` set thành ``FROM_PR``), kèm gợi ý sẵn NCC từ
+    ``Product.preferred_supplier`` của dòng item đầu tiên nếu có (người dùng
+    vẫn đổi được); sau khi PO tạo thành công, gán ``source_pr.linked_po`` để
+    PR biết đã convert xong.
 
     Truy cập ``from_pr`` được khoá 2 lớp để không lách được cơ chế chuyển tiếp
     ở ``forward_purchase_request``/``pr_detail``:
@@ -262,6 +268,7 @@ def po_create(request):
     """
     initial = None
     source_pr = None
+    po_initial = {}
     from_pr_id = request.POST.get('from_pr') or request.GET.get('from_pr')
     if from_pr_id:
         source_pr = get_object_or_404(
@@ -278,13 +285,11 @@ def po_create(request):
                 {'product': item.product_id, 'qty_ordered': item.qty_requested}
                 for item in source_pr.items.all()
             ]
-    elif request.method == 'GET':
-        product_id = request.GET.get('product')
-        qty = request.GET.get('qty')
-        if product_id and qty:
-            initial = [{'product': product_id, 'qty_ordered': qty}]
+            first_item = source_pr.items.select_related('product').first()
+            if first_item and first_item.product.preferred_supplier_id:
+                po_initial['supplier'] = first_item.product.preferred_supplier_id
 
-    form = PurchaseOrderForm(request.POST or None)
+    form = PurchaseOrderForm(request.POST or None, initial=po_initial)
     formset = PurchaseOrderItemFormSet(
         request.POST or None, instance=PurchaseOrder(), prefix='items', initial=initial)
     if request.method == 'POST' and form.is_valid() and formset.is_valid():
@@ -299,6 +304,8 @@ def po_create(request):
                         raise ValidationError(f'Yêu cầu "{source_pr.request_no}" đã có PO liên kết.')
                 obj = form.save(commit=False)
                 obj.created_by = request.user
+                if source_pr:
+                    obj.source = PurchaseOrder.Source.FROM_PR
                 obj.save()
                 formset.instance = obj
                 formset.save()
@@ -369,8 +376,14 @@ def po_send(request, pk):
     obj = get_object_or_404(PurchaseOrder, pk=pk)
     if request.method == 'POST':
         try:
-            send_po(obj, actor=request.user, ip_address=client_ip(request))
-            messages.success(request, f'Đã gửi PO "{obj.po_no}" tới NCC.')
+            obj = send_po(obj, actor=request.user, ip_address=client_ip(request))
+            if obj._email_sent:
+                messages.success(request, f'Đã gửi PO "{obj.po_no}" và email thông báo tới NCC.')
+            else:
+                messages.warning(
+                    request,
+                    f'Đã chuyển PO "{obj.po_no}" sang trạng thái Gửi NCC, nhưng NCC chưa có email liên hệ '
+                    f'— vui lòng tự thông báo cho NCC qua kênh khác.')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:po_detail', pk=obj.pk)
@@ -378,11 +391,18 @@ def po_send(request, pk):
 
 @po_permission_required('approve')
 def po_close(request, pk):
-    """{SENT, PARTIAL_RECEIVED, RECEIVED} -> CLOSED (POST-only)."""
+    """{SENT, PARTIAL_RECEIVED, RECEIVED} -> CLOSED (POST-only). Đóng sớm từ
+    SENT/PARTIAL_RECEIVED bắt buộc nhập lý do (``PurchaseOrderCloseForm``, xem
+    ``services.close_po`` — service tự re-validate lại, form chỉ thu input)."""
     obj = get_object_or_404(PurchaseOrder, pk=pk)
     if request.method == 'POST':
+        form = PurchaseOrderCloseForm(request.POST, po=obj)
         try:
-            close_po(obj, actor=request.user, ip_address=client_ip(request))
+            if not form.is_valid():
+                raise ValidationError('Bắt buộc nhập lý do khi đóng PO trước khi NCC giao đủ hàng.')
+            close_po(
+                obj, actor=request.user, reason=form.cleaned_data['close_reason'],
+                ip_address=client_ip(request))
             messages.success(request, f'Đã đóng PO "{obj.po_no}".')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
@@ -466,6 +486,7 @@ def pr_detail(request, pk):
         and obj.status == PurchaseRequest.Status.APPROVED
         and not obj.linked_po_id
     )
+    is_owner_editable = _pr_can_edit(request.user, obj)
     return render(request, 'purchasing/pr_detail.html', {
         'obj': obj,
         'approval': latest_approval_for(obj),
@@ -478,35 +499,164 @@ def pr_detail(request, pk):
         'can_forward': can_forward,
         'forward_form': PurchaseRequestForwardForm() if can_forward else None,
         'reject_form': PurchaseRequestRejectForm(),
+        'can_edit': is_owner_editable and obj.status == PurchaseRequest.Status.DRAFT,
+        'can_submit': is_owner_editable and obj.status == PurchaseRequest.Status.DRAFT,
+        'can_reopen': is_owner_editable and obj.status == PurchaseRequest.Status.REJECTED,
+        'can_delete': (
+            is_owner_editable and obj.status == PurchaseRequest.Status.DRAFT
+            and request.user.can('delete', 'pr')
+        ),
     })
 
 
 @pr_permission_required('create')
 def pr_create(request):
     """CREATE — tiếp nhận yêu cầu mua hàng từ nhân viên các phòng ban (Tab 1), kèm
-    nhiều dòng SKU (formset). ``requested_by`` luôn là người đang đăng nhập. Tạo
-    xong nộp thẳng vào luồng ``Approval`` (department=PURCHASING) — không có
-    bước "Nộp" riêng, tạo PR tức là gửi yêu cầu duyệt.
+    nhiều dòng SKU (formset). ``requested_by`` luôn là người đang đăng nhập. Chỉ
+    lưu ở state DRAFT (mirror ``receiving.views.grn_create``) — người tạo tự sửa
+    tiếp qua ``pr_update`` rồi bấm "Nộp yêu cầu" (``pr_submit``) khi đã sẵn sàng,
+    không tự động nộp thẳng vào luồng ``Approval`` như trước.
+
+    ``?product=<id>&qty=<n>&warehouse=<id>`` (gợi ý tồn kho dưới Min Level, link
+    từ ``inventory/views.py::inventory_list`` — thay cho lối tắt tạo PO thẳng đã
+    bỏ ở ``po_create``) prefill dòng item đầu tiên + kho; PR tạo từ đây được
+    đánh dấu ``origin=MIN_LEVEL``. Query string GET không tự sống sót qua submit
+    form nên giá trị này được giữ qua 1 hidden input ``min_level_origin`` trên
+    ``pr_form.html`` và đọc lại từ ``request.POST`` khi lưu.
     """
-    form = PurchaseRequestForm(request.POST or None)
+    initial = None
+    pr_initial = {}
+    if request.method == 'GET':
+        product_id = request.GET.get('product')
+        qty = request.GET.get('qty')
+        if product_id and qty:
+            initial = [{'product': product_id, 'qty_requested': qty}]
+        warehouse_id = request.GET.get('warehouse')
+        if warehouse_id:
+            pr_initial['warehouse'] = warehouse_id
+    min_level_origin = request.POST.get('min_level_origin') if request.method == 'POST' else bool(initial)
+
+    form = PurchaseRequestForm(request.POST or None, initial=pr_initial)
     formset = PurchaseRequestItemFormSet(
-        request.POST or None, instance=PurchaseRequest(), prefix='items')
+        request.POST or None, instance=PurchaseRequest(), prefix='items', initial=initial)
     if request.method == 'POST' and form.is_valid() and formset.is_valid():
         with transaction.atomic():
             obj = form.save(commit=False)
             obj.requested_by = request.user
+            if min_level_origin:
+                obj.origin = PurchaseRequest.Origin.MIN_LEVEL
             obj.save()
             formset.instance = obj
             formset.save()
-            submit_purchase_request(obj, actor=request.user, ip_address=client_ip(request))
         log_action(
             request.user, AuditLog.Action.CREATE, target=obj,
-            description=f'Tạo yêu cầu mua hàng {obj.request_no}',
+            description=f'Tạo yêu cầu mua hàng {obj.request_no} (nháp)',
             ip_address=client_ip(request),
         )
-        messages.success(request, f'Đã gửi yêu cầu mua hàng "{obj.request_no}", chờ quản lý phòng Mua hàng duyệt.')
+        messages.success(request, f'Đã lưu nháp yêu cầu mua hàng "{obj.request_no}" — bấm "Nộp yêu cầu" để gửi duyệt.')
         return redirect('purchasing:pr_detail', pk=obj.pk)
-    return render(request, 'purchasing/pr_form.html', {'form': form, 'formset': formset, 'mode': 'create'})
+    return render(request, 'purchasing/pr_form.html', {
+        'form': form, 'formset': formset, 'mode': 'create', 'min_level_origin': bool(min_level_origin),
+    })
+
+
+def _pr_can_edit(user, pr):
+    """Ai sửa/nộp/mở lại được 1 PR: chỉ đúng chủ (``requested_by``) hoặc người có
+    tầm nhìn toàn bộ (``_pr_can_view_all`` — quản lý phòng Mua hàng/Manager/Admin),
+    mirror check hiển thị ở ``pr_detail`` — không dựa mỗi decorator quyền module.
+    """
+    return _pr_can_view_all(user) or pr.requested_by_id == user.id
+
+
+@pr_permission_required('update')
+def pr_update(request, pk):
+    """UPDATE — sửa PR + chi tiết đơn hàng. Chỉ cho sửa khi còn DRAFT (mirror
+    ``po_update``) và chỉ đúng chủ hoặc người có tầm nhìn toàn bộ mới sửa được
+    (mirror check hiển thị ở ``pr_detail`` — quyền module ``update`` một mình
+    không đủ, còn phải đúng người).
+    """
+    obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not _pr_can_edit(request.user, obj):
+        raise PermissionDenied('Bạn chỉ sửa được yêu cầu mua hàng do chính mình tạo.')
+    if obj.status != PurchaseRequest.Status.DRAFT:
+        messages.error(request, f'Không thể sửa yêu cầu "{obj.request_no}" khi đã qua state Nháp.')
+        return redirect('purchasing:pr_detail', pk=obj.pk)
+
+    form = PurchaseRequestForm(request.POST or None, instance=obj)
+    formset = PurchaseRequestItemFormSet(request.POST or None, instance=obj, prefix='items')
+    if request.method == 'POST' and form.is_valid() and formset.is_valid():
+        with transaction.atomic():
+            obj = form.save()
+            formset.save()
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=obj,
+            description=f'Cập nhật yêu cầu mua hàng {obj.request_no}',
+            ip_address=client_ip(request),
+        )
+        messages.success(request, f'Đã cập nhật yêu cầu mua hàng "{obj.request_no}".')
+        return redirect('purchasing:pr_detail', pk=obj.pk)
+    return render(
+        request, 'purchasing/pr_form.html',
+        {'form': form, 'formset': formset, 'mode': 'update', 'obj': obj},
+    )
+
+
+@pr_permission_required('update')
+def pr_submit(request, pk):
+    """DRAFT -> PENDING (POST-only, mirror ``receiving.views.grn_submit``): nộp
+    PR để chờ quản lý phòng Mua hàng duyệt. Cùng check sở hữu như ``pr_update``
+    — quyền ``update`` trên module ``pr`` chỉ xác nhận vai trò được phép tự nộp
+    yêu cầu của MÌNH, không phải nộp hộ PR của người khác.
+    """
+    obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not _pr_can_edit(request.user, obj):
+        raise PermissionDenied('Bạn chỉ nộp được yêu cầu mua hàng do chính mình tạo.')
+    if request.method == 'POST':
+        try:
+            submit_purchase_request(obj, actor=request.user, ip_address=client_ip(request))
+            messages.success(
+                request, f'Đã gửi yêu cầu mua hàng "{obj.request_no}", chờ quản lý phòng Mua hàng duyệt.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:pr_detail', pk=obj.pk)
+
+
+@pr_permission_required('update')
+def pr_reopen(request, pk):
+    """REJECTED -> DRAFT (POST-only): mở lại PR bị từ chối để sửa và nộp lại.
+    Cùng check sở hữu như ``pr_update``/``pr_submit``.
+    """
+    obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not _pr_can_edit(request.user, obj):
+        raise PermissionDenied('Bạn chỉ mở lại được yêu cầu mua hàng do chính mình tạo.')
+    if request.method == 'POST':
+        try:
+            reopen_purchase_request(obj, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã mở lại yêu cầu mua hàng "{obj.request_no}" — bạn có thể sửa và nộp lại.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:pr_detail', pk=obj.pk)
+
+
+@pr_permission_required('delete')
+def pr_delete(request, pk):
+    """DELETE (L2) — xoá thật 1 PR còn DRAFT (POST-only). Cùng check sở hữu như
+    ``pr_update``/``pr_submit``/``pr_reopen`` — quyền ``delete`` trên module
+    ``pr`` (mặc định chỉ MANAGER/ADMIN, xem ``accounts/permissions.py``) một
+    mình không đủ, còn phải đúng chủ hoặc người có tầm nhìn toàn bộ
+    (``_pr_can_edit``) mới xoá được.
+    """
+    obj = get_object_or_404(PurchaseRequest, pk=pk)
+    if not _pr_can_edit(request.user, obj):
+        raise PermissionDenied('Bạn chỉ xoá được yêu cầu mua hàng do chính mình tạo.')
+    if request.method == 'POST':
+        try:
+            request_no = delete_purchase_request(obj, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã xoá yêu cầu mua hàng "{request_no}".')
+            return redirect('purchasing:pr_list')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:pr_detail', pk=obj.pk)
 
 
 @login_required

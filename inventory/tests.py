@@ -396,6 +396,37 @@ class InventoryDashboardViewTest(TestCase):
         self.assertTrue(rows_by_warehouse[self.warehouse.pk]['below_min'])
         self.assertEqual(response.context['below_min_count'], 1)
 
+    def test_TC_INV_DASH_008_below_min_link_shown_with_correct_href(self):
+        """L3: link "Tạo yêu cầu mua hàng" (gợi ý PR khi dưới Min Level, thay lối
+        tắt tạo PO thẳng đã bỏ — xem ``purchasing.views.pr_create`` docstring)
+        hiện đúng khi ``can_create_pr`` và trỏ đúng ``product``/``qty``/``warehouse``
+        querystring mà ``pr_create`` đọc để prefill dòng item + kho."""
+        product = Product.objects.create(product_code='NVL-0007', name='Quế', uom='kg', min_level=50, max_level=200)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertTrue(response.context['can_create_pr'])
+        suggested_qty = response.context['rows'][0]['suggested_po_qty']
+        self.assertGreater(suggested_qty, 0)
+        expected_href = (
+            f"{reverse('purchasing:pr_create')}?product={product.pk}"
+            f"&qty={suggested_qty}&warehouse={self.warehouse.pk}"
+        )
+        self.assertContains(response, 'Tạo yêu cầu mua hàng')
+        self.assertContains(response, expected_href)
+
+    def test_TC_INV_DASH_009_below_min_link_hidden_without_pr_create_permission(self):
+        """L3: user không có quyền ``create`` trên module ``pr`` (vd QC — chỉ
+        có ``read``) không thấy link, dù row vẫn dưới Min Level."""
+        User = get_user_model()
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        product = Product.objects.create(product_code='NVL-0008', name='Hồi', uom='kg', min_level=50, max_level=200)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        self.client.force_login(qc_user)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertFalse(response.context['can_create_pr'])
+        self.assertTrue(response.context['rows'][0]['below_min'])
+        self.assertNotContains(response, 'Tạo yêu cầu mua hàng')
+
 
 class BatchViewTest(TestCase):
     """``batch_list``/``batch_detail`` (mục 3a): FR-INV-01 quản lý lô hàng +

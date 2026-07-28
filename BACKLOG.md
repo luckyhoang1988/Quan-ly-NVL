@@ -336,7 +336,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 
 ### Functional Requirements (6 FR)
 - [x] **FR-PO-01** `MUST` — Workflow PO: DRAFT → APPROVED → SENT → PARTIAL_RECEIVED → RECEIVED → CLOSED — `purchasing/services.py::approve_po/send_po/close_po` + `sync_po_status` (tự động PARTIAL_RECEIVED/RECEIVED); không có auto-approve theo ngưỡng tiền, mọi PO đều cần Manager/Admin duyệt thủ công (quyết định chốt với user)
-- [x] **FR-PO-02** `MUST` — Khi tồn < Min Level, gợi ý tạo PO tự động — MVP không Celery: nút "Tạo PO" ở dòng dưới Min Level trên `inventory_list.html`, prefill sản phẩm + Qty gợi ý (`?product=&qty=`) vào `po_create`
+- [x] **FR-PO-02** `MUST` — Khi tồn < Min Level, gợi ý tạo PO tự động — MVP không Celery: nút "Tạo yêu cầu mua hàng" ở dòng dưới Min Level trên `inventory_list.html`, prefill sản phẩm + Qty gợi ý + kho (`?product=&qty=&warehouse=`) vào `pr_create` (đánh dấu `PurchaseRequest.origin=MIN_LEVEL`); PO thật chỉ tạo sau khi PR được duyệt qua `po_create?from_pr=<pk>` — bỏ lối tắt tạo PO thẳng từ gợi ý (2026-07-28, mọi PO phát sinh từ Min Level giờ đều qua PR/duyệt, không bỏ qua bước duyệt như trước)
 - [x] **FR-PO-03** `MUST` — So sánh giá từ nhiều NCC để chọn optimal — `purchasing/services.py::supplier_price_history` + view/trang `po_price_comparison`
 - [x] **FR-PO-04** `MUST` — GRN phải tham chiếu PO để đối soát qty — đã có từ Phase 1e/2 (`sync_po_status`, `GrnForm.po` giới hạn PO status SENT/PARTIAL_RECEIVED), chỉ bổ sung hiển thị Qty đã nhận/còn lại ở `po_detail`
 - [x] **FR-PO-05** `MUST` — Theo dõi lead-time từng NCC — `purchasing/services.py::supplier_lead_time_stats` (so sánh `Supplier.lead_time_days` cấu hình với lead-time thực tế tính từ `created_at`→`received_at`), trang `po_supplier_performance`

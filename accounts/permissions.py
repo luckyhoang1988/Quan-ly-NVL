@@ -83,7 +83,9 @@ ROLE_PERMISSIONS = {
         'gin': {'create', 'read'},                 # CR
         'opname': {'create', 'read', 'update'},    # CRU
         'qc': set(),                               # –
-        'pr': {'create', 'read'},                  # CR (tự tạo PR, không tự duyệt)
+        # 'update' thêm để tự sửa PR còn ở state DRAFT trước khi Nộp (pr_update) —
+        # không tự duyệt, PR sau khi Nộp không sửa được nữa (xem purchasing.views.pr_update).
+        'pr': {'create', 'read', 'update'},        # CRU (tự tạo/sửa PR nháp, không tự duyệt)
         'po': {'read'},                            # R
         'reports': {'read'},                       # R
     },
@@ -108,7 +110,11 @@ ROLE_PERMISSIONS = {
         # dòng MANAGER/ADMIN bên dưới) được quyết định. Duyệt PO thật
         # (approve_po, gửi NCC) vẫn giữ riêng cho Manager/Admin — 2 lớp kiểm
         # soát tách biệt, không hạ guard PO hiện có.
-        'pr': {'read', 'update'},                           # R + U (không tự approve)
+        # 'create' thêm lại (bug-fix 2026-07-28): PURCHASING trước đây không tự
+        # tạo được PR — bất tiện khi chính phòng Mua hàng cần đề xuất mua hàng
+        # (vd từ gợi ý Min Level, xem purchasing.views.pr_create) mà không có
+        # ai ở phòng khác đứng tên yêu cầu hộ.
+        'pr': {'create', 'read', 'update'},                 # CRU (không tự approve)
         'po': {'create', 'read', 'update', 'delete'},       # CRUD (approve -> Manager/Admin)
         'reports': {'read'},                                # R
     },

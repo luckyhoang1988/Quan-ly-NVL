@@ -3,6 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from accounts.models import AuditLog
+from partners.models import Supplier
 
 from .models import Product
 
@@ -95,6 +96,45 @@ class ProductCrudTest(TestCase):
         product = Product.objects.get(product_code='NVL-0001')
         self.assertRedirects(response, reverse('catalog:product_list'))
         self.assertEqual(product.holding_cost_rate, 100)
+
+    def test_TC_CAT_001_011_inactive_preferred_supplier_rejected_on_create(self):
+        """Bước D: form lọc NCC ACTIVE — NCC inactive không chọn được khi tạo mới."""
+        supplier = Supplier.objects.create(
+            supplier_code='NCC-0001', name='NCC ngừng giao dịch', status=Supplier.Status.INACTIVE)
+        response = self.client.post(
+            reverse('catalog:product_create'),
+            self._create_payload(preferred_supplier=supplier.pk),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Product.objects.filter(product_code='NVL-0001').exists())
+
+    def test_TC_CAT_001_012_active_preferred_supplier_saved(self):
+        supplier = Supplier.objects.create(supplier_code='NCC-0002', name='NCC hoạt động')
+        response = self.client.post(
+            reverse('catalog:product_create'),
+            self._create_payload(preferred_supplier=supplier.pk),
+        )
+        product = Product.objects.get(product_code='NVL-0001')
+        self.assertRedirects(response, reverse('catalog:product_list'))
+        self.assertEqual(product.preferred_supplier_id, supplier.pk)
+
+    def test_TC_CAT_001_013_update_keeps_existing_inactive_preferred_supplier_selectable(self):
+        """Sản phẩm đã gán NCC từ trước, NCC đó sau đó bị khoá — vẫn sửa/lưu lại được
+        sản phẩm giữ nguyên NCC đó (không bị form lọc rơi mất giá trị cũ)."""
+        supplier = Supplier.objects.create(supplier_code='NCC-0003', name='NCC sắp khoá')
+        product = Product.objects.create(
+            product_code='NVL-0001', name='Bột mì', uom='kg', preferred_supplier=supplier)
+        supplier.status = Supplier.Status.INACTIVE
+        supplier.save(update_fields=['status'])
+
+        response = self.client.post(
+            reverse('catalog:product_update', args=[product.pk]),
+            self._create_payload(name='Bột mì loại 1', preferred_supplier=supplier.pk),
+        )
+        product.refresh_from_db()
+        self.assertRedirects(response, reverse('catalog:product_list'))
+        self.assertEqual(product.name, 'Bột mì loại 1')
+        self.assertEqual(product.preferred_supplier_id, supplier.pk)
 
     def test_TC_CAT_001_007_update_and_audit(self):
         product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')

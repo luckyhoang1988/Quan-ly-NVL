@@ -45,6 +45,7 @@
             <th>ĐVT</th>
             <th>Min level</th>
             <th>Max level</th>
+            <th>NCC ưu tiên</th>
             <th>Trạng thái</th>
             <th></th>
           </tr>
@@ -58,6 +59,7 @@
             <td>{{ p.uom }}</td>
             <td>{{ p.min_level|default:"—" }}</td>
             <td>{{ p.max_level|default:"—" }}</td>
+            <td>{{ p.preferred_supplier.name|default:"—" }}</td>
             <td>
               {% if p.is_active %}
                 <span class="badge bg-success">Hoạt động</span>
@@ -72,7 +74,7 @@
             </td>
           </tr>
           {% empty %}
-          <tr><td colspan="8" class="text-center text-muted">Chưa có sản phẩm nào.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted">Chưa có sản phẩm nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

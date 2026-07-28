@@ -10,16 +10,33 @@
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
     <h1 class="panel-title">
       {{ obj.request_no }}
-      {% if obj.status == 'PENDING' %}
+      {% if obj.status == 'DRAFT' %}
+        <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
+      {% elif obj.status == 'PENDING' %}
         <span class="badge bg-warning text-dark">{{ obj.get_status_display }}</span>
       {% elif obj.status == 'APPROVED' %}
         <span class="badge bg-success">{{ obj.get_status_display }}</span>
       {% else %}
-        <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
+        <span class="badge bg-danger">{{ obj.get_status_display }}</span>
       {% endif %}
     </h1>
     <div class="page-toolbar">
       <a href="{% url 'purchasing:pr_list' %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Danh sách</a>
+      {% if can_edit %}
+        <a href="{% url 'purchasing:pr_update' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
+      {% endif %}
+      {% if can_submit %}
+        <form method="post" action="{% url 'purchasing:pr_submit' obj.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-send"></i> Nộp yêu cầu</button>
+        </form>
+      {% endif %}
+      {% if can_reopen %}
+        <form method="post" action="{% url 'purchasing:pr_reopen' obj.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-counterclockwise"></i> Mở lại để sửa</button>
+        </form>
+      {% endif %}
       {% if can_create_po %}
         <a href="{% url 'purchasing:po_create' %}?from_pr={{ obj.pk }}" class="btn btn-primary btn-sm">
           <i class="bi bi-cart-plus"></i> Tạo PO từ yêu cầu này
@@ -73,7 +90,7 @@
           </td>
         </tr>
         {% endif %}
-        {% if obj.reject_reason %}
+        {% if obj.status == 'REJECTED' and obj.reject_reason %}
         <tr>
           <th class="text-nowrap">Lý do từ chối</th>
           <td colspan="3">{{ obj.reject_reason }}</td>
@@ -153,6 +170,21 @@
           {% for error in reject_form.reject_reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
         </div>
         <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-x-lg"></i> Xác nhận từ chối</button>
+      </form>
+    </details>
+  </div>
+</div>
+{% endif %}
+
+{% if can_delete %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body">
+    <details>
+      <summary class="text-danger">Xoá yêu cầu này</summary>
+      <p class="text-muted small mt-2 mb-2">Yêu cầu còn ở trạng thái Nháp nên xoá luôn, không thể khôi phục.</p>
+      <form method="post" action="{% url 'purchasing:pr_delete' obj.pk %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i> Xác nhận xoá</button>
       </form>
     </details>
   </div>

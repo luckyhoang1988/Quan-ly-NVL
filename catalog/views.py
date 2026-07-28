@@ -48,7 +48,7 @@ def product_list(request):
     hồi quyền "Truy cập menu" ``catalog`` riêng cho user đó qua trang Phân quyền chi tiết)."""
     if not request.user.can_view_menu('catalog'):
         raise PermissionDenied('Bạn không có quyền truy cập mục "Sản phẩm".')
-    products = Product.objects.all()
+    products = Product.objects.select_related('preferred_supplier').all()
     category = request.GET.get('category', '')
     if category:
         products = products.filter(category=category)

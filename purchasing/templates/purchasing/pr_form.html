@@ -1,20 +1,28 @@
 {% extends 'base.html' %}
-{% block title %}Tạo yêu cầu mua hàng — NVL/WMS{% endblock %}
+{% block title %}{% if mode == 'create' %}Tạo yêu cầu mua hàng{% else %}Sửa yêu cầu mua hàng{% endif %} — NVL/WMS{% endblock %}
 {% block breadcrumb %}
   <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
   <a href="{% url 'purchasing:pr_list' %}">Yêu cầu mua hàng</a> <span class="mx-1">/</span>
-  <span class="current">Tạo mới</span>
+  <span class="current">{% if mode == 'create' %}Tạo mới{% else %}Sửa: {{ obj.request_no }}{% endif %}</span>
 {% endblock %}
 {% block content %}
 <div class="row justify-content-center">
   <div class="col-lg-9">
     <div class="card shadow-sm">
       <div class="card-header panel-toolbar">
-        <h1 class="panel-title">Tạo yêu cầu mua hàng</h1>
+        <h1 class="panel-title">
+          {% if mode == 'create' %}Tạo yêu cầu mua hàng{% else %}Sửa yêu cầu mua hàng: {{ obj.request_no }}{% endif %}
+        </h1>
       </div>
       <div class="card-body">
+        {% if min_level_origin %}
+          <div class="alert alert-info py-2">
+            Yêu cầu này được tạo từ gợi ý tồn kho dưới Min Level — dòng hàng và kho đã prefill sẵn, bạn có thể chỉnh lại trước khi lưu.
+          </div>
+        {% endif %}
         <form method="post" novalidate>
           {% csrf_token %}
+          {% if min_level_origin %}<input type="hidden" name="min_level_origin" value="1">{% endif %}
           {% if form.non_field_errors %}
             <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
           {% endif %}
@@ -64,7 +72,9 @@
           </div>
 
           <div class="d-flex gap-2 mt-4">
-            <button type="submit" class="btn btn-primary">Tạo yêu cầu</button>
+            <button type="submit" class="btn btn-primary">
+              {% if mode == 'create' %}Tạo yêu cầu{% else %}Lưu{% endif %}
+            </button>
             <a class="btn btn-link" href="{% url 'purchasing:pr_list' %}">Huỷ</a>
           </div>
         </form>

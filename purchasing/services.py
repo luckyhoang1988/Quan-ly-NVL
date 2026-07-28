@@ -15,6 +15,7 @@ duyệt thủ công (quyết định nghiệp vụ, xem PHÂN quyền ở view: 
 chỉ gọi được bởi actor có quyền ``approve`` trên module 'po').
 """
 from django.core.exceptions import ValidationError
+from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Avg, Count, Sum
 from django.utils import timezone
@@ -91,38 +92,86 @@ def approve_po(po, actor=None, ip_address=None):
 
 @transaction.atomic
 def send_po(po, actor=None, ip_address=None):
-    """APPROVED -> SENT (gửi PO tới NCC, khoá sửa)."""
+    """APPROVED -> SENT (gửi PO tới NCC, khoá sửa).
+
+    Best-effort: nếu NCC có ``contact_email`` thì gửi kèm 1 email thông báo
+    (mirror style ``accounts.views._send_account_created_email`` — tiếng Việt,
+    ``fail_silently=True``, ``from_email=None`` dùng ``DEFAULT_FROM_EMAIL``).
+    Không có email thì bỏ qua, không chặn transition — việc gửi PO cho NCC vẫn
+    có thể thực hiện qua kênh khác (điện thoại, fax...), hệ thống chỉ hỗ trợ
+    thêm chứ không bắt buộc.
+    """
     po = PurchaseOrder.objects.select_for_update().get(pk=po.pk)
     if po.status != PurchaseOrder.Status.APPROVED:
         raise ValidationError(f'Không thể gửi PO khi đang ở trạng thái {po.status}.')
 
     po.status = PurchaseOrder.Status.SENT
     po.save(update_fields=['status'])
+
+    email_sent = _send_po_email(po)
+
     log_action(
         actor, AuditLog.Action.UPDATE, target=po,
-        description=f'Gửi PO: {po.po_no} APPROVED -> SENT.',
+        description=(
+            f'Gửi PO: {po.po_no} APPROVED -> SENT. Đã gửi email tới NCC ({po.supplier.contact_email}).'
+            if email_sent else
+            f'Gửi PO: {po.po_no} APPROVED -> SENT. NCC chưa có email, chỉ cập nhật trạng thái.'
+        ),
         ip_address=ip_address,
     )
+    po._email_sent = email_sent
     return po
 
 
+def _send_po_email(po):
+    """Gửi email PO cho NCC nếu có ``contact_email``. Trả về True/False đã gửi hay chưa."""
+    if not po.supplier.contact_email:
+        return False
+    lines = [
+        f'Kính gửi {po.supplier.name},\n',
+        f'NVL/WMS gửi đơn mua hàng {po.po_no} với nội dung như sau:\n',
+    ]
+    for item in po.items.select_related('product').all():
+        lines.append(f'- {item.product.product_code} ({item.product.name}): {item.qty_ordered} x {item.unit_price}')
+    lines.append('')
+    lines.append(f'Ngày giao dự kiến: {po.expected_delivery_date or "chưa xác định"}.')
+    lines.append('\nVui lòng xác nhận và giao hàng đúng hẹn. Xin cảm ơn.')
+    send_mail(
+        subject=f'[NVL/WMS] Đơn mua hàng {po.po_no}',
+        message='\n'.join(lines),
+        from_email=None,  # dùng DEFAULT_FROM_EMAIL
+        recipient_list=[po.supplier.contact_email],
+        fail_silently=True,
+    )
+    return True
+
+
 @transaction.atomic
-def close_po(po, actor=None, ip_address=None):
+def close_po(po, actor=None, reason='', ip_address=None):
     """{SENT, PARTIAL_RECEIVED, RECEIVED} -> CLOSED (archive).
 
     Cho phép đóng từ SENT/PARTIAL_RECEIVED (không chỉ RECEIVED) vì Manager có
-    thể chủ động đóng PO khi NCC không giao nốt phần còn lại.
+    thể chủ động đóng PO khi NCC không giao nốt phần còn lại — nhưng khi đóng
+    sớm kiểu đó, bắt buộc ``reason`` (lý do) để ghi lại vì sao PO không đợi
+    nhận đủ; đóng từ RECEIVED (đã nhận đủ) không cần lý do. Re-validate lại
+    đây, không chỉ tin ``PurchaseOrderCloseForm.clean()`` đã lọc (form chỉ thu
+    input, service mới là nơi thật sự gác constraint — pattern lặp lại khắp
+    dự án, xem CLAUDE.md).
     """
     po = PurchaseOrder.objects.select_for_update().get(pk=po.pk)
     closeable = (PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED, PurchaseOrder.Status.RECEIVED)
     if po.status not in closeable:
         raise ValidationError(f'Không thể đóng PO khi đang ở trạng thái {po.status}.')
+    reason = (reason or '').strip()
+    if po.status != PurchaseOrder.Status.RECEIVED and not reason:
+        raise ValidationError('Bắt buộc nhập lý do khi đóng PO trước khi NCC giao đủ hàng.')
 
     po.status = PurchaseOrder.Status.CLOSED
-    po.save(update_fields=['status'])
+    po.close_reason = reason
+    po.save(update_fields=['status', 'close_reason'])
     log_action(
         actor, AuditLog.Action.UPDATE, target=po,
-        description=f'Đóng PO: {po.po_no} -> CLOSED.',
+        description=f'Đóng PO: {po.po_no} -> CLOSED.' + (f' Lý do: {reason}' if reason else ''),
         ip_address=ip_address,
     )
     return po
@@ -195,21 +244,78 @@ def supplier_lead_time_stats():
 
 @transaction.atomic
 def submit_purchase_request(pr, actor, ip_address=None):
-    """Nộp PR (gọi ngay sau khi tạo, ``pr.status`` đã là PENDING — không có state
-    DRAFT riêng vì tạo PR và nộp là 1 thao tác): tạo ``Approval`` cho
+    """DRAFT -> PENDING: nộp PR để chờ duyệt (mirror
+    ``receiving.services.request_submission``/GIN confirm) — tạo ``Approval`` cho
     ``department=PURCHASING`` (tự báo toàn bộ quản lý phòng Mua hàng qua
     ``create_approval``), cộng thêm báo riêng ``pr.assigned_to`` nếu người tạo
     có chỉ định — ``assigned_to`` chỉ để biết ai sẽ xử lý, không tự có quyền
-    duyệt (xem module docstring).
+    duyệt (xem module docstring). Chấp nhận cả PR đang REJECTED đã được
+    ``reopen_purchase_request`` đưa về DRAFT. ``assigned_to`` (nếu có) chỉ được
+    báo PR đã nộp — PR còn PENDING nên họ chưa tạo PO được; báo "cần xử lý"
+    thật sự chỉ gửi lúc PR được duyệt, xem ``decide_purchase_request``.
     """
+    pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+    if pr.status != PurchaseRequest.Status.DRAFT:
+        raise ValidationError(f'Chỉ nộp được yêu cầu đang ở trạng thái Nháp (hiện tại: {pr.get_status_display()}).')
+
+    pr.status = PurchaseRequest.Status.PENDING
+    pr.save(update_fields=['status'])
     create_approval(
         pr, department=User.Department.PURCHASING,
         action_label=f'Yêu cầu mua hàng {pr.request_no}', submitted_by=actor, ip_address=ip_address,
     )
     if pr.assigned_to_id:
         notify(
-            pr.assigned_to, f'{actor.username} gửi yêu cầu mua hàng {pr.request_no} cần bạn xử lý.', target=pr)
+            pr.assigned_to, f'{actor.username} đã nộp yêu cầu mua hàng {pr.request_no}, đang chờ duyệt.', target=pr)
     return pr
+
+
+@transaction.atomic
+def reopen_purchase_request(pr, actor, ip_address=None):
+    """REJECTED -> DRAFT: mở lại PR bị từ chối để sửa và nộp lại (mirror lý do
+    module docstring đã nêu — REJECTED không phải ngõ cụt). Giữ nguyên
+    ``decided_by``/``decided_at``/``reject_reason`` làm lịch sử tham khảo (không
+    xoá — đúng triết lý audit-trail của dự án), chỉ set lại ``status``. Sau khi
+    reopen, PR quay lại DRAFT nên dùng lại được ngay ``pr_update``/
+    ``submit_purchase_request`` đã có, không cần đường xử lý riêng.
+    """
+    pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+    if pr.status != PurchaseRequest.Status.REJECTED:
+        raise ValidationError(f'Chỉ mở lại được yêu cầu đang bị từ chối (hiện tại: {pr.get_status_display()}).')
+
+    pr.status = PurchaseRequest.Status.DRAFT
+    pr.save(update_fields=['status'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=pr,
+        description=f'Mở lại yêu cầu mua hàng {pr.request_no} (Từ chối -> Nháp) để sửa lại.',
+        ip_address=ip_address,
+    )
+    return pr
+
+
+@transaction.atomic
+def delete_purchase_request(pr, actor, ip_address=None):
+    """DELETE — xoá thật (không phải soft-delete) một PR còn DRAFT (L2). PR ở
+    DRAFT chưa từng qua ``Approval``/quyết định duyệt nào cần giữ lại làm lịch
+    sử — khác PR đã REJECTED (``reopen_purchase_request`` giữ nguyên
+    ``reject_reason`` làm bằng chứng), một bản nháp bị bỏ hoàn toàn không cần
+    vết tích, nên xoá cứng thay vì thêm 1 trạng thái ``CANCELLED`` chỉ cho
+    riêng DRAFT. Ghi ``AuditLog`` TRƯỚC khi xoá — GenericFK vẫn giữ được
+    ``target_id`` sau khi bản ghi gốc không còn tồn tại (cùng cách audit log
+    tham chiếu đối tượng đã xoá ở mọi nơi khác trong dự án, xem ``seed_demo_data``).
+    """
+    pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
+    if pr.status != PurchaseRequest.Status.DRAFT:
+        raise ValidationError(f'Chỉ xoá được yêu cầu đang ở trạng thái Nháp (hiện tại: {pr.get_status_display()}).')
+
+    request_no = pr.request_no
+    log_action(
+        actor, AuditLog.Action.DELETE, target=pr,
+        description=f'Xoá yêu cầu mua hàng {request_no} (nháp)',
+        ip_address=ip_address,
+    )
+    pr.delete()
+    return request_no
 
 
 @transaction.atomic
@@ -239,7 +345,9 @@ def forward_purchase_request(pr, staff, actor, ip_address=None):
 @transaction.atomic
 def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
     """Quản lý phòng Mua hàng (hoặc Manager/Admin) duyệt/từ chối 1 PR đang chờ,
-    thông qua ``Approval`` (xem ``accounts.approvals.decide_approval``)."""
+    thông qua ``Approval`` (xem ``accounts.approvals.decide_approval``). Nếu PR
+    có ``assigned_to``, duyệt xong báo họ ngay để tạo PO — đây mới là thời điểm
+    họ thật sự cần xử lý (xem ``submit_purchase_request``)."""
     pr = PurchaseRequest.objects.select_for_update().get(pk=approval.target_id)
     if pr.status != PurchaseRequest.Status.PENDING:
         raise ValidationError(f'Yêu cầu "{pr.request_no}" không ở trạng thái Chờ duyệt.')
@@ -249,6 +357,10 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None)
         pr.decided_by = actor
         pr.decided_at = timezone.now()
         pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+        if pr.assigned_to_id:
+            notify(
+                pr.assigned_to,
+                f'Yêu cầu mua hàng {pr.request_no} đã được duyệt — hãy tạo PO.', target=pr)
 
     def on_reject():
         pr.status = PurchaseRequest.Status.REJECTED

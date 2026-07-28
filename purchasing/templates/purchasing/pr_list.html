@@ -76,12 +76,14 @@
             <td>{{ pr.requested_by.get_full_name|default:pr.requested_by.username }}</td>
             <td>{% if pr.assigned_to %}{{ pr.assigned_to.get_full_name|default:pr.assigned_to.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
             <td>
-              {% if pr.status == 'PENDING' %}
+              {% if pr.status == 'DRAFT' %}
+                <span class="badge bg-secondary">{{ pr.get_status_display }}</span>
+              {% elif pr.status == 'PENDING' %}
                 <span class="badge bg-warning text-dark">{{ pr.get_status_display }}</span>
               {% elif pr.status == 'APPROVED' %}
                 <span class="badge bg-success">{{ pr.get_status_display }}</span>
               {% else %}
-                <span class="badge bg-secondary">{{ pr.get_status_display }}</span>
+                <span class="badge bg-danger">{{ pr.get_status_display }}</span>
               {% endif %}
             </td>
             <td>{{ pr.items.count }}</td>

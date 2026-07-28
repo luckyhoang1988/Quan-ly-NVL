@@ -115,3 +115,26 @@ class PurchaseRequestRejectForm(forms.Form):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _bootstrapify(self.fields)
+
+
+class PurchaseOrderCloseForm(forms.Form):
+    """Không bắt buộc ở mức field (đóng từ RECEIVED không cần lý do) — ``clean()``
+    tự bắt buộc khi ``po.status`` là SENT/PARTIAL_RECEIVED, dựa vào ``po`` truyền
+    vào ``__init__``. Service ``close_po`` tự re-validate lại y hệt logic này,
+    không chỉ tin form (theo đúng pattern "form filter — service re-validate" đã
+    dùng khắp dự án).
+    """
+    close_reason = forms.CharField(
+        required=False, widget=forms.Textarea(attrs={'rows': 2}), label='Lý do đóng sớm')
+
+    def __init__(self, *args, po=None, **kwargs):
+        self.po = po
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        close_reason = cleaned_data.get('close_reason', '').strip()
+        if self.po and self.po.status != PurchaseOrder.Status.RECEIVED and not close_reason:
+            self.add_error('close_reason', 'Bắt buộc nhập lý do khi đóng PO trước khi NCC giao đủ hàng.')
+        return cleaned_data

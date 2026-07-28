@@ -79,6 +79,7 @@
             <th>Mã PO</th>
             <th>NCC</th>
             <th>Người tạo</th>
+            <th>Nguồn tạo</th>
             <th>Trạng thái</th>
             <th>Giao hàng</th>
             <th>Số dòng</th>
@@ -93,6 +94,7 @@
             <td><a href="{% url 'purchasing:po_detail' po.pk %}">{{ po.po_no }}</a></td>
             <td>{{ po.supplier.name }}</td>
             <td>{% if po.created_by %}{{ po.created_by.get_full_name|default:po.created_by.username }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+            <td>{{ po.get_source_display }}</td>
             <td><span class="badge bg-info text-dark">{{ po.get_status_display }}</span></td>
             <td>
               {% if delivery %}
@@ -112,7 +114,7 @@
           </tr>
           {% endwith %}
           {% empty %}
-          <tr><td colspan="8" class="text-center text-muted">Chưa có PO nào.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted">Chưa có PO nào.</td></tr>
           {% endfor %}
         </tbody>
       </table>

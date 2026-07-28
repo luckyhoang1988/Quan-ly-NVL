@@ -1165,3 +1165,143 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   run: full `accounts` suite (94 tests), full suites for every app touched by M9 (`receiving`/`shipping`/
   `purchasing`/`inventory`, 336 tests), and a full whole-repo run (659 tests) — all green after all 10 fixes
   landed.
+- **PR/PO workflow bottleneck pass, 7 steps A→G, 2026-07-28** — the user listed 7 friction points in the daily
+  PR (Yêu cầu mua hàng)/PO (Đơn mua hàng) flow; each step below shipped separately with its own migration/test
+  run and a confirm-before-continuing checkpoint (same paced-steps preference as the M1-M10 batch above). Three
+  design calls were made with the user up front and apply across all 7 steps: **drop the Min Level→PO direct
+  shortcut entirely** (every PO born from low stock now goes through a PR first, since PURCHASING can create
+  PRs itself now — no more reason to keep a bypass); PO→supplier email is **best-effort** (send if
+  `contact_email` is set, warn but never block if not); "preferred supplier" on a SKU is **one FK field**, not
+  a ranked multi-supplier table.
+  - **A — PURCHASING couldn't create a PR by default**: `ROLE_PERMISSIONS['PURCHASING']['pr']` gained
+    `'create'`, `ROLE_PERMISSIONS['STAFF']['pr']` gained `'update'` (STAFF creates the most PRs and needed
+    `update` to self-edit their own DRAFT before Step B existed — harmless to add early, `pr_update` didn't
+    exist yet at that point so the permission was inert until Step B). Reseed migration
+    `accounts/migrations/0016_reseed_pr_create_update_permissions.py` (mirrors
+    `0012_reseed_purchasing_pr_permissions.py` exactly — re-seeds only the 2 changed roles' `user_permissions`,
+    doesn't touch any admin's per-user "Phân quyền chi tiết" overrides).
+  - **B — PR had no DRAFT / couldn't be edited**: `PurchaseRequest.Status` gained `DRAFT` (before `PENDING`,
+    now the `default`) — previously `pr_create` called `submit_purchase_request()` immediately, so a PR was
+    born already PENDING with no chance to fix a typo before it hit someone's approval queue. Now `pr_create`
+    only saves at `DRAFT` (message: "Đã lưu nháp ... — bấm Nộp để gửi duyệt"); `purchasing.views.pr_update`
+    (mirrors `grn_update`/`po_update` — DRAFT-only) and `purchasing.views.pr_submit` (mirrors `grn_submit`,
+    POST-only, calls `submit_purchase_request()` which now itself guards `status != DRAFT`) are new views. Both
+    are gated by a new `purchasing.views._pr_can_edit(user, pr)` helper — `_pr_can_view_all(user) or
+    pr.requested_by_id == user.id` — because module-level `update` permission on `pr` alone only proves a role
+    is *allowed* to edit PRs in general, not that this PR belongs to them; this mirrors the exact visibility
+    check `pr_detail`/`pr_list` already enforce, so "who can see it" and "who can edit it" never disagree. This
+    is now PR's full mirror of the `Approval` pattern documented in §4 of the skill file (see the skill-file
+    update noted below) — the one thing §4 previously said PR *didn't* have (a DRAFT state separate from
+    submit) is now true for PR too, same shape as GRN/GIN.
+  - **C — PR REJECTED was a dead end**: `purchasing.services.reopen_purchase_request(pr, actor,
+    ip_address=None)` — `select_for_update()`, guards `status == REJECTED`, sets `status = DRAFT` while
+    *keeping* `decided_by`/`decided_at`/`reject_reason` as reference history rather than clearing them (same
+    audit-trail-over-erasure philosophy as every other transition in this file). `purchasing.views.pr_reopen`
+    (POST-only, same `_pr_can_edit` ownership gate) is the only new view needed — once back at DRAFT, the PR
+    reuses `pr_update`/`pr_submit` from Step B as-is. Re-submitting after reopen creates a fresh `Approval`
+    without tripping `unique_pending_approval_per_target`, since the old `Approval` is REJECTED (no longer
+    PENDING) by the time this happens.
+  - **D — no "preferred supplier" on a SKU**: `catalog.Product.preferred_supplier` — nullable
+    `FK(partners.Supplier, on_delete=SET_NULL)`. `ProductForm`'s queryset follows the established "form
+    filters to active, but `Q(pk=instance.preferred_supplier_id)` keeps a since-deactivated value selectable
+    on update" pattern used everywhere else in this file (`catalog/forms.py`). **Deviation from the original
+    plan text**: the plan called for displaying it on `catalog/templates/catalog/product_detail.html`, but no
+    such template exists in the `catalog` app (confirmed by grep — `catalog` has no per-product detail page at
+    all) — displayed instead as a column in `product_list.html` (`p.preferred_supplier.name`), the page that
+    actually exists. Used at the PO-from-PR conversion step (see E below) to prefill a sensible default
+    supplier without forcing the user to look it up.
+  - **E — Min Level PO and PR-sourced PO had no origin tracking, plus the shortcut itself was the wrong exit
+    point**: `PurchaseRequest.origin` (`MANUAL`/`MIN_LEVEL`) and `PurchaseOrder.source` (`MANUAL`/`FROM_PR`)
+    are both simple `TextChoices`, set automatically (never a user-editable form field). `po_create`'s old
+    `?product=<id>&qty=<n>` GET-param shortcut (straight to a new PO, bypassing PR/approval entirely) is
+    **removed** — `inventory_list.html`'s "dưới Min Level" row now links to
+    `pr_create?product=&qty=&warehouse=` instead (label changed to "Tạo yêu cầu mua hàng", gated on
+    `user.can('create', 'pr')` not `'po'`), which prefills the PR's first item + `warehouse` and stamps
+    `origin=MIN_LEVEL`; the querystring doesn't survive a form POST on its own, so `pr_form.html` carries it
+    through a hidden `min_level_origin` input read back from `request.POST`. `po_create?from_pr=<pk>` (the
+    existing "Tạo PO từ yêu cầu này" button) now also pre-fills `PurchaseOrderForm`'s initial `supplier` from
+    `source_pr.items.first().product.preferred_supplier` when set (Step D's field) — convenience only, still
+    changeable. `po_detail.html`/`po_list.html` show "Nguồn tạo" (Tự tạo / Từ yêu cầu mua hàng, linking to the
+    source PR via `po.source_requests.first`), annotated "(gợi ý dưới Min Level)" when that PR's own `origin`
+    is `MIN_LEVEL` — so a PO's full provenance (manual vs. Min-Level-suggested-via-PR) is visible from either
+    end.
+  - **F — closing a PO early captured no reason**: `PurchaseOrder.close_reason` (`TextField`, `blank=True` at
+    the field level — required-ness is conditional, not static). `close_po(po, actor=None, reason='',
+    ip_address=None)` now raises `ValidationError` if closing from `SENT`/`PARTIAL_RECEIVED` (closing early,
+    before the supplier finished delivering) with no `reason`; closing from `RECEIVED` (fully received, this
+    is just archiving) still needs none. `PurchaseOrderCloseForm.clean()` enforces the identical conditional
+    rule based on the `po=` instance passed into `__init__` — but `close_po` re-checks it independently rather
+    than trusting the form, the same "form filters, service re-validates" boundary used everywhere else in
+    this file. `po_detail.html` shows a plain one-click "Đóng PO" button only when `close_reason_required` is
+    False (closing from RECEIVED); otherwise it swaps in a `<details>`/`<summary>` block with the reason
+    textarea, reusing the exact collapsible-optional-input UI pattern already established by `pr_detail.html`'s
+    "Từ chối" (reject-PR) block. A saved `close_reason` is displayed as its own row in the info table when
+    present.
+  - **G — `send_po` only flipped status, never actually notified the supplier**: `send_po` now calls a new
+    `_send_po_email(po)` helper after the SENT transition — if `po.supplier.contact_email` is set, sends one
+    email (mirrors `accounts.views._send_account_created_email`'s style: Vietnamese content, `from_email=None`
+    → `DEFAULT_FROM_EMAIL`, `fail_silently=True`) listing the PO number, supplier name, every line item
+    (SKU/qty/unit price), and expected delivery date; no email on file, no email sent, and the SENT transition
+    is never blocked either way — this is a nice-to-have notification, not a requirement, since suppliers can
+    always be reached through other channels (phone, fax) outside the system. `send_po` stashes the result on
+    a non-persisted `po._email_sent` attribute (not a DB field) so `purchasing.views.po_send` can pick the
+    right user message without re-deriving it: `messages.success` when the email actually went out,
+    `messages.warning` ("NCC chưa có email liên hệ — vui lòng tự thông báo qua kênh khác") when it didn't.
+    `log_action`'s description differentiates the two cases too.
+  Docs updated alongside the code (per the "Keeping documentation in sync" section of this file): §4 of
+  `.claude/skills/wms-conventions/SKILL.md` (the reusable `Approval`-pattern writeup) had its PR description
+  corrected — it previously documented PR as *not* having a DRAFT/submit split, which Step B made untrue — and
+  gained the REJECTED→DRAFT reopen capability as a PR-specific addition to the pattern (GRN/GIN don't have
+  it). `BACKLOG.md`'s **FR-PO-02** line was reworded to describe the current `pr_create`-first flow instead of
+  the removed `po_create?product=&qty=` shortcut it used to cite — the FR itself is unaffected (still `[x]`,
+  60-FR total unchanged at 55/60) since the underlying requirement ("gợi ý tạo PO khi dưới Min Level") is still
+  met, just through an extra PR/approval hop now. Regression: `purchasing` alone after every step (105-109
+  tests depending on the step), plus cross-app runs after each of D/E/F/G touching `catalog`/`inventory`/
+  `accounts`/`receiving`/`shipping` (up to 474 tests) — all green.
+- **Bug fix 2026-07-28: PR's `assigned_to` was notified at the wrong stage — "cần bạn xử lý" fired at Nộp
+  (still `PENDING`), when `assigned_to` can't actually create a PO until the PR is `APPROVED`; no notify
+  happened at approval time at all**. `purchasing.services.submit_purchase_request` reworded its `notify()`
+  call to "đã nộp yêu cầu mua hàng ..., đang chờ duyệt" (status update, not an action prompt).
+  `decide_purchase_request`'s `on_approve` closure now calls `notify(pr.assigned_to, '... đã được duyệt — hãy
+  tạo PO')` when `pr.assigned_to_id` is set — this is the actual "your turn to act" signal, matching when
+  `forward_purchase_request`'s existing notify already fires (also only after `APPROVED`). Test:
+  `test_TC_PR_001_019_assigned_to_notified_at_approve_not_submit`
+  (`purchasing/tests.py::PurchaseRequestCrudTest`), asserting the submit-time `Notification.verb` excludes
+  "cần bạn xử lý" and the approve-time one contains "đã được duyệt"/"tạo PO". **General lesson**: when a
+  notification is meant as an action prompt ("cần xử lý"/"cần bạn ..."), send it at the state transition where
+  the recipient actually gains the permission/ability to act, not at an earlier transition just because the
+  recipient happens to be identifiable there — this is the same class of gap as `assigned_to`'s discussion
+  elsewhere in this file (informational display vs. decision right): a premature action-prompt notification is
+  the *notification-copy* version of that same confusion. Regression: full `purchasing` suite (110 tests).
+- **Bug fix 2026-07-28, batch of 3 Low-severity findings (L1-L3) from a pasted code-review list, all in the
+  PR reopen/delete area added by the A→G bottleneck pass above** — fixed one at a time with a confirm
+  checkpoint between each, per the user's standing paced-steps preference:
+  1. **L1**: `pr_detail.html`'s "Lý do từ chối" row displayed whenever `obj.reject_reason` was truthy, with no
+     `status` check — since `reopen_purchase_request` deliberately keeps `reject_reason` as history (see the
+     Step C bullet above), a PR that was REJECTED → reopened → resubmitted → APPROVED still showed the stale
+     rejection reason as if it applied to the current, now-approved state. Fixed by adding
+     `obj.status == 'REJECTED'` to the template condition — the field's DB value staying populated forever
+     (by design) is orthogonal to whether it's still *relevant* to display. Test:
+     `test_TC_PR_001_020_reject_reason_shown_only_while_rejected`.
+  2. **L2**: the CRUD matrix already had `delete` on module `pr` for MANAGER/ADMIN (`accounts/permissions.py`)
+     but no `pr_delete` view/URL ever existed to use it — a DRAFT PR created by mistake had no way to be
+     removed. Added `purchasing.services.delete_purchase_request` (hard delete, not soft — a DRAFT PR never
+     went through `Approval`, so unlike REJECTED there's no decision history worth preserving) + view
+     `pr_delete` (POST-only, `purchasing:pr_delete` URL), gated by the same two-part check every other
+     PR-mutating view in this file uses: `@pr_permission_required('delete')` (module permission — in practice
+     only MANAGER/ADMIN by default) **and** `_pr_can_edit` (ownership/view-all). Practical effect: a plain
+     STAFF/PURCHASING owner cannot delete their own DRAFT PR unless an admin grants them `delete` on `pr`
+     individually via "Phân quyền chi tiết" — this was a deliberate reading of the review's suggested gate,
+     not an oversight. UI: a collapsible "Xoá yêu cầu này" block on `pr_detail.html`, mirroring the existing
+     "Từ chối yêu cầu này" `<details>` pattern rather than a JS `confirm()` or a separate confirmation page.
+     Full writeup (including the exact permission-matrix reasoning) is in §4 of
+     `.claude/skills/wms-conventions/SKILL.md`.
+  3. **L3**: the "Tạo yêu cầu mua hàng" link on `inventory_list.html` (Min Level → PR suggestion, part of Step
+     E above) had no test asserting its context/href — a regression in `can_create_pr` or the querystring it
+     builds (`?product=&qty=&warehouse=`, which `pr_create` depends on to prefill) could have shipped
+     unnoticed. Added `test_TC_INV_DASH_008_below_min_link_shown_with_correct_href` (asserts the exact href)
+     and `test_TC_INV_DASH_009_below_min_link_hidden_without_pr_create_permission` (a QC-role user, who only
+     has `read` on `pr`, sees the row flagged below-min but never sees the link) to
+     `inventory/tests.py::InventoryDashboardViewTest` — test-only, no production code changed.
+  Regression: full `purchasing` suite (116 tests) after L1/L2, full `inventory` suite (114 tests) after L3 —
+  all green.

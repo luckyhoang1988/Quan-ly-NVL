@@ -135,9 +135,24 @@ fallback thông báo toàn bộ `department=WAREHOUSE`.
 
 **Bọc 1 transition bằng `Approval` ("nhân viên nộp -> quản lý phòng ban duyệt")** — pattern đã dùng cho GRN
 submit + GrnReturn QC-confirm (Phase B, `receiving/services.py`), GIN confirm (Phase C,
-`shipping/services.py`), và PR submit (Phase E, `purchasing/services.py::submit_purchase_request`/
-`decide_purchase_request` — lưu ý PR không cần state trung gian riêng vì tạo PR *là* nộp PR, không có bước
-DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt mới sau này:
+`shipping/services.py`), và PR submit (`purchasing/services.py::submit_purchase_request`/
+`decide_purchase_request`), dùng lại y hệt cho mọi bước duyệt mới sau này. **PR (2026-07-28)** giờ mirror
+đúng shape DRAFT/submit của GRN/GIN — trước đó tạo PR *là* nộp PR luôn (PENDING ngay), không có bước DRAFT
+tách biệt; nay `pr_create` chỉ lưu ở `DRAFT`, người tạo tự sửa tiếp qua `pr_update` rồi bấm "Nộp yêu cầu"
+(`pr_submit` → `submit_purchase_request`, DRAFT→PENDING) khi sẵn sàng — sửa/nộp chỉ cho đúng chủ hoặc người
+có tầm nhìn toàn bộ (`purchasing.views._pr_can_edit`, mirror check hiển thị ở `_pr_can_view_all`), không chỉ
+dựa quyền module. PR còn có 1 nhánh KHÔNG có ở GRN/GIN: `REJECTED` không phải ngõ cụt — mở lại được về
+`DRAFT` qua `purchasing.services.reopen_purchase_request` (giữ nguyên `decided_by`/`decided_at`/
+`reject_reason` làm lịch sử, chỉ đổi `status`) rồi sửa/nộp lại bằng đúng `pr_update`/`pr_submit` đã có, không
+cần view riêng — do `Approval` cũ đã REJECTED (không còn PENDING) nên nộp lại không đụng
+`unique_pending_approval_per_target`. `pr_detail.html` chỉ hiện dòng "Lý do từ chối" khi `obj.status ==
+'REJECTED'` (bug fix 2026-07-28, L1) — `reject_reason` vẫn còn giá trị trong DB sau khi reopen (làm lịch
+sử) nên KHÔNG được coi field có giá trị = còn hiển thị, phải luôn kèm check `status` khi template hiện 1
+field lịch sử kiểu này. Một PR còn `DRAFT` (chưa từng qua `Approval`, không cần giữ lịch sử) xoá được thật
+qua `purchasing.services.delete_purchase_request`/view `pr_delete` (bug fix 2026-07-28, L2) — POST-only,
+gate kép `@pr_permission_required('delete')` (mặc định chỉ MANAGER/ADMIN có `delete` trên module `pr`) VÀ
+`_pr_can_edit` (đúng chủ hoặc tầm nhìn toàn bộ), mirror y hệt cặp gate của `pr_update`/`pr_reopen` — khác
+`user_delete` (soft-delete, giữ bản ghi), đây là delete cứng vì DRAFT chưa có gì cần giữ audit.
 
 1. Thêm 1 state trung gian vào `Status` enum của model đó (vd `PENDING_APPROVAL`) — KHÔNG tự chuyển thẳng
    sang state kế tiếp trong view/service khi user bấm nút "Nộp"/"Xác nhận".
