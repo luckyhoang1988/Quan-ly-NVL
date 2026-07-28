@@ -64,6 +64,12 @@ class GinModelTest(TestCase):
         gin = self._gin()
         self.assertEqual(gin.status, Gin.Status.DRAFT)
 
+    def test_TC_GIN_001_004b_get_absolute_url_points_to_gin_detail(self):
+        """M9: Notification/AuditLog gắn với GIN phải deep-link được tới đúng
+        trang chi tiết của nó."""
+        gin = self._gin()
+        self.assertEqual(gin.get_absolute_url(), reverse('shipping:gin_detail', args=[gin.pk]))
+
     def test_TC_GIN_001_005_clean_rejects_non_main_warehouse(self):
         staging = Warehouse.objects.create(
             code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)

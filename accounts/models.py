@@ -5,7 +5,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.utils import timezone
 
-from .permissions import ACTIONS, MODULES
+from .permissions import ACTIONS, MENU_ITEMS, MODULES
 
 
 class User(AbstractUser):
@@ -76,12 +76,16 @@ class User(AbstractUser):
     # sau khi app `warehouse` tồn tại — thêm qua migration lúc đó (đúng thứ tự build).
 
     class Meta:
-        # 30 custom permission cấp module (MODULES × ACTIONS) làm vocabulary RBAC.
+        # Custom permission cấp module (MODULES × ACTIONS) làm vocabulary RBAC, cộng
+        # permission truy cập menu (MENU_ITEMS — các mục sidebar không có ma trận CRUD).
         # rbac.sync_roles() gán chúng cho 6 Group theo ROLE_PERMISSIONS.
         permissions = [
             (f'can_{action}_{module}', f'{ACTIONS[action]} {label}')
             for module, label in MODULES.items()
             for action in ACTIONS
+        ] + [
+            (f'can_view_menu_{key}', f'Truy cập menu {label}')
+            for key, label in MENU_ITEMS.items()
         ]
 
     def can(self, action, module):
@@ -91,6 +95,11 @@ class User(AbstractUser):
         Superuser luôn trả về True (hành vi has_perm mặc định của Django).
         """
         return self.has_perm(f'accounts.can_{action}_{module}')
+
+    def can_view_menu(self, key):
+        """Tiện ích tương tự ``.can()`` nhưng cho các mục sidebar không có ma trận CRUD
+        (``MENU_ITEMS``) — vd ``user.can_view_menu('warehouse')``."""
+        return self.has_perm(f'accounts.can_view_menu_{key}')
 
     def is_department_manager(self, department):
         """True nếu user là quản lý của đúng ``department`` được truyền vào.
@@ -113,9 +122,20 @@ class User(AbstractUser):
         chỉ riêng ``user_update`` view (bug fix 2026-07-27, xem CLAUDE.md). Nếu
         không, user đã xoá mềm có thể bị bật lại ``is_active`` qua đường khác
         trong khi ``is_deleted`` vẫn True, và login (chỉ check ``is_active``) sẽ
-        cho đăng nhập lại một tài khoản coi như đã xoá."""
+        cho đăng nhập lại một tài khoản coi như đã xoá.
+
+        Khi gọi ``save(update_fields=[...])`` mà danh sách đó không có
+        ``'is_active'`` (vd ``save(update_fields=['is_deleted'])``), Django CHỈ
+        UPDATE đúng các cột trong ``update_fields`` — gán ``self.is_active = False``
+        ở trên vẫn đúng trong bộ nhớ nhưng không được ghi xuống DB, nên bất biến
+        thủng ngay khi caller không tự liệt kê ``is_active``. Phải tự thêm
+        ``'is_active'`` vào ``update_fields`` bất cứ khi nào field đó bị ép đổi.
+        """
+        update_fields = kwargs.get('update_fields')
         if self.is_deleted:
             self.is_active = False
+            if update_fields is not None and 'is_active' not in update_fields:
+                kwargs['update_fields'] = list(update_fields) + ['is_active']
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -159,8 +179,17 @@ class AuditLog(models.Model):
         related_name='audit_logs',
         verbose_name='Người thực hiện',
     )
-    # WHAT — mã hành động ngắn (free text) + mô tả người-đọc-được.
-    action = models.CharField(max_length=30, verbose_name='Hành động')
+    # WHAT — mã hành động ngắn + mô tả người-đọc-được.
+    # M10: audit_log_list.html vốn đã gọi ``get_action_display`` (fallback
+    # ``|default:log.action`` cho code lạ), nhưng field này thiếu ``choices=``
+    # nên Django không sinh ra method đó — template luôn rơi vào fallback, hiện
+    # thẳng mã tiếng Anh (CREATE/UPDATE/...) thay vì nhãn tiếng Việt. Gán
+    # ``choices=Action.choices`` để bật get_action_display() cho các mã đã
+    # biết; KHÔNG ràng buộc validate ở DB/save() (chỉ ModelForm.full_clean()
+    # mới check choices) nên module sau vẫn tự mở rộng mã hành động riêng được
+    # như thiết kế ban đầu — mã lạ không có trong Action thì get_action_display()
+    # tự trả về nguyên mã (Django mặc định), không lỗi.
+    action = models.CharField(max_length=30, choices=Action.choices, verbose_name='Hành động')
     description = models.CharField(max_length=255, blank=True, verbose_name='Mô tả')
 
     # Đối tượng bị tác động — GenericFK, có thể null (vd sự kiện LOGIN không có target).
@@ -285,6 +314,18 @@ class Approval(models.Model):
         indexes = [
             models.Index(fields=['target_type', 'target_id']),
             models.Index(fields=['department', 'status']),
+        ]
+        constraints = [
+            # H4: create_approval() tự check .exists() rồi mới .create() — 2 request
+            # đồng thời cùng qua được check trước khi request nào kịp insert (race) sẽ
+            # tạo ra 2 Approval PENDING chồng nhau trên cùng 1 target. Constraint này là
+            # chốt chặn thật ở DB; create_approval() bắt IntegrityError và dịch lại
+            # thành ValidationError giống thông báo cũ.
+            models.UniqueConstraint(
+                fields=['target_type', 'target_id'],
+                condition=models.Q(status='PENDING'),
+                name='unique_pending_approval_per_target',
+            ),
         ]
         verbose_name = 'Yêu cầu duyệt'
         verbose_name_plural = 'Yêu cầu duyệt'

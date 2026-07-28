@@ -935,3 +935,233 @@ picture — read `BACKLOG.md` Phase 2/3 in full before touching GRN, QC, or GIN:
   Docker/deploy target yet for those settings to protect; re-confirmed still true on 2026-07-27 (no
   `Dockerfile` in the repo) rather than re-fixing speculatively. Load/stress testing was also explicitly
   scoped out of this pass (needs real infrastructure to be meaningful, not a code change).
+- **"Phân quyền chi tiết" gained a second, independent axis — `MENU_ITEMS`/`can_view_menu` (2026-07-28)**,
+  modeled after a screenshot of an unrelated HR system's permission page the user shared as reference. The
+  existing CRUD matrix (`MODULES`/`ACTIONS` in `accounts/permissions.py`) only ever covered the 7 modules that
+  have real Create/Read/Update/Delete/Approve/Override semantics (grn/gin/opname/qc/pr/po/reports) — 7 other
+  sidebar entry points (`warehouse`, `catalog`, `partners`, `inventory`, `handoff`, `user_mgmt`, `audit_log`)
+  had no CRUD concept at all and were gated only by `@login_required`, open to every authenticated user with
+  no way to narrow access per-user. `accounts.permissions.MENU_ITEMS` (dict `key: Vietnamese label`) defines
+  those 7 as a parallel permission set — one Django permission `can_view_menu_<key>` each, read via
+  `User.can_view_menu(key)` (mirrors `.can()` but has no action/module, just "can see this section at all").
+  Default-granted to every role (`codenames_for_role()` always appends `all_menu_codenames()`), preserving the
+  prior open-to-everyone behavior — an admin only uses it to *narrow* access for a specific user via the same
+  `user_permission_edit` page (new "Ứng dụng được phép truy cập" checkbox block, separate from the CRUD table).
+  Enforced at all three of: the sidebar link (`{% if can_view_menu_<key> %}`, flags supplied by
+  `accounts.context_processors.sidebar_permissions`), the real view (`if not
+  request.user.can_view_menu('warehouse'): raise PermissionDenied(...)` at the top of
+  `warehouse_list`/`product_list`/`supplier_list`/`inventory_list`/`handoff_list`, and inline in the
+  `user_admin_required`/`audit_log_required` decorators for `user_mgmt`/`audit_log`) — hiding the link alone
+  would be cosmetic only, direct URL access must 403 too. Migration `accounts/migrations/
+  0013_menu_access_permissions.py` backfills the new permissions onto every existing user via `.add()` (not
+  `.set()`), same non-destructive-backfill principle as the `Approval`-retrofit lesson earlier in this file.
+  Same self-lock guard as `user_toggle_active`: `user_permission_edit` blocks an ADMIN from revoking their own
+  `can_view_menu_user_mgmt`, since there is no recovery path through the UI once `/users/` is inaccessible to
+  everyone. **Template gotcha caught during this change**: Django template `{% if %}` parses `and` as binding
+  tighter than `or` (like Python), so combining an existing role/department sidebar condition with the new
+  menu flag on one line (`{% if role_check or dept_check and can_view_menu_x %}`) silently let the role
+  condition bypass the menu check — fixed by always nesting `{% if role_or_dept_check %}{% if
+  can_view_menu_x %}...{% endif %}{% endif %}` instead of combining on one line; apply the same nesting
+  whenever a sidebar link needs both an oversight-role check and a `can_view_menu`/`can_read_<module>` check
+  together. Full pattern (including which 3 enforcement points to hit for any future menu item) is in §6.1 of
+  `.claude/skills/wms-conventions/SKILL.md`.
+- **Bug fix 2026-07-28, batch of 5 from a pasted code-review list (H1-H5), all in `accounts`** — the same
+  "form/quick-check trusts a filter instead of the real guard re-asserting it" and "one intermediate state left
+  unhandled" shapes already documented repeatedly above, this time concentrated in login/audit/approval:
+  1. **[SEC] Rate-limit login bypass via spoofed `X-Forwarded-For`**: `accounts.audit.client_ip()` (added in
+     the 2026-07-27 SEC sweep's login-rate-limit fix) read `HTTP_X_FORWARDED_FOR` unconditionally when present
+     — with no reverse proxy in front of this still-pre-Docker deployment (see repo-state note at the top of
+     this file), that header is entirely client-controlled, so an attacker could set a different fake
+     `X-Forwarded-For` value on every request and get a fresh rate-limit counter each time, defeating the
+     15-minute/5-attempt brute-force lock added the day before. Fixed by adding
+     `settings.TRUST_X_FORWARDED_FOR` (`config/settings.py`, env-driven via `os.getenv(...)`, default `False`)
+     — `client_ip()` now only reads XFF when that flag is explicitly `True`, otherwise always uses
+     `REMOTE_ADDR`; flip it on only once a real trusted reverse proxy sits in front (Docker/deploy phase) and
+     that proxy itself overwrites the header rather than passing through a client-supplied one. Tests:
+     `test_TC_USER_03_009_xff_spoofing_does_not_bypass_rate_limit`,
+     `ClientIpTest::test_ignores_xff_by_default`/`test_uses_xff_when_trusted_proxy_configured`.
+  2. **Rate-limit counter reset by a password-less form submit**: `accounts.forms.LoginForm.clean()` called
+     `cache.delete(cache_key)` any time `super().clean()` didn't raise — but `AuthenticationForm.clean()` only
+     calls `authenticate()` (and thus can only raise) when *both* username and password are non-empty; a
+     submit with username filled and password blank returns cleanly with no real auth attempt, so it was
+     silently resetting the attacker's own rate-limit counter to 0 every time, letting a brute-force script
+     interleave "real guess" / "blank password" requests to stay under the 5-attempt cap indefinitely. Fixed
+     by only deleting the counter when `self.get_user()` actually returns a user (i.e. a real successful
+     login happened), not merely "no exception was raised". Test:
+     `test_TC_USER_03_010_blank_password_does_not_reset_rate_limit_counter`.
+  3. **Admin can self-demote out of their own admin rights**: `accounts.views.user_update`'s self-edit guard
+     (from the 2026-07-27 fix documented above) only blocked unchecking `is_active` on your own account — it
+     had no equivalent check for `role`, so an ADMIN could edit their own user and change `role` to `STAFF` (or
+     any lower-privilege role) via the same form, instantly losing admin rights with no other admin
+     necessarily available to reverse it (mirrors the exact "no recovery path" reasoning already used for the
+     `is_active`/`is_deleted` guards). Fixed by adding a second, parallel check in `user_update`: if
+     `obj.pk == request.user.pk and form.cleaned_data['role'] != before['role']`, reject with the same
+     render-without-save pattern as the `is_active` guard. Deliberately scoped to *only* blocking a self role
+     change, not a broader "last remaining admin" check (that would need scanning every other user's role on
+     every save, a different and heavier guarantee than "you can't be the one who took away your own
+     access") — the narrower fix was confirmed sufficient for this report. Tests:
+     `test_TC_USER_01_009b_cannot_change_own_role_via_update_form`,
+     `test_TC_USER_01_009c_can_still_update_own_other_fields` (guards against the fix over-blocking unrelated
+     field edits on your own account).
+  4. **Race condition: two concurrent `create_approval()` calls both create a PENDING `Approval` for the same
+     target**: `accounts.approvals.create_approval()` only ever guarded against a duplicate PENDING `Approval`
+     (two GRN-submit clicks, two GIN-confirm requests, etc. racing on the same target) via a `.filter(...)
+     .exists()` check before `.create()` — classic TOCTOU: two requests can both pass `.exists()` before either
+     has inserted, producing two PENDING approvals for the same object, which then has two different
+     department managers able to decide it independently (double-approve/approve-then-reject inconsistency).
+     Fixed with the same "app-level check stays, DB constraint is the real gate" pattern used for the
+     `generate_*_no()` sequential-number races documented earlier in this file: added
+     `models.UniqueConstraint(fields=['target_type', 'target_id'], condition=Q(status='PENDING'),
+     name='unique_pending_approval_per_target')` to `Approval.Meta.constraints`
+     (`accounts/migrations/0014_approval_unique_pending_approval_per_target.py`) — a *partial* unique index, so
+     it only blocks a second PENDING row per target, never blocks re-submitting after the first is
+     APPROVED/REJECTED. `create_approval()` wraps its `.create()` in its own `transaction.atomic()` savepoint
+     and catches `IntegrityError` from the constraint, re-raising it as the same
+     `ValidationError('Đối tượng này đang có yêu cầu duyệt chưa xử lý xong.')` the `.exists()` check already
+     produced — callers (GRN submit, GIN confirm, GrnReturn QC-confirm, PR submit) see no behavior change on
+     the common path, only the race window is now closed at the DB layer instead of just discouraged at the
+     app layer. Tests: `test_TC_APPROVAL_001_db_constraint_rejects_duplicate_pending_direct_create` (constraint
+     itself, bypassing `create_approval()` entirely), `test_TC_APPROVAL_002_create_approval_translates_race_
+     into_validation_error` (mocks the `.exists()` check to return `False` to simulate two requests both
+     passing it, asserts the `IntegrityError` from `.create()` still surfaces as `ValidationError`),
+     `test_TC_APPROVAL_003_normal_duplicate_blocked_by_exists_check` (confirms the fast-path `.exists()` check
+     still fires first in the non-race case, no behavior regression).
+  5. **`audit_log_list` crashes 500 on a malformed query param**: `accounts.views.audit_log_list` filtered
+     `AuditLog` directly with raw `request.GET` values against `target_type_id`/`actor_id` (FK int fields) and
+     `created_at__date` (a `DateField`, via `?date_from=`/`?date_to=`) with no validation — the same
+     `int(request.GET.get(...))`-without-a-try/except crash shape already documented for
+     `reports.views.slow_moving_view`'s `?days=` param, just recurring here for 4 different params on a
+     different page. Fixed by wrapping each in try/except and dropping the filter (reset to `''`, same
+     "coalesce to no-op instead of crashing or guessing" idiom already used everywhere else in this file) on
+     failure — `int()` in `try/except (TypeError, ValueError)` for `module`/`actor`; `django.utils.dateparse.
+     parse_date()` in `try/except ValueError` for `date_from`/`date_to`. **Non-obvious gotcha surfaced by the
+     regression test itself**: `parse_date()` returns `None` for a string that doesn't match the
+     `YYYY-MM-DD` shape at all, but *raises* `ValueError` (from `datetime.date(...)`) for a string that matches
+     the shape but names a calendar-invalid date (e.g. `"2026-13-99"`) — both failure modes had to be caught,
+     checking only for a `None` return was not enough and was caught by
+     `test_TC_AUDITLOG_004_invalid_date_to_param_does_not_crash` failing on the first pass. Tests:
+     `AuditLogListViewTest::test_TC_AUDITLOG_001` through `004` (each bad param individually), `_005`
+     (valid `module`/`actor`/`date_from` together still filter correctly and round-trip into the
+     `selected_module`/`selected_actor`/`date_from` context vars — guards the fix against silently breaking the
+     happy path).
+  **General lesson across all 5**: none of these needed a new architectural pattern — every fix reused a shape
+  already established elsewhere in this file (trusted-header hardening needs an explicit opt-in flag, not
+  "trust if present"; a cache/counter reset must gate on "did the real operation actually succeed", not "did
+  no exception happen"; a self-edit guard on one mutable field doesn't automatically cover a second
+  independently-mutable field on the same form — grep for every field the self-edit guard should logically
+  extend to, the same lesson as the `is_active`/`is_deleted` soft-delete gap two bullets up; a TOCTOU
+  `.exists()`-then-`.create()` check needs a DB constraint as the real gate, `select_for_update()`/`.exists()`
+  alone cannot close a race on a row that doesn't exist yet; and any raw `request.GET` value feeding a
+  DB filter needs try/except, not a bare cast/parse call). Regression run: full `accounts` suite (80 tests) and
+  a full-repo cross-app suite (295 tests, covering `receiving`/`purchasing`/`shipping` which all call into
+  `accounts.approvals.create_approval()`) both passed with no failures after all 5 fixes landed.
+- **Bug fix 2026-07-28, batch of 10 (M1-M10) from a pasted code-review list, all in `accounts` soft-delete/
+  admin/notification/audit-log flows** — fixed one at a time with a regression test each, confirmed with the
+  user between every item:
+  1. **M1: `User.save(update_fields=[...])` could silently skip the `is_deleted ⇒ is_active=False` invariant**
+     — `save()` (added 2026-07-27) set `self.is_active = False` in memory whenever `is_deleted`, but if the
+     caller passed a narrow `update_fields` that didn't include `'is_active'` (e.g.
+     `save(update_fields=['is_deleted'])`), Django's UPDATE only touches the listed columns — the in-memory
+     assignment never reached the DB. Fixed by having `save()` append `'is_active'` to `update_fields` itself
+     whenever it forces the field. Test: `test_TC_USER_01_012_save_invariant_holds_with_narrow_update_fields`.
+  2. **M2: `DirectPermissionsBackend` only checked `is_active`, not `is_deleted`** — defense-in-depth gap:
+     `QuerySet.update()`/raw SQL bypasses `.save()` entirely (and thus M1's invariant), so `is_deleted=True,
+     is_active=True` could still exist in the DB. Fixed by overriding `user_can_authenticate()` to also
+     require `not user.is_deleted`, independent of whether the save()-side invariant holds. Test:
+     `test_TC_USER_03_004b_deleted_user_cannot_login_even_if_active_bypassed` (bypasses `.save()` via
+     `.update()` to simulate the gap M1 alone can't close).
+  3. **M3: account-created email sent the admin-chosen password in plaintext** — scope decided with the user
+     rather than building a one-time set-password-link flow: this project has no self-serve "forgot password"
+     flow at all (confirmed via grep — never built), and the user wants to keep it that way (admin sets the
+     password directly via `UserCreateForm`, forgotten passwords go through the existing admin
+     `user_password_set` reset, not email). Fixed by stripping the password out of
+     `accounts.views._send_account_created_email()`'s message body entirely — email now only confirms the
+     account was created and points to the admin for password issues. Test: extended
+     `test_TC_USER_01_003_create_with_admin_chosen_password_emails_and_audits` with
+     `assertNotIn('CorrectHorse9', mail.outbox[0].body)`.
+  4. **M4: Django Admin's `is_deleted` checkbox never set `deleted_at`, and had no `department`/`is_manager`
+     fields at all** — `deleted_at` is `readonly_fields` (by design, an admin shouldn't hand-pick a delete
+     timestamp) so it never appears in POST data; ticking `is_deleted` directly in the admin form left
+     `deleted_at` stuck at `None` forever (unlike `User.soft_delete()`, which the admin form doesn't call).
+     Fixed via `CustomUserAdmin.save_model()`: save the form normally first (keeps any other fields the admin
+     edited in the same submit), then backfill `deleted_at = timezone.now()` if `is_deleted` is True and
+     `deleted_at` is still `None` — same effect as `soft_delete()` without needing to special-case the
+     admin's multi-field save. Also added `department`/`is_manager` to `list_display`/`list_filter`/
+     `fieldsets`/`add_fieldsets` (previously invisible/uneditable from the admin panel). Tests:
+     `UserAdminSaveModelTest` (2 tests — backfills on `is_deleted=True`, leaves `deleted_at` alone otherwise).
+  5. **M5: `user_permission_edit` had no `is_deleted` guard** — every other mutating user view
+     (`user_update`, `user_password_set`, `user_toggle_active`) already blocks a soft-deleted user per the
+     2026-07-27 fix, but this one (the "Phân quyền chi tiết" page) was missed, and its link in
+     `user_detail.html`/`user_list.html` wasn't hidden either. Fixed by mirroring the exact `user_update`
+     guard (redirect + `messages.error`) at the top of `user_permission_edit`, and wrapping both templates'
+     "Phân quyền"/"Phân quyền chi tiết" links in `{% if not obj.is_deleted %}` (`{% if not u.is_deleted %}` in
+     the list). Test: `test_TC_USER_01_013_cannot_edit_permissions_of_deleted_user`.
+  6. **M6: `is_manager=True` with `department` blank was accepted** — `is_department_manager(dept)` compares
+     `self.department == dept`, so a manager with no department can never match any department and silently
+     becomes a "manager of nothing" while `can_view_audit_log()` (intentionally "any `is_manager=True`,
+     regardless of department — this part is by design, see the Phase A bullet above, not itself a bug) still
+     grants them audit-log access. Fixed with a new `_ManagerRequiresDepartmentMixin.clean()` (applied to both
+     `UserCreateForm` and `UserUpdateForm`): `is_manager` ticked without a `department` selected now raises a
+     form error instead of saving. Tests: `test_TC_USER_01_003c_create_rejects_is_manager_without_department`,
+     `test_TC_USER_01_012b_update_rejects_is_manager_without_department`.
+  7. **M7: `notification_mark_read` was GET-only** — a DB write (marking read) behind a plain `<a href>` has
+     no CSRF protection and can be triggered by link-prefetching browsers/extensions or crawlers with no user
+     intent. Fixed by making the view POST-only (GET is now a no-op redirect to `notification_list`, matching
+     the "silent no-op on GET" idiom already used by `user_toggle_active`/`notification_mark_all_read` rather
+     than a 405) and changing `notification_list.html` to wrap each row in
+     `<form method="post" class="list-group-item ...">` + a flush `<button>` instead of `<a href>` — see §4 of
+     the skill file for why the `list-group-item` class has to stay on the `<form>` itself, not the button
+     inside it, to keep Bootstrap's list-group border CSS working. Tests: `NotificationMarkReadTest` (GET is a
+     no-op, POST marks read + redirects, can't mark another user's notification).
+  8. **M8: `notification_mark_all_read`'s `next` param was an open redirect** — `redirect(request.POST.get(
+     'next') or 'notification_list')` trusted the client-supplied `next` value unconditionally; a crafted POST
+     with `next=https://evil.example` would redirect through the trusted NVL/WMS domain to a phishing page.
+     Fixed with `django.utils.http.url_has_allowed_host_and_scheme` (the same check `LoginView` uses for its
+     own `next`) before accepting it, falling back to `notification_list` otherwise. No existing caller
+     actually passed `next` yet (grepped to confirm), so this closes the hole before it's ever exploitable
+     through a real UI path. Tests: `test_TC_NOTIF_004`/`005` (external `next` rejected, internal `next`
+     honored).
+  9. **M9: no model had `get_absolute_url()`, so every notification's deep-link silently fell back to
+     `notification_list`** — `notification_mark_read` already had the `hasattr(target, 'get_absolute_url')`
+     branch (built for this from the start), but nothing ever implemented it. Grepped every `notify(...,
+     target=...)`/`create_approval(target, ...)` call site to find the *complete* set of models ever used as a
+     notification target (not just the 4 named in the original finding) — `receiving.Grn`, `receiving.
+     GrnReturn`, `shipping.Gin`, `purchasing.PurchaseRequest`, `inventory.WarehouseHandoff` — and added
+     `get_absolute_url()` to each. Two of the five have no dedicated detail page of their own: `GrnReturn`
+     points at its parent `Grn`'s `grn_detail` (where it's actually rendered, nested in the returns list) and
+     `WarehouseHandoff` points at `handoff_list` (Phase D's queue page — Accept/Reject happen right there, no
+     per-item detail page exists). Test coverage: a `get_absolute_url()` unit test per model plus one true
+     end-to-end test (`receiving.tests.test_TC_GRN_003_002_notification_mark_read_deep_links_to_grn_detail` —
+     creates a real `Notification(target=grn)`, POSTs to `notification_mark_read`, asserts the redirect lands
+     on `grn_detail`) to prove the whole chain, not just each model's URL in isolation.
+  10. **M10: audit log's "Hành động" column showed raw English codes (CREATE/UPDATE/...)** —
+      `audit_log_list.html` already called `{{ log.get_action_display|default:log.action }}` (written
+      anticipating this would work), but `AuditLog.action` was a plain `CharField` with no `choices=` —
+      Django only generates `get_FOO_display()` when `choices` is set on the field, so the method didn't
+      exist, template variable resolution silently failed, and the `|default` fallback always won, showing
+      the raw code. `Action` was deliberately left unconstrained on the field ("module sau tự mở rộng động")
+      but `choices=` doesn't actually enforce anything at `.save()` time (only `ModelForm.full_clean()` does,
+      and `AuditLog` rows are never created through a form — always via `log_action()`) — grepped every
+      `log_action()` call site project-wide and confirmed 100% already use `AuditLog.Action.*` members, so
+      adding `choices=Action.choices` is a pure display fix with zero risk to that extensibility goal: a
+      future custom code not in `Action` would just make `get_action_display()` fall back to returning the
+      raw code unchanged (Django's own default behavior for an unmatched choice value), never an error. State-
+      only migration `accounts/migrations/0015_alter_auditlog_action.py` (no `ALTER TABLE`, same shape as the
+      `verbose_name`-only migrations described in the Frontend language convention section). Test:
+      `test_TC_AUDITLOG_006_action_column_shows_vietnamese_label`.
+  **General lesson across all 10**: mostly the same failure shapes already catalogued elsewhere in this file
+  (an invariant enforced in `.save()` still needs to survive `update_fields`/`.update()`/admin bypass; a guard
+  added to one mutating view doesn't automatically cover a sibling view touching the same field; a template
+  written "for when the model supports X" silently degrades instead of erroring when the model never actually
+  got X, so grep for `get_FOO_display`/`hasattr(..., 'get_absolute_url')`-style forward-looking template code
+  whenever a new model joins a system that already has such scaffolding) — nothing here needed a new
+  architectural pattern. One process note specific to this batch: fixed strictly one finding at a time with a
+  confirm-before-continuing checkpoint between each (per the user's standing preference for paced, reviewable
+  steps on this project), and mid-way through M7 a self-inflicted editing mistake (a large insert whose
+  `old_string` match window was one line short of the true file end, silently truncating and relocating the
+  last line of an unrelated pre-existing test) was caught immediately by the next test run and corrected before
+  moving on — a reminder to `Read` far enough past an intended insertion point to see the *actual* last line
+  of a file/method before anchoring an `old_string` there, not just enough lines to look complete. Regression
+  run: full `accounts` suite (94 tests), full suites for every app touched by M9 (`receiving`/`shipping`/
+  `purchasing`/`inventory`, 336 tests), and a full whole-repo run (659 tests) — all green after all 10 fixes
+  landed.

@@ -11,6 +11,7 @@ Ví dụ::
                description='Đổi role STAFF -> QC',
                changes={'role': ['STAFF', 'QC']}, ip_address=get_client_ip(request))
 """
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 
 from .models import AuditLog
@@ -45,15 +46,19 @@ def log_action(actor, action, target=None, description='', reason='',
 
 
 def client_ip(request):
-    """Lấy IP client từ ``request`` để ghi audit (WHO ở đâu).
+    """Lấy IP client từ ``request`` để ghi audit (WHO ở đâu) và key rate-limit login.
 
-    Ưu tiên ``X-Forwarded-For`` (khi chạy sau proxy/nginx) rồi mới ``REMOTE_ADDR``.
-    Trả ``None`` nếu không có request (vd hành động hệ thống) — an toàn cho
-    ``GenericIPAddressField(null=True)``.
+    Mặc định dùng ``REMOTE_ADDR`` — ``X-Forwarded-For`` do chính client tự set được
+    (không có proxy nào can thiệp/ghi đè), tin nó vô điều kiện cho phép giả mạo IP
+    khác nhau mỗi request để né rate-limit theo IP (xem ``LoginForm``). Chỉ đọc XFF
+    khi ``settings.TRUST_X_FORWARDED_FOR=True`` — bật khi thật sự có reverse proxy
+    tin cậy đứng trước (Docker/deploy phase). Trả ``None`` nếu không có request (vd
+    hành động hệ thống) — an toàn cho ``GenericIPAddressField(null=True)``.
     """
     if request is None:
         return None
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
+    if getattr(settings, 'TRUST_X_FORWARDED_FOR', False):
+        forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
     return request.META.get('REMOTE_ADDR')

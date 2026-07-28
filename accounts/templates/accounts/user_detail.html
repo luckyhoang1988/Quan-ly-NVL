@@ -14,7 +14,9 @@
       {% if not obj.is_deleted %}
         <a href="{% url 'user_update' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Sửa</a>
       {% endif %}
-      <a href="{% url 'user_permission_edit' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-key"></i> Phân quyền chi tiết</a>
+      {% if not obj.is_deleted %}
+        <a href="{% url 'user_permission_edit' obj.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-key"></i> Phân quyền chi tiết</a>
+      {% endif %}
       {% if not obj.is_deleted and obj.pk != user.pk %}
         <a href="{% url 'user_password_set' obj.pk %}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-key-fill"></i> Đặt mật khẩu</a>
         <form method="post" action="{% url 'user_toggle_active' obj.pk %}" class="d-inline">

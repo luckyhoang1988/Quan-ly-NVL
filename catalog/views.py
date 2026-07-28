@@ -44,7 +44,10 @@ def catalog_manager_required(view):
 
 @login_required
 def product_list(request):
-    """READ — danh sách Product (mọi user đã đăng nhập đều xem được)."""
+    """READ — danh sách Product (mọi user đã đăng nhập đều xem được, trừ khi admin thu
+    hồi quyền "Truy cập menu" ``catalog`` riêng cho user đó qua trang Phân quyền chi tiết)."""
+    if not request.user.can_view_menu('catalog'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Sản phẩm".')
     products = Product.objects.all()
     category = request.GET.get('category', '')
     if category:

@@ -36,6 +36,8 @@ def inventory_list(request):
     ``Product.min_level``/``max_level``, tính on-the-fly khi load trang
     (⏸️ auto-tạo PO khi dưới Min Level dời Phase 5 theo CLAUDE.md).
     """
+    if not request.user.can_view_menu('inventory'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Tồn kho".')
     selected_warehouse = None
     warehouse_id = request.GET.get('warehouse')
     if warehouse_id:
@@ -261,6 +263,8 @@ def handoff_list(request):
     — Admin/superuser và quản lý phòng Kho thấy toàn bộ, NV kho chỉ thấy phiếu
     liên quan tới mình.
     """
+    if not request.user.can_view_menu('handoff'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Phiếu chờ nhận hàng".')
     pending = WarehouseHandoff.objects.select_related(
         'batch__product', 'destination_warehouse', 'assigned_to', 'qc_inspection__grn',
     ).filter(status=WarehouseHandoff.Status.PENDING)

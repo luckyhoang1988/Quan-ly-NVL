@@ -16,6 +16,7 @@ cho FR-GIN-03 và dữ liệu in phiếu (FR-GIN-06) sau này.
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.urls import reverse
 from django.utils import timezone
 
 from warehouse.models import Warehouse
@@ -59,6 +60,10 @@ class Gin(models.Model):
 
     def __str__(self):
         return self.gin_no
+
+    def get_absolute_url(self):
+        """M9: đích deep-link cho ``Notification``/``AuditLog`` gắn với GIN này."""
+        return reverse('shipping:gin_detail', args=[self.pk])
 
     def clean(self):
         super().clean()

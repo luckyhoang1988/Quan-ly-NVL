@@ -12,6 +12,7 @@ qty_reserved là computed, không phải stored input".
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.urls import reverse
 from django.utils import timezone
 
 
@@ -168,6 +169,12 @@ class WarehouseHandoff(models.Model):
 
     def __str__(self):
         return f'Bàn giao {self.batch.batch_code} — {self.get_status_display()}'
+
+    def get_absolute_url(self):
+        """M9: WarehouseHandoff không có trang detail riêng — quyết định
+        Nhận/Từ chối làm ngay trên hàng đợi ``handoff_list`` (Phase D), nên
+        deep-link trỏ về đúng trang đó thay vì 1 URL không tồn tại."""
+        return reverse('inventory:handoff_list')
 
 
 class StockMovement(models.Model):

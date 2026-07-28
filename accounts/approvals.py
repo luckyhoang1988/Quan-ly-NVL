@@ -8,7 +8,7 @@ vào service của app nghiệp vụ nào.
 """
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from .audit import log_action
@@ -25,15 +25,24 @@ def create_approval(target, department, action_label, submitted_by, ip_address=N
     """
     content_type = ContentType.objects.get_for_model(target.__class__)
     target_id = str(target.pk)
+    # Check nhanh trước để trả lỗi sớm ở trường hợp thường gặp, nhưng KHÔNG phải chốt
+    # chặn thật — 2 request đồng thời có thể cùng qua được .exists() này trước khi
+    # request nào kịp insert (race). Chốt chặn thật là UniqueConstraint ở Approval.Meta
+    # (unique_pending_approval_per_target); .create() bên dưới nằm trong savepoint riêng
+    # để bắt IntegrityError từ constraint đó mà không làm hỏng transaction bao ngoài.
     if Approval.objects.filter(
         target_type=content_type, target_id=target_id, status=Approval.Status.PENDING,
     ).exists():
         raise ValidationError('Đối tượng này đang có yêu cầu duyệt chưa xử lý xong.')
 
-    approval = Approval.objects.create(
-        target_type=content_type, target_id=target_id,
-        department=department, action_label=action_label, submitted_by=submitted_by,
-    )
+    try:
+        with transaction.atomic():
+            approval = Approval.objects.create(
+                target_type=content_type, target_id=target_id,
+                department=department, action_label=action_label, submitted_by=submitted_by,
+            )
+    except IntegrityError:
+        raise ValidationError('Đối tượng này đang có yêu cầu duyệt chưa xử lý xong.')
     managers = User.objects.filter(department=department, is_manager=True, is_active=True)
     notify(managers, f'{submitted_by.username} nộp yêu cầu duyệt: {action_label}.', target=target)
     log_action(

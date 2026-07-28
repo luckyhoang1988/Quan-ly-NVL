@@ -20,12 +20,22 @@
     </p>
     <form method="post">
       {% csrf_token %}
+
+      <div class="d-flex gap-2 mb-2">
+        <button type="button" id="permSelectAll" class="btn btn-sm btn-outline-primary rounded-pill">
+          <i class="bi bi-lightning-fill"></i> Chọn tất cả + Toàn quyền
+        </button>
+        <button type="button" id="permClearAll" class="btn btn-sm btn-outline-danger rounded-pill">
+          <i class="bi bi-x-lg"></i> Xóa tất cả
+        </button>
+      </div>
       <div class="table-responsive">
-        <table class="table table-sm table-bordered table-accent align-middle">
+        <table id="permMatrixTable" class="table table-sm table-bordered table-accent align-middle">
           <thead>
             <tr>
               <th>Chức năng</th>
               {% for label in action_labels %}<th class="text-center">{{ label }}</th>{% endfor %}
+              <th class="text-center">Toàn quyền</th>
             </tr>
           </thead>
           <tbody>
@@ -38,11 +48,41 @@
                          value="{{ cell.codename }}" {% if cell.checked %}checked{% endif %}>
                 </td>
               {% endfor %}
+              <td class="text-center">
+                <button type="button" class="btn btn-sm btn-outline-primary js-row-select-all">
+                  <i class="bi bi-lightning-fill"></i> Toàn quyền
+                </button>
+              </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
+
+      <div class="card mt-3">
+        <div class="card-header panel-toolbar">
+          <h2 class="panel-title h6 mb-0"><i class="bi bi-app-indicator"></i> Ứng dụng được phép truy cập</h2>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small">
+            Các mục dưới đây không có ma trận Tạo/Sửa/Xoá riêng (menu thuần tuý) — bỏ tick để
+            ẩn hẳn mục đó khỏi menu và chặn truy cập trực tiếp bằng URL.
+          </p>
+          <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-2">
+            {% for item in menu_rows %}
+            <div class="col">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="perm"
+                       id="menu_{{ item.codename }}" value="{{ item.codename }}"
+                       {% if item.checked %}checked{% endif %}>
+                <label class="form-check-label" for="menu_{{ item.codename }}">{{ item.label }}</label>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
       <div class="d-flex gap-2 mt-3">
         <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Lưu phân quyền</button>
         <button type="submit" name="reset" value="1" class="btn btn-outline-secondary"
@@ -54,4 +94,28 @@
     </form>
   </div>
 </div>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var matrixTable = document.getElementById('permMatrixTable');
+    var selectAllBtn = document.getElementById('permSelectAll');
+    var clearAllBtn = document.getElementById('permClearAll');
+
+    function setMatrixChecked(checked) {
+      matrixTable.querySelectorAll('input[type="checkbox"]').forEach(function (box) {
+        box.checked = checked;
+      });
+    }
+
+    if (selectAllBtn) selectAllBtn.addEventListener('click', function () { setMatrixChecked(true); });
+    if (clearAllBtn) clearAllBtn.addEventListener('click', function () { setMatrixChecked(false); });
+
+    matrixTable.querySelectorAll('.js-row-select-all').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        btn.closest('tr').querySelectorAll('input[type="checkbox"]').forEach(function (box) {
+          box.checked = true;
+        });
+      });
+    });
+  });
+</script>
 {% endblock %}

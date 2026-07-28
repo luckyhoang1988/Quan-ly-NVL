@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import Approval, AuditLog
+from accounts.models import Approval, AuditLog, Notification
 from catalog.models import Product
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem
@@ -65,6 +65,24 @@ class GrnModelTest(TestCase):
         grn = Grn(po=self.po, supplier=self.other_supplier, created_by=self.creator)
         with self.assertRaises(ValidationError):
             grn.full_clean()
+
+    def test_TC_GRN_003_001_get_absolute_url_points_to_grn_detail(self):
+        """M9: Notification/AuditLog gắn với GRN phải deep-link được tới đúng
+        trang chi tiết của nó."""
+        grn = self._create_grn()
+        self.assertEqual(grn.get_absolute_url(), reverse('receiving:grn_detail', args=[grn.pk]))
+
+    def test_TC_GRN_003_002_notification_mark_read_deep_links_to_grn_detail(self):
+        """M9 end-to-end: click 1 Notification gắn target=Grn phải chuyển thẳng
+        tới trang chi tiết GRN đó, không rơi về notification_list."""
+        grn = self._create_grn()
+        notif = Notification.objects.create(
+            recipient=self.creator, verb='GRN của bạn có cập nhật', target=grn)
+        self.client.force_login(self.creator)
+
+        resp = self.client.post(reverse('notification_mark_read', args=[notif.pk]))
+
+        self.assertRedirects(resp, reverse('receiving:grn_detail', args=[grn.pk]))
 
 
 class GrnItemModelTest(TestCase):
@@ -144,6 +162,12 @@ class GrnReturnModelTest(TestCase):
         ret = GrnReturn.objects.create(grn=self.grn)
         self.assertEqual(ret.status, GrnReturn.Status.PENDING)
         self.assertEqual(ret.reason, 'QC Fail')
+
+    def test_TC_GRN_RET_001_002_get_absolute_url_points_to_parent_grn_detail(self):
+        """M9: GrnReturn không có trang detail riêng — hiển thị lồng trong
+        grn_detail của GRN cha, deep-link phải trỏ về đúng đó."""
+        ret = GrnReturn.objects.create(grn=self.grn)
+        self.assertEqual(ret.get_absolute_url(), reverse('receiving:grn_detail', args=[self.grn.pk]))
 
 
 class GrnCloseServiceTest(TestCase):

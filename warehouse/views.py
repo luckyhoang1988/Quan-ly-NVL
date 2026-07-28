@@ -48,7 +48,10 @@ def warehouse_manager_required(view):
 
 @login_required
 def warehouse_list(request):
-    """READ — danh sách kho (mọi user đã đăng nhập đều xem được)."""
+    """READ — danh sách kho (mọi user đã đăng nhập đều xem được, trừ khi admin thu hồi
+    quyền "Truy cập menu" ``warehouse`` riêng cho user đó qua trang Phân quyền chi tiết)."""
+    if not request.user.can_view_menu('warehouse'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Kho hàng".')
     warehouses = Warehouse.objects.all()
     status = request.GET.get('status', '')
     if status == 'active':

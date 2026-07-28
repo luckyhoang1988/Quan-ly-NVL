@@ -1117,6 +1117,11 @@ class WarehouseHandoffViewTest(TestCase):
             assigned_to=self.assigned_staff,
         )
 
+    def test_TC_INV_HANDOFF_VIEW_000b_get_absolute_url_points_to_handoff_list(self):
+        """M9: WarehouseHandoff không có trang detail riêng — Nhận/Từ chối làm
+        ngay trên hàng đợi handoff_list, nên deep-link phải trỏ về đúng đó."""
+        self.assertEqual(self.handoff.get_absolute_url(), reverse('inventory:handoff_list'))
+
     def test_TC_INV_HANDOFF_VIEW_001_login_required(self):
         response = self.client.get(reverse('inventory:handoff_list'))
         self.assertEqual(response.status_code, 302)

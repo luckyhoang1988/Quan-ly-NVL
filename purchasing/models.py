@@ -23,6 +23,7 @@ quyền approve (xem ``purchasing.services.submit_purchase_request``/
 """
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.urls import reverse
 from django.utils import timezone
 
 
@@ -190,6 +191,10 @@ class PurchaseRequest(models.Model):
 
     def __str__(self):
         return self.request_no
+
+    def get_absolute_url(self):
+        """M9: đích deep-link cho ``Notification``/``AuditLog`` gắn với PR này."""
+        return reverse('purchasing:pr_detail', args=[self.pk])
 
     @classmethod
     def generate_request_no(cls):

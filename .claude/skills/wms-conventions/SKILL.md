@@ -111,6 +111,19 @@ tiếp. Badge số chưa đọc + dropdown hiện tự động ở mọi trang q
 `accounts.context_processors.notifications` (đã đăng ký trong `config/settings.py` TEMPLATES) — view mới
 KHÔNG cần tự truyền `unread_notification_count` vào context.
 
+**Đánh dấu đã đọc + deep-link (`target`)**: `accounts.views.notification_mark_read` là **POST-only** (không
+GET — đánh dấu-đã-đọc là side-effect ghi DB, GET không có CSRF và dễ bị prefetch/bot click hàng loạt, vá
+2026-07-28, xem CLAUDE.md) — template dùng `<form method="post" class="list-group-item ...">` bọc 1
+`<button>` thay vì `<a href>`, giữ nguyên class `list-group-item` trên chính thẻ `<form>` (không phải trên
+`<button>` bên trong) để CSS border/hover của Bootstrap `.list-group-item + .list-group-item` vẫn khớp — bọc
+`<form>` NGOÀI `list-group-item` sẽ vỡ style vì lúc đó `<form>` mới là sibling thật trong `.list-group`, không
+phải `<button>`. Bất kỳ model nào được truyền vào `notify(..., target=obj)` hoặc
+`accounts.approvals.create_approval(obj, ...)` (mọi model đang dùng: `Grn`, `GrnReturn`, `Gin`,
+`PurchaseRequest`, `WarehouseHandoff`) PHẢI có `get_absolute_url()` — nếu không, click thông báo chỉ quay lại
+`notification_list` (deep-link chết, vá 2026-07-28). Model không có trang detail riêng (`GrnReturn` lồng trong
+`grn_detail` của GRN cha; `WarehouseHandoff` không có trang riêng, quyết định ngay trên `handoff_list`) thì
+trỏ `get_absolute_url()` về đúng trang cha/hàng-đợi đó thay vì cố tạo 1 trang detail mới chỉ để có URL.
+
 **Tra cứu lịch sử**: `accounts.audit_log_list` (`/audit-log/`) đã có sẵn, filter theo module/actor/phòng
 ban/hành động/khoảng ngày, gate quyền `user.is_manager or user.role == 'ADMIN' or user.is_superuser`. Mọi
 transition mới (Approval, WarehouseHandoff...) chỉ cần tiếp tục gọi `log_action()` như cũ — không cần tạo
@@ -131,7 +144,13 @@ DRAFT tách biệt như GRN/GIN), dùng lại y hệt cho mọi bước duyệt 
 2. Viết 1 hàm `request_x(obj, actor, ip_address=None)`: đổi `obj.status` sang state trung gian, rồi gọi
    `accounts.approvals.create_approval(obj, department=..., action_label='...', submitted_by=actor,
    ip_address=ip_address)`. `create_approval` tự chặn tạo trùng (đang có `Approval` PENDING khác trên cùng
-   `obj` thì raise `ValidationError`) và tự `notify()` toàn bộ `is_manager=True` của `department` đó.
+   `obj` thì raise `ValidationError`) và tự `notify()` toàn bộ `is_manager=True` của `department` đó. Chặn
+   trùng này là race-safe thật (không chỉ check-rồi-tạo): `Approval.Meta` có
+   `UniqueConstraint(fields=['target_type','target_id'], condition=Q(status='PENDING'))` làm chốt chặn ở DB,
+   `create_approval` bắt `IntegrityError` từ đó và dịch lại thành cùng 1 `ValidationError` — 2 request đồng
+   thời gọi `request_x` trên cùng `obj` không bao giờ tạo ra 2 `Approval` PENDING (vá 2026-07-28, xem
+   CLAUDE.md). Nếu sau này thêm 1 cơ chế "chặn trùng theo target" tương tự ở ngoài `Approval` (không dùng
+   pattern này), nhớ áp dụng lại đúng shape đó — `.exists()` một mình không đủ.
 3. Viết 1 hàm `decide_x(approval, approved, actor, note='', ip_address=None)`: định nghĩa 2 closure
    `on_approve`/`on_reject` (transition THẬT của `obj`, KHÔNG import ngược accounts vào business logic — closure
    được định nghĩa ngay trong app gọi), rồi gọi
@@ -239,17 +258,81 @@ cần gate theo quyền:
    quả với ma trận mặc định (`ROLE_PERMISSIONS`) nhưng bỏ qua quyền chi tiết theo-user (trang "Phân quyền chi
    tiết", `views.user_permission_edit` cho phép admin cấp/thu hồi quyền lệch khỏi role mặc định) — 1 user bị
    thu hồi quyền vẫn thấy link rồi 403, hoặc được cấp thêm quyền mà sidebar vẫn giấu link.
-2. Nếu module đó **không** có trong `MODULES` (vd `inventory`/`warehouse`/`catalog` — theo BACKLOG Permission
-   Matrix không có cột riêng, mọi user đăng nhập đều dùng được) hoặc dùng model bàn giao nhẹ kiểu
-   `WarehouseHandoff` (không có module trong `MODULES`, xem mục 5 ở trên) — **giữ nguyên** kiểu check
-   role/department/`is_superuser` trực tiếp trong template, đây không phải là điều cần sửa; đừng cưỡng ép
-   thêm 1 module giả vào `MODULES` chỉ để gate 1 sidebar link.
-3. `sidebar_permissions()` phải tự `return {}` khi `not request.user.is_authenticated` (cùng rule
+2. Nếu module đó **không** có trong `MODULES` (vd `inventory`/`warehouse`/`catalog`/`partners` — theo BACKLOG
+   Permission Matrix không có cột riêng CRUD) — dùng `accounts.permissions.MENU_ITEMS` +
+   `user.can_view_menu(key)` (2026-07-28, xem bên dưới), KHÔNG còn để link hiện vô điều kiện như trước.
+3. Nếu module đó dùng model bàn giao nhẹ kiểu `WarehouseHandoff` (mục 5 ở trên) hoặc là trang quản trị
+   (`user_mgmt`/`audit_log`) — link vẫn giữ điều kiện role/department/`is_superuser` hiện có LÀM ĐIỀU KIỆN
+   OVERSIGHT, cộng thêm (AND) `can_view_menu_<key>` tương ứng — xem điểm "Kết hợp 2 điều kiện" bên dưới, đừng
+   xoá điều kiện role/department cũ, chỉ thêm điều kiện menu vào.
+4. `sidebar_permissions()` phải tự `return {}` khi `not request.user.is_authenticated` (cùng rule
    `notifications()` đã áp dụng) — context processor chạy trên mọi request kể cả trang login.
 
 Đã áp dụng cho "Tiêu chuẩn QC" (`can_read_qc`) và "Kiểm kê" (`can_read_opname`); "Yêu cầu mua hàng" (PR) được
 thêm link sidebar mới cùng lúc (`can_read_pr`) — trước đó PR có route (`purchasing:pr_list`) nhưng không có
 link, chỉ vào được qua tab trong `po_list.html`.
+
+### 6.1. `MENU_ITEMS`/`can_view_menu` — bật/tắt cả 1 mục sidebar không có ma trận CRUD (2026-07-28)
+
+Khác với `MODULES` (Module × Action, phần mục 6 ở trên), một số mục sidebar chưa từng có khái niệm CRUD gì cả
+— trước đây các view entry-point này chỉ có `@login_required`, mở cho MỌI user đăng nhập, không cách nào thu
+hẹp riêng cho 1 user. `accounts/permissions.py::MENU_ITEMS` (dict `key: label` tiếng Việt) định nghĩa 7 mục
+này: `warehouse`, `catalog`, `partners`, `inventory`, `handoff`, `user_mgmt`, `audit_log`. Mỗi key sinh 1
+Django permission `can_view_menu_<key>` (khai báo trong `User.Meta.permissions`, đọc qua
+`user.can_view_menu(key)` — mirror `.can()` nhưng không có action/module, chỉ có "được xem mục này hay
+không"). **Mặc định cấp cho MỌI user/role** (`codenames_for_role()` luôn nối thêm `all_menu_codenames()`) —
+giữ đúng hành vi cũ (mở cho tất cả), admin chỉ dùng trang "Phân quyền chi tiết"
+(`user_permission_edit`/`user_permission_form.html`, khối "Ứng dụng được phép truy cập") để **thu hẹp** riêng
+từng user khi cần, không phải để mở rộng.
+
+**Không tạo checkbox `can_view_menu_*` cho 7 module đã có trong `MODULES`** (grn/gin/opname/qc/pr/po/reports)
+— checkbox "Xem" (read) sẵn có trong ma trận CRUD đã đóng đúng vai trò đó, thêm 1 khái niệm song song sẽ
+trùng lặp và dễ lệch nhau.
+
+**3 nơi phải enforce cùng lúc cho 1 mục menu mới** (thiếu 1 trong 3 là chỉ ẩn link hoặc chỉ enforce nửa vời):
+
+1. **Sidebar link** (`base.html`) — bọc `{% if can_view_menu_<key> %}` (flag lấy từ
+   `accounts.context_processors.sidebar_permissions`, đã thêm 7 flag `can_view_menu_*` sẵn trong context mọi
+   trang).
+2. **View thật** — thêm ngay đầu hàm (sau docstring, trước logic chính), theo đúng style
+   `raise PermissionDenied(...)` cục bộ từng app đã dùng (không tạo decorator dùng chung mới):
+   ```python
+   if not request.user.can_view_menu('warehouse'):
+       raise PermissionDenied('Bạn không có quyền truy cập mục "Kho hàng".')
+   ```
+   Ẩn link mà không gate view thật = chỉ cosmetic, gõ thẳng URL vẫn vào được. Xem
+   `warehouse.views.warehouse_list`/`catalog.views.product_list`/`partners.views.supplier_list`/
+   `inventory.views.inventory_list`/`inventory.views.handoff_list` làm mẫu. Với mục có decorator riêng
+   (`user_admin_required`, `audit_log_required` ở `accounts/views.py`) — thêm điều kiện
+   `and request.user.can_view_menu('user_mgmt'/'audit_log')` NGAY TRONG decorator, tự áp dụng cho mọi view
+   dùng decorator đó, không cần sửa từng view con.
+3. **Trang "Phân quyền chi tiết"** — `menu_rows` (context của `user_permission_edit`) build từ `MENU_ITEMS`,
+   render trong khối `<div class="card mt-3">` "Ứng dụng được phép truy cập" (`user_permission_form.html`) —
+   checkbox độc lập, KHÔNG nằm trong bảng CRUD.
+
+**Kết hợp điều kiện role/department cũ với `can_view_menu` mới trong `base.html` — LUÔN dùng `{% if %}` LỒNG
+NHAU, KHÔNG viết `or`/`and` chung 1 dòng**: Django template `and` bind chặt hơn `or` (giống Python), nên
+`{% if A or B and C %}` được parse là `A or (B and C)`, không phải `(A or B) and C` như trực giác thường nghĩ
+— viết sai dạng này từng khiến điều kiện role (`user.role == 'ADMIN'`) bỏ qua hẳn điều kiện `can_view_menu`
+phía sau nó (bug thật, tự phát hiện lúc code review 2026-07-28, sửa trước khi merge). Luôn viết:
+```html
+{% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
+  {% if can_view_menu_handoff %}
+  <li class="nav-item">...</li>
+  {% endif %}
+{% endif %}
+```
+không viết gộp `{% if (role check) and can_view_menu_x %}` trên 1 dòng.
+
+**Retrofit vào bảng đã có user thật**: thêm 1 permission mới vào `User.Meta.permissions` cần migration
+`RunPython` backfill — với MỌI user đã tồn tại, `user.user_permissions.add(*perms)` (dùng `.add()`, KHÔNG
+`.set()`, để không xoá mất quyền CRUD đã tuỳ biến trước đó của user đó) — xem
+`accounts/migrations/0013_menu_access_permissions.py`, cùng nguyên tắc backfill đã ghi ở mục 4.8 phía trên,
+áp dụng cho permission thường chứ không chỉ riêng `Approval`.
+
+**Guard tự khoá**: mirror `user_toggle_active`/`user_update`'s self-lock — `user_permission_edit` chặn 1
+ADMIN tự bỏ tick `can_view_menu_user_mgmt` của chính họ (không có cách khôi phục qua UI nếu lỡ khoá, giống
+lý do chặn tự khoá `is_active`).
 
 ## 7. Topbar user-menu (bánh răng góc trên-phải) — thay cho khối user-box cuối sidebar (2026-07-28)
 

@@ -26,28 +26,36 @@
       </div>
       <ul class="nav nav-pills flex-column mb-auto gap-1">
         <li class="sidebar-section-title">Danh mục</li>
+        {% if can_view_menu_warehouse %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'warehouse' %}active{% endif %}" href="{% url 'warehouse:warehouse_list' %}">
             <i class="bi bi-building"></i> Kho hàng
           </a>
         </li>
+        {% endif %}
+        {% if can_view_menu_catalog %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'catalog' %}active{% endif %}" href="{% url 'catalog:product_list' %}">
             <i class="bi bi-box-seam"></i> Sản phẩm
           </a>
         </li>
+        {% endif %}
+        {% if can_view_menu_partners %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'partners' %}active{% endif %}" href="{% url 'partners:supplier_list' %}">
             <i class="bi bi-truck"></i> Nhà cung cấp
           </a>
         </li>
+        {% endif %}
 
         <li class="sidebar-section-title">Mua hàng</li>
+        {% if can_read_po %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' and request.resolver_match.url_name != 'pr_list' and request.resolver_match.url_name != 'pr_create' and request.resolver_match.url_name != 'pr_detail' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
             <i class="bi bi-cart-check"></i> Đơn mua hàng
           </a>
         </li>
+        {% endif %}
         {% if can_read_pr %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'pr_list' %}active{% endif %}" href="{% url 'purchasing:pr_list' %}">
@@ -57,11 +65,13 @@
         {% endif %}
 
         <li class="sidebar-section-title">Nhập kho &amp; QC</li>
+        {% if can_read_grn %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'receiving' %}active{% endif %}" href="{% url 'receiving:grn_list' %}">
             <i class="bi bi-clipboard-check"></i> GRN
           </a>
         </li>
+        {% endif %}
         {% if can_read_qc %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'quality' %}active{% endif %}" href="{% url 'quality:qc_criteria_list' %}">
@@ -71,23 +81,29 @@
         {% endif %}
 
         <li class="sidebar-section-title">Kho vận</li>
+        {% if can_view_menu_inventory %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'inventory' %}active{% endif %}" href="{% url 'inventory:inventory_list' %}">
             <i class="bi bi-bar-chart-line"></i> Tồn kho
           </a>
         </li>
-        {% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
-        <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.url_name == 'handoff_list' %}active{% endif %}" href="{% url 'inventory:handoff_list' %}">
-            <i class="bi bi-truck-flatbed"></i> Phiếu chờ nhận hàng
-          </a>
-        </li>
         {% endif %}
+        {% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
+          {% if can_view_menu_handoff %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'handoff_list' %}active{% endif %}" href="{% url 'inventory:handoff_list' %}">
+              <i class="bi bi-truck-flatbed"></i> Phiếu chờ nhận hàng
+            </a>
+          </li>
+          {% endif %}
+        {% endif %}
+        {% if can_read_gin %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'shipping' %}active{% endif %}" href="{% url 'shipping:gin_list' %}">
             <i class="bi bi-box-arrow-up"></i> GIN
           </a>
         </li>
+        {% endif %}
         {% if can_read_opname %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'stocktake' %}active{% endif %}" href="{% url 'stocktake:so_list' %}">
@@ -97,26 +113,32 @@
         {% endif %}
 
         <li class="sidebar-section-title">Báo cáo</li>
+        {% if can_read_reports %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}" href="{% url 'reports:dashboard' %}">
             <i class="bi bi-graph-up"></i> Báo cáo
           </a>
         </li>
+        {% endif %}
 
         {% if user.is_superuser or user.role == 'ADMIN' or user.is_manager %}
         <li class="sidebar-section-title">Quản trị</li>
         {% if user.is_superuser or user.role == 'ADMIN' %}
-        <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
-            <i class="bi bi-people"></i> Quản lý user
-          </a>
-        </li>
+          {% if can_view_menu_user_mgmt %}
+          <li class="nav-item">
+            <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
+              <i class="bi bi-people"></i> Quản lý user
+            </a>
+          </li>
+          {% endif %}
         {% endif %}
+        {% if can_view_menu_audit_log %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'audit_log_list' %}active{% endif %}" href="{% url 'audit_log_list' %}">
             <i class="bi bi-journal-text"></i> Nhật ký hành động
           </a>
         </li>
+        {% endif %}
         {% endif %}
       </ul>
     </nav>

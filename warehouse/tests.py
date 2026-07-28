@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -42,6 +43,17 @@ class WarehouseCrudTest(TestCase):
         response = self.client.get(reverse('warehouse:warehouse_create'))
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('login'), response.url)
+
+    def test_TC_WM_01_003_menu_access_revoked_forbids_list(self):
+        """Khối "Truy cập menu" (accounts/permissions.py::MENU_ITEMS) mặc định cấp cho mọi
+        role — thu hồi riêng ``can_view_menu_warehouse`` của 1 user phải chặn được
+        ``warehouse_list``, kể cả khi role của họ vẫn được xem kho bình thường."""
+        perm = Permission.objects.get(
+            codename='can_view_menu_warehouse', content_type__app_label='accounts')
+        self.staff.user_permissions.remove(perm)
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse('warehouse:warehouse_list'))
+        self.assertEqual(response.status_code, 403)
 
     def test_TC_WM_01_003_create_auto_seeds_min_locations_and_audits(self):
         response = self.client.post(reverse('warehouse:warehouse_create'), self._create_payload())

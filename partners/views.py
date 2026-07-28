@@ -62,7 +62,10 @@ def partners_create_required(view):
 
 @login_required
 def supplier_list(request):
-    """READ — danh sách Supplier (mọi user đã đăng nhập đều xem được)."""
+    """READ — danh sách Supplier (mọi user đã đăng nhập đều xem được, trừ khi admin thu
+    hồi quyền "Truy cập menu" ``partners`` riêng cho user đó qua trang Phân quyền chi tiết)."""
+    if not request.user.can_view_menu('partners'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Nhà cung cấp".')
     suppliers = Supplier.objects.all()
     status = request.GET.get('status', '')
     if status:

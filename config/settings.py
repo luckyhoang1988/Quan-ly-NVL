@@ -33,6 +33,13 @@ DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
 ALLOWED_HOSTS = [h.strip() for h in os.getenv('ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if h.strip()]
 
+# Chưa có reverse proxy nào đứng trước app (chưa Docker/deploy — xem CLAUDE.md), nên
+# header X-Forwarded-For do chính client tự set, không phải proxy — KHÔNG được tin
+# dùng để xác định IP thật (vd. key rate-limit login theo IP, xem accounts.audit.client_ip).
+# Chỉ bật True khi thật sự có 1 reverse proxy tin cậy đứng trước và proxy đó tự ghi đè
+# header này (không cho client tự set qua nó).
+TRUST_X_FORWARDED_FOR = os.getenv('TRUST_X_FORWARDED_FOR', 'False').lower() in ('true', '1', 'yes')
+
 
 # Application definition
 

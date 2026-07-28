@@ -30,6 +30,23 @@ MODULES = {
     'reports': 'Báo cáo',
 }
 
+# Mục sidebar KHÔNG nằm trong MODULES ở trên — trước đây không có khái niệm phân
+# quyền gì cả (mở cho mọi user đã đăng nhập, hoặc chỉ gate cứng theo role/department
+# trong view). Khối "Truy cập menu" trên trang Phân quyền chi tiết
+# (``views.user_permission_edit``) cho admin bật/tắt truy cập TỪNG mục này riêng
+# theo user, độc lập với ma trận CRUD của MODULES — mặc định luôn cấp cho MỌI role
+# (xem ``codenames_for_role``) để không đổi hành vi hiện có, admin chỉ dùng để
+# THU HẸP cho từng user khi cần.
+MENU_ITEMS = {
+    'warehouse': 'Kho hàng',
+    'catalog': 'Sản phẩm (Danh mục)',
+    'partners': 'Nhà cung cấp',
+    'inventory': 'Tồn kho',
+    'handoff': 'Phiếu chờ nhận hàng',
+    'user_mgmt': 'Quản lý user',
+    'audit_log': 'Nhật ký hành động',
+}
+
 # Hành động (FR-USER-04: Create / Read / Update / Delete / Approve).
 # 'override' bổ sung riêng cho QC approval override (mục 2b/2c) — Supervisor
 # (Manager/Admin) ghi chú override lên 1 kết quả QC đã quyết định, tách biệt
@@ -111,16 +128,27 @@ ROLE_PERMISSIONS = {
 }
 
 
+def all_menu_codenames():
+    """Toàn bộ codename truy cập menu = MENU_ITEMS (dùng khi sinh Meta.permissions)."""
+    return [f'can_view_menu_{key}' for key in MENU_ITEMS]
+
+
 def all_permission_codenames():
-    """Toàn bộ codename có thể có = MODULES × ACTIONS (dùng khi sinh Meta.permissions)."""
-    return [f'can_{action}_{module}' for module in MODULES for action in ACTIONS]
+    """Toàn bộ codename có thể có: CRUD (MODULES × ACTIONS) + truy cập menu (MENU_ITEMS)
+    — dùng khi sinh Meta.permissions và ở trang "Phân quyền chi tiết"."""
+    crud = [f'can_{action}_{module}' for module in MODULES for action in ACTIONS]
+    return crud + all_menu_codenames()
 
 
 def codenames_for_role(role):
-    """Tập codename mà một role được cấp (theo ROLE_PERMISSIONS)."""
+    """Tập codename mà một role được cấp: CRUD theo ``ROLE_PERMISSIONS`` + TOÀN BỘ
+    quyền truy cập menu (``MENU_ITEMS`` mặc định cấp cho mọi role như nhau, xem
+    docstring ``MENU_ITEMS`` ở trên) — nhờ vậy user mới/đổi role/bấm "Đặt lại theo
+    vai trò" đều tự động có đủ quyền menu mà không cần logic riêng."""
     module_actions = ROLE_PERMISSIONS.get(role, {})
-    return [
+    crud = [
         f'can_{action}_{module}'
         for module, actions in module_actions.items()
         for action in actions
     ]
+    return crud + all_menu_codenames()

@@ -19,6 +19,8 @@ from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils.dateparse import parse_date
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from django.contrib.contenttypes.models import ContentType
 
@@ -26,7 +28,7 @@ from .audit import client_ip, log_action
 from .forms import UserCreateForm, UserUpdateForm, WmsPasswordChangeForm, WmsSetPasswordForm
 from .models import AuditLog, Notification
 from .pagination import paginate_queryset
-from .permissions import ACTIONS, MODULES, codenames_for_role
+from .permissions import ACTIONS, MENU_ITEMS, MODULES, all_permission_codenames, codenames_for_role
 from .rbac import sync_user_permissions
 
 User = get_user_model()
@@ -71,20 +73,30 @@ def can_manage_users(user):
 
 
 def user_admin_required(view):
-    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không phải admin -> 403."""
+    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không phải admin -> 403;
+    admin nhưng bị thu hồi quyền "Truy cập menu" ``user_mgmt`` (trang Phân quyền chi tiết,
+    xem ``MENU_ITEMS``) -> 403."""
 
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
         if not can_manage_users(request.user):
             raise PermissionDenied('Chỉ Admin được quản lý người dùng.')
+        if not request.user.can_view_menu('user_mgmt'):
+            raise PermissionDenied('Bạn không có quyền truy cập mục "Quản lý user".')
         return view(request, *args, **kwargs)
 
     return wrapper
 
 
-def _send_account_created_email(user, password):
+def _send_account_created_email(user):
     """Gửi email thông báo tài khoản mới cho user (FR-USER-01 CREATE).
+
+    M3: KHÔNG gửi mật khẩu (plaintext) qua email — admin là người trực tiếp đặt
+    mật khẩu ban đầu (``UserCreateForm``) và báo trực tiếp cho user (không có
+    luồng "quên mật khẩu" tự phục vụ trong hệ thống); email chỉ báo tài khoản đã
+    được tạo. Nếu user quên mật khẩu, admin đặt lại qua ``user_password_set``
+    (nút "Đặt mật khẩu" ở trang chi tiết user), không phải qua email.
 
     Dev dùng backend console (in ra terminal); test tự dùng locmem (mail.outbox).
     ``fail_silently=True`` để việc tạo user không đổ vỡ khi chưa cấu hình SMTP thật.
@@ -96,9 +108,10 @@ def _send_account_created_email(user, password):
         message=(
             f'Xin chào {user.username},\n\n'
             f'Tài khoản NVL/WMS của bạn đã được tạo.\n'
-            f'Tên đăng nhập: {user.username}\n'
-            f'Mật khẩu: {password}\n\n'
-            f'Vui lòng đăng nhập và đổi mật khẩu nếu cần.'
+            f'Tên đăng nhập: {user.username}\n\n'
+            f'Mật khẩu đăng nhập đã được quản trị viên cấp cho bạn qua kênh riêng '
+            f'(không gửi qua email). Nếu quên mật khẩu, vui lòng liên hệ quản trị '
+            f'viên để được đặt lại.'
         ),
         from_email=None,  # dùng DEFAULT_FROM_EMAIL
         recipient_list=[user.email],
@@ -164,11 +177,15 @@ def user_detail(request, pk):
 @user_admin_required
 def user_permission_edit(request, pk):
     """UPDATE — phân quyền chi tiết cho từng user: admin tick/bỏ tick từng ô
-    Module x Action, có thể THU HỒI quyền mặc định của role (không chỉ thêm),
-    hoặc bấm "Đặt lại theo vai trò" để quay về đúng mặc định của role.
+    Module x Action, cộng khối "Ứng dụng được phép truy cập" (``MENU_ITEMS`` — các mục
+    sidebar không có ma trận CRUD). Có thể THU HỒI quyền mặc định của role (không chỉ
+    thêm), hoặc bấm "Đặt lại theo vai trò" để quay về đúng mặc định của role.
     """
     obj = get_object_or_404(User, pk=pk)
-    all_codenames = [f'can_{action}_{module}' for module in MODULES for action in ACTIONS]
+    if obj.is_deleted:
+        messages.error(request, 'User đã bị xoá, không thể sửa phân quyền.')
+        return redirect('user_detail', pk=obj.pk)
+    all_codenames = all_permission_codenames()
 
     if request.method == 'POST':
         before = _effective_codenames(obj)
@@ -178,6 +195,13 @@ def user_permission_edit(request, pk):
             description = f'Đặt lại phân quyền của {obj.username} theo mặc định vai trò'
         else:
             selected = set(request.POST.getlist('perm')) & set(all_codenames)
+            # Tự khoá: admin đang tự sửa quyền của chính mình mà bỏ tick menu "Quản lý
+            # user" sẽ không còn cách nào quay lại trang này qua UI để tự khôi phục (mirror
+            # guard is_active tự khoá ở user_toggle_active/user_update) — chặn trước khi lưu.
+            if obj.pk == request.user.pk and 'can_view_menu_user_mgmt' not in selected:
+                messages.error(
+                    request, 'Không thể tự thu hồi quyền truy cập "Quản lý user" của chính bạn.')
+                return _render_permission_form(request, obj)
             perms = Permission.objects.filter(
                 content_type__app_label='accounts', codename__in=selected,
             )
@@ -199,6 +223,12 @@ def user_permission_edit(request, pk):
         messages.success(request, f'Đã cập nhật phân quyền của "{obj.username}".')
         return redirect('user_detail', pk=obj.pk)
 
+    return _render_permission_form(request, obj)
+
+
+def _render_permission_form(request, obj):
+    """Dựng context cho form Phân quyền chi tiết — dùng chung cho GET và khi POST bị
+    chặn bởi guard tự khoá (xem ``user_permission_edit``)."""
     action_labels = list(ACTIONS.values())
     effective = _effective_codenames(obj)
     perm_rows = [
@@ -209,8 +239,13 @@ def user_permission_edit(request, pk):
          ]}
         for module, module_label in MODULES.items()
     ]
+    menu_rows = [
+        {'codename': f'can_view_menu_{key}', 'label': label,
+         'checked': f'can_view_menu_{key}' in effective}
+        for key, label in MENU_ITEMS.items()
+    ]
     return render(request, 'accounts/user_permission_form.html', {
-        'obj': obj, 'action_labels': action_labels, 'perm_rows': perm_rows,
+        'obj': obj, 'action_labels': action_labels, 'perm_rows': perm_rows, 'menu_rows': menu_rows,
     })
 
 
@@ -219,9 +254,8 @@ def user_create(request):
     """CREATE — admin tạo user với mật khẩu tự chọn; gửi email + ghi audit CREATE."""
     form = UserCreateForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
-        password = form.cleaned_data['password1']
         user = form.save()  # kích hoạt signal đồng bộ role -> Group
-        _send_account_created_email(user, password)
+        _send_account_created_email(user)
         log_action(
             request.user, AuditLog.Action.CREATE, target=user,
             description=f'Tạo user {user.username} (role {user.role or "—"})',
@@ -253,6 +287,13 @@ def user_update(request, pk):
     if request.method == 'POST' and form.is_valid():
         if obj.pk == request.user.pk and not form.cleaned_data['is_active']:
             messages.error(request, 'Không thể tự khoá tài khoản của chính bạn.')
+            return render(request, 'accounts/user_form.html',
+                          {'form': form, 'mode': 'update', 'obj': obj})
+        # H3: tương tự guard is_active ở trên — tự đổi role của chính mình có thể
+        # tự hạ quyền/khoá luôn quyền quản trị (vd ADMIN tự đổi thành STAFF) mà
+        # không còn ai khác có quyền đổi lại, khác với việc đổi role cho user khác.
+        if obj.pk == request.user.pk and form.cleaned_data['role'] != before['role']:
+            messages.error(request, 'Không thể tự đổi vai trò (role) của chính bạn.')
             return render(request, 'accounts/user_form.html',
                           {'form': form, 'mode': 'update', 'obj': obj})
         user = form.save()  # kích hoạt signal đồng bộ role -> Group nếu đổi role
@@ -326,8 +367,20 @@ def user_password_set(request, pk):
 
 @user_admin_required
 def user_delete(request, pk):
-    """DELETE — soft delete (giữ bản ghi cho audit); chặn tự xoá chính mình."""
+    """DELETE — soft delete (giữ bản ghi cho audit); chặn tự xoá chính mình,
+    chặn xoá lại user đã xoá mềm sẵn (L4, 2026-07-28).
+
+    Nút "Xoá" đã bị ẩn ở template cho user ``is_deleted`` (giống Sửa/Đặt mật
+    khẩu/Khoá), nhưng view chưa tự kiểm tra — truy cập thẳng URL vẫn gọi lại
+    được ``soft_delete()``, ghi đè ``deleted_at`` bằng thời điểm mới và làm
+    sai lệch audit trail thời điểm xoá THẬT, không đơn thuần "vô hại vì
+    idempotent". Check trước cả nhánh GET (trang xác nhận) lẫn POST, mirror
+    guard đã có ở ``user_password_set``.
+    """
     obj = get_object_or_404(User, pk=pk)
+    if obj.is_deleted:
+        messages.error(request, 'User đã bị xoá, không thể xoá lại.')
+        return redirect('user_detail', pk=obj.pk)
     if request.method == 'POST':
         if obj.pk == request.user.pk:
             messages.error(request, 'Không thể tự xoá tài khoản của chính bạn.')
@@ -357,24 +410,45 @@ def notification_list(request):
 
 @login_required
 def notification_mark_read(request, pk):
-    """Đánh dấu 1 thông báo đã đọc rồi chuyển tới đối tượng liên quan (nếu có
-    ``get_absolute_url``) hoặc quay lại danh sách thông báo."""
+    """POST-only: đánh dấu 1 thông báo đã đọc rồi chuyển tới đối tượng liên quan
+    (nếu có ``get_absolute_url``) hoặc quay lại danh sách thông báo.
+
+    M7: trước đây là GET-only (đi qua thẳng ``<a href>``) — đánh dấu-đã-đọc là 1
+    side-effect ghi DB, không nên làm qua GET: trình duyệt/extension prefetch
+    link, hay bot quét trang, có thể âm thầm mark-read hàng loạt thông báo mà
+    user chưa từng thực sự xem, và GET không có CSRF token bảo vệ. Đổi sang
+    POST (mirror ``notification_mark_all_read``/``user_toggle_active`` — no-op
+    im lặng nếu lỡ GET, không 405, đúng convention của các view POST-only khác
+    trong file này)."""
     obj = get_object_or_404(Notification, pk=pk, recipient=request.user)
-    if not obj.is_read:
-        obj.is_read = True
-        obj.save(update_fields=['is_read'])
-    target = obj.target
-    if target is not None and hasattr(target, 'get_absolute_url'):
-        return redirect(target.get_absolute_url())
+    if request.method == 'POST':
+        if not obj.is_read:
+            obj.is_read = True
+            obj.save(update_fields=['is_read'])
+        target = obj.target
+        if target is not None and hasattr(target, 'get_absolute_url'):
+            return redirect(target.get_absolute_url())
     return redirect('notification_list')
 
 
 @login_required
 def notification_mark_all_read(request):
-    """POST-only: đánh dấu toàn bộ thông báo của user hiện tại là đã đọc."""
+    """POST-only: đánh dấu toàn bộ thông báo của user hiện tại là đã đọc.
+
+    M8: ``next`` lấy thẳng từ POST body rồi redirect thẳng trước đây là open
+    redirect — ai đó có thể dựng 1 form ẩn submit tới URL này với
+    ``next=https://trang-gia-mao`` để lợi dụng domain NVL/WMS đáng tin cậy dẫn
+    người dùng sang trang giả mạo (phishing). Validate qua
+    ``url_has_allowed_host_and_scheme`` (cùng cơ chế Django dùng cho ``next`` của
+    ``LoginView``) trước khi chấp nhận; không hợp lệ thì coalesce về
+    ``notification_list`` thay vì tin thẳng giá trị client gửi lên."""
     if request.method == 'POST':
         Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
-    return redirect(request.POST.get('next') or 'notification_list')
+    next_url = request.POST.get('next')
+    if next_url and url_has_allowed_host_and_scheme(
+            url=next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+        return redirect(next_url)
+    return redirect('notification_list')
 
 
 # --- Tra cứu Audit Log (FR-USER-05) — quản lý phòng ban trở lên + Admin ---
@@ -390,6 +464,8 @@ def audit_log_required(view):
     def wrapper(request, *args, **kwargs):
         if not can_view_audit_log(request.user):
             raise PermissionDenied('Chỉ quản lý phòng ban hoặc Admin được tra cứu nhật ký hành động.')
+        if not request.user.can_view_menu('audit_log'):
+            raise PermissionDenied('Bạn không có quyền truy cập mục "Nhật ký hành động".')
         return view(request, *args, **kwargs)
 
     return wrapper
@@ -402,13 +478,28 @@ def audit_log_list(request):
     """
     logs = AuditLog.objects.select_related('actor', 'target_type')
 
+    # H5: module/actor là FK PK (int) và date_from/date_to phải đúng định dạng
+    # ngày — trước đây filter thẳng bằng giá trị GET thô nên 1 query param sai
+    # (?module=abc, ?actor=abc, ?date_from=abc) làm ValueError/ValidationError
+    # bay thẳng lên thành lỗi 500 thay vì chỉ bỏ qua filter đó. Parse an toàn,
+    # sai thì reset về '' (không lọc) thay vì crash trang.
     module = request.GET.get('module', '')
     if module:
-        logs = logs.filter(target_type_id=module)
+        try:
+            module_id = int(module)
+        except (TypeError, ValueError):
+            module = ''
+        else:
+            logs = logs.filter(target_type_id=module_id)
 
     actor_id = request.GET.get('actor', '')
     if actor_id:
-        logs = logs.filter(actor_id=actor_id)
+        try:
+            actor_pk = int(actor_id)
+        except (TypeError, ValueError):
+            actor_id = ''
+        else:
+            logs = logs.filter(actor_id=actor_pk)
 
     department = request.GET.get('department', '')
     if department:
@@ -420,10 +511,27 @@ def audit_log_list(request):
 
     date_from = request.GET.get('date_from', '')
     if date_from:
-        logs = logs.filter(created_at__date__gte=date_from)
+        # parse_date() trả None nếu chuỗi không đúng định dạng YYYY-MM-DD, nhưng
+        # 1 chuỗi ĐÚNG định dạng mà sai lịch (vd. "2026-13-99") lại làm nó raise
+        # ValueError thẳng từ datetime.date(...) — phải bắt cả 2 trường hợp.
+        try:
+            parsed_date_from = parse_date(date_from)
+        except ValueError:
+            parsed_date_from = None
+        if parsed_date_from is None:
+            date_from = ''
+        else:
+            logs = logs.filter(created_at__date__gte=parsed_date_from)
     date_to = request.GET.get('date_to', '')
     if date_to:
-        logs = logs.filter(created_at__date__lte=date_to)
+        try:
+            parsed_date_to = parse_date(date_to)
+        except ValueError:
+            parsed_date_to = None
+        if parsed_date_to is None:
+            date_to = ''
+        else:
+            logs = logs.filter(created_at__date__lte=parsed_date_to)
 
     q = request.GET.get('q', '').strip()
     if q:

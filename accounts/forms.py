@@ -5,7 +5,8 @@ from django.contrib.auth.forms import AuthenticationForm, PasswordChangeForm, Se
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 
-from .audit import client_ip
+from .audit import client_ip, log_action
+from .models import AuditLog
 
 User = get_user_model()
 
@@ -38,6 +39,17 @@ class LoginForm(AuthenticationForm):
         cache_key = f'login_rate_limit:{ip}' if ip else None
         if cache_key and cache.get(cache_key, 0) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
             self.rate_limited = True
+            # L5: bị chặn ở đây nghĩa là không bao giờ chạm authenticate() thật của
+            # Django -> signal user_login_failed (accounts/signals.py) không phát,
+            # nên audit trail trước đây "mù" hoàn toàn với các lượt bị block —
+            # chỉ thấy các lượt sai thật (dưới ngưỡng). Ghi thủ công tại đây.
+            username = (self.data or {}).get('username', '')
+            log_action(
+                None,
+                AuditLog.Action.LOGIN_FAILED,
+                description=f'Đăng nhập bị chặn do rate-limit: {username}'.strip(),
+                ip_address=ip,
+            )
             raise ValidationError(
                 'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.',
                 code='rate_limited',
@@ -48,7 +60,11 @@ class LoginForm(AuthenticationForm):
             if cache_key:
                 cache.set(cache_key, cache.get(cache_key, 0) + 1, LOGIN_RATE_LIMIT_WINDOW_SECONDS)
             raise
-        if cache_key:
+        # super().clean() không raise cả khi username/password rỗng (AuthenticationForm
+        # chỉ gọi authenticate() lúc cả 2 field có giá trị) — chỉ reset counter khi thực
+        # sự đăng nhập thành công (self.get_user() trả về user), tránh spam form thiếu
+        # mật khẩu để tự xoá rate-limit của chính IP mình.
+        if cache_key and self.get_user():
             cache.delete(cache_key)
         return cleaned_data
 
@@ -98,7 +114,24 @@ class _VietnamesePasswordValidationMixin:
             self.add_error(password_field_name, messages)
 
 
-class UserCreateForm(_VietnamesePasswordValidationMixin, forms.ModelForm):
+class _ManagerRequiresDepartmentMixin:
+    """M6: ``is_manager=True`` mà ``department`` bỏ trống thì
+    ``user.is_department_manager(dept)`` luôn False với MỌI ``dept`` (so sánh
+    ``self.department == department`` không bao giờ khớp chuỗi rỗng) — thành
+    một "quản lý phòng ban ma": ``can_view_audit_log()`` (``is_manager`` trần,
+    không phân biệt phòng ban) vẫn cho vào tra cứu audit log, nhưng không duyệt
+    được phiếu nào của phòng ban cụ thể nào cả. Bắt buộc chọn ``department``
+    ngay khi tick ``is_manager`` để tránh trạng thái nửa vời này."""
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if cleaned_data.get('is_manager') and not cleaned_data.get('department'):
+            self.add_error(
+                'department', 'Phải chọn phòng ban khi đánh dấu là quản lý phòng ban.')
+        return cleaned_data
+
+
+class UserCreateForm(_VietnamesePasswordValidationMixin, _ManagerRequiresDepartmentMixin, forms.ModelForm):
     """Admin tạo user (FR-USER-01 CREATE).
 
     Admin tự đặt mật khẩu ban đầu cho user (không còn sinh tự động) — validate độ
@@ -145,7 +178,7 @@ class UserCreateForm(_VietnamesePasswordValidationMixin, forms.ModelForm):
         return user
 
 
-class UserUpdateForm(forms.ModelForm):
+class UserUpdateForm(_ManagerRequiresDepartmentMixin, forms.ModelForm):
     """Admin sửa user (FR-USER-01 UPDATE): đổi role, deactivate (is_active), thông tin.
 
     Không cho sửa ``username`` (khoá định danh) và không đụng mật khẩu ở đây.
@@ -158,6 +191,12 @@ class UserUpdateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # L6: model field `role` có blank=True (để cho phép seed/migration tạo user
+        # chưa gán role) nhưng form sửa không nên để admin bỏ trống role của 1 user
+        # đang tồn tại — `codenames_for_role('')` trả về rỗng (mất hết quyền CRUD,
+        # chỉ còn quyền xem menu), khác hẳn ý định thật là "chưa phân loại". Mirror
+        # UserCreateForm đã required=True sẵn.
+        self.fields['role'].required = True
         _bootstrapify(self.fields)
 
 

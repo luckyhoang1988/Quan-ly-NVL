@@ -15,3 +15,12 @@ from django.contrib.auth.backends import ModelBackend
 class DirectPermissionsBackend(ModelBackend):
     def get_group_permissions(self, user_obj, obj=None):
         return set()
+
+    def user_can_authenticate(self, user):
+        """Chặn thêm ``is_deleted`` bên cạnh ``is_active`` mặc định của
+        ``ModelBackend`` (M2). ``User.save()`` đã ép ``is_deleted=True ⇒
+        is_active=False`` ở mọi đường ghi qua ``.save()``, nhưng
+        ``QuerySet.update()``/raw SQL vẫn có thể bypass ``save()`` hoàn toàn —
+        check ở đây là lớp phòng thủ thứ 2, không phụ thuộc invariant kia có
+        còn đúng hay không."""
+        return super().user_can_authenticate(user) and not user.is_deleted

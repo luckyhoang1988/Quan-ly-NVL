@@ -12,6 +12,7 @@ không tạo bảng audit riêng.
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.urls import reverse
 from django.utils import timezone
 
 
@@ -49,6 +50,11 @@ class Grn(models.Model):
 
     def __str__(self):
         return self.grn_no
+
+    def get_absolute_url(self):
+        """M9: đích deep-link cho ``Notification``/``AuditLog`` gắn với GRN này —
+        ``accounts.views.notification_mark_read`` chuyển hướng tới đây nếu có."""
+        return reverse('receiving:grn_detail', args=[self.pk])
 
     @property
     def current_department(self):
@@ -175,3 +181,9 @@ class GrnReturn(models.Model):
 
     def __str__(self):
         return f'RETURN-{self.grn.grn_no}'
+
+    def get_absolute_url(self):
+        """M9: GrnReturn không có trang detail riêng — hiển thị lồng trong
+        ``grn_detail`` của GRN cha (``receiving.views.grn_detail`` liệt kê
+        ``grn.returns``), nên deep-link trỏ về đúng trang đó."""
+        return reverse('receiving:grn_detail', args=[self.grn_id])

@@ -612,6 +612,22 @@ class PoListPaginationFilterTest(TestCase):
         self.assertEqual(po_nos, ['PO-TEST-0001'])
 
 
+class PurchaseRequestModelTest(TestCase):
+    """PR model — ``TC-PR-MODEL-<seq>``."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff2', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-02', name='Kho phụ', warehouse_type=Warehouse.WarehouseType.MAIN)
+
+    def test_TC_PR_MODEL_001_get_absolute_url_points_to_pr_detail(self):
+        """M9: Notification/AuditLog gắn với PR phải deep-link được tới đúng
+        trang chi tiết của nó."""
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        self.assertEqual(pr.get_absolute_url(), reverse('purchasing:pr_detail', args=[pr.pk]))
+
+
 class PurchaseRequestCrudTest(TestCase):
     """PR (Yêu cầu mua hàng, bổ sung ngoài FR) — Tab 1 của Purchasing. STAFF (hoặc
     nhân viên phòng khác) tạo được (không tự duyệt); duyệt/từ chối đi qua
