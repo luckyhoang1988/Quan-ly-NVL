@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -14,6 +15,7 @@ from partners.models import Supplier
 from receiving.models import Grn, GrnItem
 from warehouse.models import Warehouse
 
+from . import views as purchasing_views
 from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
@@ -185,6 +187,42 @@ class PurchaseOrderCrudTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
         item.refresh_from_db()
         self.assertEqual(item.qty_ordered, 20)
+
+    def test_TC_PUR_001_013_concurrent_approve_during_update_not_overwritten(self):
+        """BUG-02: nếu PO chuyển trạng thái (được duyệt bởi request khác) đúng
+        vào khoảng hở giữa lần đọc đối tượng đầu tiên của ``po_update`` và lúc
+        view khóa row bằng ``select_for_update()`` để lưu, view phải nhận ra
+        status mới (không phải bản DRAFT cũ còn giữ trong bộ nhớ) và từ chối
+        lưu — không được ghi đè PO đã APPROVED trở lại DRAFT."""
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('10000.00'))
+
+        real_get_object_or_404 = purchasing_views.get_object_or_404
+        call_count = {'n': 0}
+
+        def _sneaky_get_object_or_404(*args, **kwargs):
+            call_count['n'] += 1
+            if call_count['n'] == 2:
+                # Mô phỏng 1 request khác vừa duyệt PO này, đúng lúc request hiện
+                # tại đã qua check DRAFT ban đầu và sắp khóa row để lưu.
+                PurchaseOrder.objects.filter(pk=po.pk).update(status=PurchaseOrder.Status.APPROVED)
+            return real_get_object_or_404(*args, **kwargs)
+
+        with patch('purchasing.views.get_object_or_404', side_effect=_sneaky_get_object_or_404):
+            response = self.client.post(
+                reverse('purchasing:po_update', args=[po.pk]),
+                self._payload(**{
+                    'items-INITIAL_FORMS': '1',
+                    'items-0-id': item.pk,
+                    'items-0-qty_ordered': 20,
+                }),
+            )
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[po.pk]))
+        po.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(po.status, PurchaseOrder.Status.APPROVED)
+        self.assertEqual(item.qty_ordered, 5)
 
 
 class PoNoGenerationTest(TestCase):
@@ -1035,6 +1073,32 @@ class PurchaseRequestCrudTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
         self.assertEqual(pr.note, 'Đã sửa')
+
+    def test_TC_PR_001_012b_concurrent_submit_during_update_not_overwritten(self):
+        """BUG-02: nếu PR được chính chủ nộp (qua request khác) đúng vào khoảng
+        hở giữa lần đọc đối tượng đầu tiên của ``pr_update`` và lúc view khóa
+        row bằng ``select_for_update()`` để lưu, view phải nhận ra status mới
+        (không phải bản DRAFT cũ còn giữ trong bộ nhớ) và từ chối lưu — không
+        được ghi đè PR đã PENDING_DEPT/PENDING_PUR trở lại DRAFT."""
+        self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+
+        real_get_object_or_404 = purchasing_views.get_object_or_404
+        call_count = {'n': 0}
+
+        def _sneaky_get_object_or_404(*args, **kwargs):
+            call_count['n'] += 1
+            if call_count['n'] == 2:
+                submit_purchase_request(pr, actor=self.staff)
+            return real_get_object_or_404(*args, **kwargs)
+
+        with patch('purchasing.views.get_object_or_404', side_effect=_sneaky_get_object_or_404):
+            response = self.client.post(
+                reverse('purchasing:pr_update', args=[pr.pk]), self._payload(note='Sửa trong lúc đua'))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
+        pr.refresh_from_db()
+        self.assertNotEqual(pr.status, PurchaseRequest.Status.DRAFT)
+        self.assertNotEqual(pr.note, 'Sửa trong lúc đua')
 
     def test_TC_PR_001_013_submit_only_allowed_while_draft_and_owner(self):
         self.client.post(reverse('purchasing:pr_create'), self._payload())

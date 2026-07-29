@@ -1,5 +1,6 @@
 import datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -15,8 +16,9 @@ from inventory.models import Batch, Inventory
 from quality.models import QcInspection
 from warehouse.models import Location, Warehouse
 
+from . import views as receiving_views
 from .models import Grn, GrnItem, GrnReturn
-from .services import approve_return, close_grn, close_return, mark_return_returned
+from .services import approve_return, close_grn, close_return, mark_return_returned, request_submission
 
 User = get_user_model()
 
@@ -499,6 +501,41 @@ class GrnViewTest(TestCase):
         self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
         self.assertEqual(grn.status, Grn.Status.PENDING_APPROVAL)
         self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_id=str(grn.pk)).exists())
+
+    def test_TC_GRN_VIEW_001_005_concurrent_submit_during_update_not_overwritten(self):
+        """BUG-02: nếu GRN được nộp (qua request khác) đúng vào khoảng hở giữa
+        lần đọc đối tượng đầu tiên của ``grn_update`` và lúc view khóa row bằng
+        ``select_for_update()`` để lưu, view phải nhận ra status mới (không
+        phải bản DRAFT cũ còn giữ trong bộ nhớ) và từ chối lưu — không được
+        ghi đè GRN đã PENDING_APPROVAL trở lại DRAFT."""
+        grn = self._create_grn()
+        item = grn.items.first()
+
+        real_get_object_or_404 = receiving_views.get_object_or_404
+        call_count = {'n': 0}
+
+        def _sneaky_get_object_or_404(*args, **kwargs):
+            call_count['n'] += 1
+            if call_count['n'] == 2:
+                # Mô phỏng 1 request khác vừa nộp GRN này, đúng lúc request hiện
+                # tại đã qua check DRAFT ban đầu và sắp khóa row để lưu.
+                request_submission(grn, actor=self.staff)
+            return real_get_object_or_404(*args, **kwargs)
+
+        with patch('receiving.views.get_object_or_404', side_effect=_sneaky_get_object_or_404):
+            response = self.client.post(
+                reverse('receiving:grn_update', args=[grn.pk]),
+                self._create_payload(**{
+                    'items-INITIAL_FORMS': '1',
+                    'items-0-id': item.pk,
+                    'items-0-qty_ordered': 20,
+                }),
+            )
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        grn.refresh_from_db()
+        item.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.PENDING_APPROVAL)
+        self.assertEqual(item.qty_ordered, 10)
 
     def test_TC_GRN_VIEW_002_001_submit_transitions_draft_to_pending_approval(self):
         grn = self._create_grn()

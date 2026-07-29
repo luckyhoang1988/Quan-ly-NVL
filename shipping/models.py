@@ -105,6 +105,15 @@ class Gin(models.Model):
 
 
 class GinItem(models.Model):
+    """1 sản phẩm chỉ được xuất hiện tối đa 1 dòng/GIN (``unique_product_per_gin``,
+    BUG-04, 2026-07-29) — 2 dòng cùng sản phẩm sẽ khiến ``start_picking`` gọi
+    ``suggest_fifo_batches`` độc lập cho từng dòng, mỗi lần đọc ``qty_available``
+    của cùng 1 batch mà không biết dòng kia vừa "đặt chỗ" phần nào, có thể cùng
+    phân bổ chồng lên cùng batch vượt tồn thực tế. ``GinItemFormSet`` tự báo lỗi
+    trùng nhờ constraint này (Django validate_unique xử lý cả UniqueConstraint
+    không điều kiện, không chỉ ``unique_together``).
+    """
+
     gin = models.ForeignKey(Gin, on_delete=models.CASCADE, related_name='items', verbose_name='Phiếu GIN')
     product = models.ForeignKey(
         'catalog.Product', on_delete=models.PROTECT, related_name='gin_items', verbose_name='Sản phẩm')
@@ -115,6 +124,9 @@ class GinItem(models.Model):
         help_text='FR-GIN-05: qty thực xuất, có thể khác qty_requested.')
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['gin', 'product'], name='unique_product_per_gin'),
+        ]
         verbose_name = 'Dòng phiếu xuất kho'
         verbose_name_plural = 'Dòng phiếu xuất kho'
 

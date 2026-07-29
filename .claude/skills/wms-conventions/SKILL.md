@@ -367,6 +367,17 @@ trùng lặp và dễ lệch nhau.
    (`user_admin_required`, `audit_log_required` ở `accounts/views.py`) — thêm điều kiện
    `and request.user.can_view_menu('user_mgmt'/'audit_log')` NGAY TRONG decorator, tự áp dụng cho mọi view
    dùng decorator đó, không cần sửa từng view con.
+
+   **Nếu module đó có 1 thao tác GHI bên trong** (vd `inventory.views.transfer_create`, FR-WM-06) —
+   `can_view_menu(key)` chỉ gate được "xem", KHÔNG đủ để gate "ghi": mọi role có menu vẫn qua được nếu chỉ
+   check `can_view_menu`. Cần thêm 1 hàm actor-gate riêng kiểu `can_decide_handoff` (mục 5, viết ở view,
+   KHÔNG viết ở model — module này không có cột CRUD trong `MODULES` nên không dùng được
+   `user.can(action, module)`) và AND cả 2 điều kiện lại — xem `inventory.views.can_transfer_inventory`
+   (BUG-05, 2026-07-29: trước đó `transfer_create`/`transfer_list` chỉ có `@login_required`, không
+   `can_view_menu` lẫn actor-gate nào, nên bất kỳ user đăng nhập nào — kể cả QC/Kế toán/Mua hàng, hoặc user
+   đã bị thu hồi menu — POST thẳng được để điều chuyển tồn kho thật). View chỉ đọc (list/detail) trong cùng
+   module thì vẫn chỉ cần `can_view_menu` như bình thường — không áp actor-gate của thao tác ghi lên các view
+   đọc, giữ đúng nguyên tắc "xem" và "ghi" là 2 quyền tách biệt.
 3. **Trang "Phân quyền chi tiết"** — `menu_rows` (context của `user_permission_edit`) build từ `MENU_ITEMS`,
    render trong khối `<div class="card mt-3">` "Ứng dụng được phép truy cập" (`user_permission_form.html`) —
    checkbox độc lập, KHÔNG nằm trong bảng CRUD.

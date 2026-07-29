@@ -346,6 +346,18 @@ names, exact dates) live in `git log`, not here.
   new oversight role (ADMIN/superuser) to one without the other is a standing trap (e.g. the handoff
   sidebar link and `can_decide_handoff()` originally disagreed on whether ADMIN counted). Grep the target
   view's permission helper whenever a sidebar visibility condition is touched.
+- **`can_view_menu(key)` alone only gates "view"; a write action living inside a menu-only module (no
+  `MODULES` CRUD column) needs its own actor-gate function too** — `can_view_menu` being satisfied says
+  nothing about who may mutate. `inventory.views.transfer_create`/`transfer_list` (BUG-05, 2026-07-29) had
+  only `@login_required` — no `can_view_menu('inventory')`, no role/department check — so any logged-in
+  user (QC, Accountant, Purchasing) could POST a real stock transfer, and revoking a user's "Tồn kho" menu
+  access didn't stop them either. Fixed the same shape as `can_decide_handoff`: added
+  `inventory.views.can_transfer_inventory(user)` (role in `{ADMIN, MANAGER, STAFF}` or superuser — those are
+  the roles already carrying create/update on `grn`/`gin`/`opname` in `ROLE_PERMISSIONS`, i.e. the "Kho"
+  roles by their own Vietnamese labels) and AND'd it with `can_view_menu('inventory')` in `transfer_create`;
+  `transfer_list` (read-only history) only needed the `can_view_menu` check to match its sibling
+  `inventory_list`. Apply generally: whenever a menu-only module gains a write action, add a dedicated
+  actor-gate for that action specifically — don't assume `can_view_menu` on the module covers it.
 
 ### Established patterns to apply proactively (from accumulated bug fixes)
 
@@ -363,7 +375,47 @@ rather than rediscovering the failure.
   the paired service function must re-assert every one of those constraints itself (grep the form's
   queryset filters and confirm a matching check exists in the service). The idiom
   `Q(is_active=True) | Q(pk=self.instance.fk_id)` keeps a since-deactivated value selectable when editing an
-  existing record, without allowing it on create.
+  existing record, without allowing it on create. The same staleness risk exists **across two steps of one
+  multi-step workflow**, not just form-vs-service: `shipping.services.issue_gin` only re-checked
+  `qty_allocated <= batch.qty_available` at issue time, trusting the batch's `status`/`exp_date`/
+  `product`/`warehouse` were still whatever `suggest_fifo_batches` validated back at `start_picking` —
+  but a `GinBatchAllocation` can sit in `PICKING` for days, during which the batch can expire (no cron
+  syncs `EXPIRED` between requests), get overridden to `QUARANTINE`, or get `transfer_stock`'d to another
+  warehouse. Fixed by re-asserting `status IN (ACTIVE, PARTIAL_USED)` + `exp_date`/`product_id`/
+  `location.warehouse_id` inside `issue_gin` itself, under the same `select_for_update()` lock as the qty
+  check. Apply generally: whenever a later step of a workflow consumes a reference selected/validated by an
+  earlier step, re-validate the full set of invariants at the later step too, not just the one invariant
+  (usually qty) that happens to be racy. **`shipping.services.override_allocation` had the same gap the
+  other direction** (BUG-03, 2026-07-29): it read `gin`/`allocation`/`new_batch` straight off the caller's
+  in-memory objects with zero locking, so a concurrent `issue_gin()` on the same GIN could deduct inventory
+  from the pre-override batch while the override committed the allocation row pointing at a different
+  batch — allocation and the actual stock deduction would disagree, with no way to recover which batch was
+  really issued. Fixed by locking in the same order `issue_gin` already locks in — **GIN → GinItem →
+  Allocation → Batch → Inventory is the standing lock order for the whole GIN workflow; any new
+  GIN-mutating function must acquire locks in this order** (locking the GIN row first is what serializes
+  `override_allocation` against `issue_gin` on the same GIN; independently locking the target batch also
+  serializes two concurrent overrides that happen to target the same batch across different GINs) — and
+  re-reading `gin.status`/`allocation`/`new_batch` fresh from the DB under those locks before repeating every
+  existing check (product/warehouse/status/qty), rather than trusting the caller's objects at all. Tested
+  deterministically (no threading precedent in this repo — see the `*_update` TOCTOU bullet below for the
+  established substitute): mutate the DB directly between fetching a "stale" Python object and calling the
+  service, then assert the service doesn't trust it.
+- **A per-target quantity check must sum every existing claim on that target, not just the one being
+  changed** — `shipping.services.override_allocation` (BUG-04, 2026-07-29) checked
+  `new_batch.qty_available < allocation.qty_allocated` using only the allocation being overridden, so two
+  allocations from the same GIN (e.g. one `GinItem` FIFO-split across two batches) could each override onto
+  the same batch and independently pass the check while their *sum* exceeded `qty_available` — `issue_gin`
+  would then fail partway through with the GIN stuck in `PICKING` and no user-facing way to fix it besides
+  cancelling. Fixed by summing every other `GinBatchAllocation` already pointing at `new_batch` within the
+  same GIN (`gin_item__gin=gin`, excluding the current allocation's own pk) and comparing that total against
+  `qty_available`, not just the one row being changed. The companion half of the same bug — two separate
+  `GinItem` rows for the *same product* on one GIN independently double-booking a batch during
+  `start_picking` (each calls `suggest_fifo_batches` on its own, blind to the other's in-flight plan) — is
+  closed structurally instead: `GinItem.Meta` now has `UniqueConstraint(fields=['gin', 'product'],
+  name='unique_product_per_gin')`, one line per product per GIN. Apply the general lesson elsewhere: any
+  "does X fit in Y" check on a shared, not-yet-committed resource (a batch during PICKING, before `issue_gin`
+  actually decrements it) must aggregate every other pending claim on that same resource, not compare the
+  one claim being validated in isolation.
 - **"At most/at least N of X" invariants need both directions guarded** — e.g. the warehouse-type singleton
   (STAGING/SCRAP) needed both `deactivate_warehouse()` *and* `activate_warehouse()` to check the other side;
   "a warehouse needs ≥1 active location" needed a guard on deactivating a `Location` too, not just at
@@ -390,6 +442,25 @@ rather than rediscovering the failure.
   segment already scoped by permission) must re-check ownership/visibility and status inside the
   transaction (`select_for_update()` + re-validate), not only via a pre-transaction `get_object_or_404` —
   closes both "guess another user's pk" and the TOCTOU race between two concurrent submits.
+- **This TOCTOU guard also applies to the `*_update` DRAFT-only edit views** (`po_update`, `pr_update`,
+  `grn_update`), even though their pk *is* a URL path segment already scoped by permission — a
+  URL-scoped pk only proves the actor is allowed to edit *some* object at that pk, not that its status
+  hasn't changed since the request's own `get_object_or_404` ran (BUG-02, 2026-07-29). The unsafe shape:
+  check `obj.status == DRAFT` once at the top, then later call `form.save()`/`formset.save()` on that same
+  `obj` inside `transaction.atomic()` — if another request transitions the row in between (e.g. approves
+  it), `ModelForm.save()` does a full-row `UPDATE` using the in-memory instance, so any field the form
+  doesn't own (like `status`) still holds the stale pre-transition value and gets written straight back
+  over the real one, silently reverting an approved/submitted document to DRAFT and desyncing any
+  `Approval` row already opened for it. Fix shape: only lock+re-check+re-bind on `POST` — construct a
+  fresh form bound to `Model.objects.select_for_update().get(pk=pk)` *inside* `transaction.atomic()`, after
+  re-checking `.status == DRAFT` on that freshly locked row, and call `is_valid()`/`save()` on that new
+  form/instance; reassigning `form.instance` to the locked row after the original `is_valid()` already ran
+  does **not** work, since `construct_instance` (which copies `cleaned_data` onto `instance`) only runs
+  during that original `full_clean()` — the swapped-in instance never receives the user's edits. No
+  `TransactionTestCase`/threading precedent exists in this repo for regression-testing the race itself;
+  the established substitute is patching `get_object_or_404` in the view module with a `side_effect` that
+  mutates the row's status on the *second* call (the locked re-fetch) — deterministic, no real concurrency
+  needed, and it fails on the old code path while passing on the fixed one.
 - **Login rate limiting**: IP-keyed counter in Django's default `LocMemCache` (`accounts.forms.LoginForm`,
   5 attempts / 15 min). `client_ip()` only trusts `X-Forwarded-For` when `settings.TRUST_X_FORWARDED_FOR` is
   explicitly `True` (no reverse proxy yet — an unconditionally-trusted XFF header is a rate-limit bypass).

@@ -14,9 +14,11 @@
       <a href="{% url 'inventory:batch_list' %}" class="btn btn-outline-secondary btn-sm">
         <i class="bi bi-box-seam"></i> Danh sách lô hàng
       </a>
+      {% if can_transfer_inventory %}
       <a href="{% url 'inventory:transfer_create' %}" class="btn btn-primary btn-sm">
         <i class="bi bi-plus-lg"></i> Điều chuyển mới
       </a>
+      {% endif %}
     </div>
   </div>
   <div class="card-body">

@@ -23,6 +23,7 @@ log_action`` — cùng convention với ``quality.services``/``receiving.service
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from accounts.approvals import create_approval, decide_approval
@@ -159,13 +160,40 @@ def override_allocation(allocation, new_batch, reason, actor=None, ip_address=No
     ``location__warehouse`` (bug fix 2026-07-27, xem CLAUDE.md) — service
     không được phụ thuộc hoàn toàn vào queryset đã lọc của form, cùng lý do
     đã nêu trong docstring của form.
+
+    BUG-03: khoá GIN -> Allocation -> Batch (cùng thứ tự ``issue_gin`` khoá
+    GIN trước tiên) trước khi đọc/ghi — nếu không, ``issue_gin`` có thể đọc
+    allocation đang trỏ batch cũ ngay trước khi override đổi nó sang batch
+    mới và commit, khiến tồn kho bị trừ trên batch khác với batch mà
+    allocation đã lưu lại.
+
+    BUG-04: check ``qty_available`` phải cộng luôn các allocation KHÁC (của
+    GIN này) đang cùng trỏ vào ``new_batch`` — không chỉ so với
+    ``allocation.qty_allocated`` của riêng dòng đang đổi. Nếu không, 2 dòng
+    cùng override sang 1 batch có thể lần lượt qua được check (mỗi lần chỉ
+    so 1 mình nó với ``qty_available``) trong khi tổng cộng vượt tồn thực tế
+    của batch, khiến ``issue_gin`` sau đó fail giữa chừng và GIN kẹt ở
+    PICKING không có cách sửa ngoài huỷ.
     """
-    gin_item = allocation.gin_item
-    gin = gin_item.gin
-    if gin.status != Gin.Status.PICKING:
-        raise ValidationError('Chỉ có thể đổi batch khi GIN đang ở trạng thái PICKING.')
     if not reason:
         raise ValidationError('Phải ghi lý do khi đổi batch.')
+
+    gin = Gin.objects.select_for_update().get(pk=allocation.gin_item.gin_id)
+    if gin.status != Gin.Status.PICKING:
+        raise ValidationError('Chỉ có thể đổi batch khi GIN đang ở trạng thái PICKING.')
+
+    allocation = (
+        GinBatchAllocation.objects.select_for_update()
+        .select_related('gin_item__product', 'batch')
+        .get(pk=allocation.pk)
+    )
+    gin_item = allocation.gin_item
+
+    new_batch = (
+        Batch.objects.select_for_update()
+        .select_related('location__warehouse')
+        .get(pk=new_batch.pk)
+    )
     if new_batch.product_id != gin_item.product_id:
         raise ValidationError('Batch mới phải cùng sản phẩm với dòng hàng.')
     if new_batch.location.warehouse_id != gin.warehouse_id:
@@ -173,10 +201,16 @@ def override_allocation(allocation, new_batch, reason, actor=None, ip_address=No
     if new_batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
         raise ValidationError(
             'Chỉ được chọn batch đang ACTIVE hoặc đã dùng một phần (không QUARANTINE/EXPIRED).')
-    if new_batch.qty_available < allocation.qty_allocated:
+
+    other_allocated = GinBatchAllocation.objects.filter(
+        gin_item__gin=gin, batch=new_batch,
+    ).exclude(pk=allocation.pk).aggregate(total=Sum('qty_allocated'))['total'] or 0
+    required_total = other_allocated + allocation.qty_allocated
+    if required_total > new_batch.qty_available:
         raise ValidationError(
             f'Batch "{new_batch.batch_code}" chỉ còn {new_batch.qty_available}, '
-            f'không đủ {allocation.qty_allocated}.'
+            f'nhưng tổng phân bổ sau khi đổi sẽ là {required_total} '
+            f'(đã có {other_allocated} từ dòng khác trong cùng GIN dùng batch này).'
         )
 
     old_batch = allocation.batch
@@ -206,6 +240,14 @@ def issue_gin(gin, actor=None, ip_address=None):
     trước khi trừ (phòng batch đã bị GIN khác dùng bớt sau khi suggest/
     override). BR-GIN-006: batch hết hàng (qty_available == 0 sau khi trừ)
     -> CLOSED; còn lại vẫn ACTIVE -> PARTIAL_USED.
+
+    ``suggest_fifo_batches``/FIFO override chỉ lọc status ACTIVE/PARTIAL_USED
+    và loại EXPIRED (BR-GIN-007) tại thời điểm PICKING — batch có thể hết hạn,
+    chuyển QUARANTINE, hoặc bị ``transfer_stock`` sang kho khác *sau* lúc đó
+    nhưng *trước* khi bấm "Xuất kho" (không có cron đồng bộ EXPIRED). Cùng
+    convention "form/suggest filter, service phải tự re-validate lại" —
+    issue_gin phải tự kiểm tra lại status/exp_date/product/warehouse ngay
+    trước khi trừ, không tin allocation đã tạo từ lúc suggest là còn hợp lệ.
     """
     gin = Gin.objects.select_for_update().get(pk=gin.pk)
     if gin.status != Gin.Status.PICKING:
@@ -218,7 +260,22 @@ def issue_gin(gin, actor=None, ip_address=None):
 
         qty_issued = 0
         for alloc in allocations:
-            batch = Batch.objects.select_for_update().get(pk=alloc.batch_id)
+            batch = (
+                Batch.objects.select_for_update()
+                .select_related('location__warehouse')
+                .get(pk=alloc.batch_id)
+            )
+            if batch.status not in (Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED):
+                raise ValidationError(
+                    f'Batch "{batch.batch_code}" không còn khả dụng để xuất '
+                    f'({batch.get_status_display()}).'
+                )
+            if batch.exp_date and batch.exp_date < timezone.now().date():
+                raise ValidationError(f'Batch "{batch.batch_code}" đã hết hạn.')
+            if batch.product_id != item.product_id:
+                raise ValidationError('Batch không thuộc sản phẩm của dòng GIN.')
+            if batch.location.warehouse_id != gin.warehouse_id:
+                raise ValidationError('Batch không còn nằm trong kho xuất của GIN.')
             if alloc.qty_allocated > batch.qty_available:
                 raise ValidationError(
                     f'Batch "{batch.batch_code}" không còn đủ {alloc.qty_allocated} '

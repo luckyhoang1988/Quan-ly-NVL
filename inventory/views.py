@@ -2,10 +2,13 @@
 cảnh báo Min/Max Level (FR-WM-04/05), danh sách/chi tiết lô hàng (FR-INV-01)
 kèm cảnh báo lô sắp hết hạn (FR-INV-02), và điều chuyển tồn kho (FR-WM-06).
 Phần dashboard/lô hàng vẫn read-only (dữ liệu do GRN/QC/GIN/Stocktake ghi qua
-``inventory.services``); điều chuyển là thao tác ghi duy nhất của app này
-nhưng cũng không cần permission theo module (giống ``warehouse``/``catalog``:
-mọi user đã đăng nhập đều dùng được — BACKLOG không có cột 'inventory' riêng
-trong Permission Matrix).
+``inventory.services``). Điều chuyển là thao tác ghi duy nhất của app này —
+không có cột 'inventory' riêng trong Permission Matrix CRUD nên không dùng
+``user.can(...)``, nhưng vẫn phải qua ``can_view_menu('inventory')`` (giống
+``inventory_list``) VÀ ``can_transfer_inventory()`` (giống ``can_decide_handoff``)
+— nếu không thì bất kỳ user đã đăng nhập nào (kể cả QC/Kế toán/Mua hàng, hoặc
+user đã bị thu hồi quyền menu Tồn kho) cũng POST thẳng được để điều chuyển
+tồn kho thật (BUG-05, 2026-07-29).
 """
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -159,7 +162,26 @@ def batch_detail(request, pk):
         'movements': batch.movements.select_related('created_by').all(),
         'is_expiring_soon': is_expiring_soon,
         'is_stale_quarantine': is_stale_quarantine,
+        'can_transfer_inventory': can_transfer_inventory(request.user),
     })
+
+
+def can_transfer_inventory(user):
+    """Ai được tạo ``StockTransfer`` (FR-WM-06) — thao tác ghi duy nhất của app
+    này, tách biệt với quyền xem (``can_view_menu('inventory')``). Không có cột
+    'inventory' trong Permission Matrix CRUD nên dùng ``role`` trực tiếp thay vì
+    ``user.can(...)``: ADMIN/MANAGER/STAFF đều là role "thuộc Kho" theo đúng
+    nhãn của chúng (``Role.MANAGER`` = "Quản lý kho", ``Role.STAFF`` = "Nhân
+    viên kho") — cùng nhóm role vốn đã có quyền create/update ``grn``/``gin``/
+    ``opname`` trong ``ROLE_PERMISSIONS``, nên điều chuyển tồn kho vật lý nằm
+    trong đúng phạm vi công việc của họ. QC/PURCHASING/ACCOUNTANT (role riêng,
+    không phải "Kho") bị chặn dù vẫn xem được dashboard/lô hàng/lịch sử điều
+    chuyển qua ``can_view_menu('inventory')``.
+    """
+    return (
+        user.is_superuser
+        or user.role in (User.Role.ADMIN, User.Role.MANAGER, User.Role.STAFF)
+    )
 
 
 @login_required
@@ -170,6 +192,10 @@ def transfer_create(request):
     Transaction thật nằm ở ``transfer_stock()`` — view chỉ thu input + hiển
     thị lỗi qua ``messages`` (cùng convention với ``shipping.views.gin_*``).
     """
+    if not request.user.can_view_menu('inventory'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Tồn kho".')
+    if not can_transfer_inventory(request.user):
+        raise PermissionDenied('Bạn không có quyền điều chuyển tồn kho.')
     initial = {}
     batch_id = request.GET.get('batch')
     if batch_id:
@@ -193,6 +219,8 @@ def transfer_create(request):
 @login_required
 def transfer_list(request):
     """FR-WM-06: lịch sử điều chuyển tồn kho (audit trail)."""
+    if not request.user.can_view_menu('inventory'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Tồn kho".')
     transfers = StockTransfer.objects.select_related(
         'batch__product', 'new_batch', 'from_location__warehouse',
         'to_location__warehouse', 'created_by',
@@ -219,6 +247,7 @@ def transfer_list(request):
         'warehouses': Warehouse.objects.filter(is_active=True),
         'selected_warehouse': selected_warehouse,
         'q': q,
+        'can_transfer_inventory': can_transfer_inventory(request.user),
     })
 
 

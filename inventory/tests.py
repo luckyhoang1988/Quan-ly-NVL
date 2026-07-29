@@ -1,6 +1,7 @@
 import datetime
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -916,6 +917,73 @@ class StockTransferViewTest(TestCase):
         transfer_stock(batch=self.batch, to_location=self.location2, qty=10, actor=self.staff)
         response = self.client.get(reverse('inventory:transfer_list'))
         self.assertContains(response, self.location2.code)
+
+    def test_TC_INV_TRF_VIEW_007_qc_role_forbidden_from_create(self):
+        """BUG-05: role QC không thuộc nhóm 'Kho' (ADMIN/MANAGER/STAFF) nên
+        không được tự điều chuyển tồn kho vật lý, dù vẫn có quyền xem menu."""
+        qc = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.client.force_login(qc)
+        response = self.client.post(reverse('inventory:transfer_create'), {
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 5, 'note': '',
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(StockTransfer.objects.count(), 0)
+
+    def test_TC_INV_TRF_VIEW_008_accountant_role_forbidden_from_create(self):
+        """BUG-05."""
+        accountant = User.objects.create_user(
+            username='ketoan1', password='kt-pass-123', role=User.Role.ACCOUNTANT)
+        self.client.force_login(accountant)
+        response = self.client.post(reverse('inventory:transfer_create'), {
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 5, 'note': '',
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(StockTransfer.objects.count(), 0)
+
+    def test_TC_INV_TRF_VIEW_009_purchasing_role_forbidden_from_create(self):
+        """BUG-05."""
+        purchasing = User.objects.create_user(
+            username='mh1', password='mh-pass-123', role=User.Role.PURCHASING)
+        self.client.force_login(purchasing)
+        response = self.client.get(reverse('inventory:transfer_create'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_INV_TRF_VIEW_010_menu_access_revoked_forbids_create_and_list(self):
+        """BUG-05: thu hồi ``can_view_menu_inventory`` phải chặn được cả
+        ``transfer_create`` lẫn ``transfer_list``, không chỉ ``inventory_list``."""
+        perm = Permission.objects.get(
+            codename='can_view_menu_inventory', content_type__app_label='accounts')
+        self.staff.user_permissions.remove(perm)
+        response = self.client.get(reverse('inventory:transfer_create'))
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('inventory:transfer_list'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_INV_TRF_VIEW_011_manager_can_create(self):
+        """BUG-05."""
+        manager = User.objects.create_user(username='ql1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.client.force_login(manager)
+        response = self.client.post(reverse('inventory:transfer_create'), {
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 5, 'note': '',
+        })
+        self.assertRedirects(response, reverse('inventory:transfer_list'))
+
+    def test_TC_INV_TRF_VIEW_012_admin_can_create(self):
+        """BUG-05."""
+        admin = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.client.force_login(admin)
+        response = self.client.post(reverse('inventory:transfer_create'), {
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 5, 'note': '',
+        })
+        self.assertRedirects(response, reverse('inventory:transfer_list'))
+
+    def test_TC_INV_TRF_VIEW_013_qc_can_still_view_transfer_list(self):
+        """BUG-05: hạn chế ở ``transfer_create`` (ghi), không phải ``transfer_list``
+        (xem) — QC vẫn xem được lịch sử điều chuyển như mọi mục inventory khác."""
+        qc = User.objects.create_user(username='qc2', password='qc-pass-123', role=User.Role.QC)
+        self.client.force_login(qc)
+        response = self.client.get(reverse('inventory:transfer_list'))
+        self.assertEqual(response.status_code, 200)
 
 
 class InventoryListPaginationFilterTest(TestCase):

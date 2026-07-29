@@ -203,25 +203,41 @@ def grn_create(request):
 
 @grn_permission_required('update')
 def grn_update(request, pk):
-    """UPDATE — sửa GRN + chi tiết hàng. Chỉ cho sửa khi còn ở state DRAFT."""
+    """UPDATE — sửa GRN + chi tiết hàng. Chỉ cho sửa khi còn ở state DRAFT.
+    Status được re-check dưới ``select_for_update()`` bên trong transaction
+    (không chỉ qua ``get_object_or_404`` trước transaction) để chặn race: nếu
+    GRN bị nộp/duyệt bởi request khác ngay giữa lúc form A đang validate,
+    ``save()`` phải chạy trên bản đã khóa chứ không phải ``obj`` fetch trước
+    đó (vẫn giữ status DRAFT cũ trong bộ nhớ, nếu không sẽ ghi đè status mới
+    xuống DB).
+    """
     obj = get_object_or_404(Grn, pk=pk)
     if obj.status != Grn.Status.DRAFT:
         messages.error(request, f'Không thể sửa GRN "{obj.grn_no}" khi đã qua state DRAFT.')
         return redirect('receiving:grn_detail', pk=obj.pk)
 
-    form = GrnForm(request.POST or None, instance=obj)
-    formset = GrnItemFormSet(request.POST or None, instance=obj, prefix='items')
-    if request.method == 'POST' and form.is_valid() and formset.is_valid():
+    if request.method == 'POST':
         with transaction.atomic():
-            obj = form.save()
-            formset.save()
-        log_action(
-            request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Cập nhật GRN {obj.grn_no}',
-            ip_address=client_ip(request),
-        )
-        messages.success(request, f'Đã cập nhật GRN "{obj.grn_no}".')
-        return redirect('receiving:grn_detail', pk=obj.pk)
+            locked_obj = get_object_or_404(Grn.objects.select_for_update(), pk=pk)
+            if locked_obj.status != Grn.Status.DRAFT:
+                messages.error(
+                    request, f'Không thể sửa GRN "{locked_obj.grn_no}" khi đã qua state DRAFT.')
+                return redirect('receiving:grn_detail', pk=pk)
+            form = GrnForm(request.POST, instance=locked_obj)
+            formset = GrnItemFormSet(request.POST, instance=locked_obj, prefix='items')
+            if form.is_valid() and formset.is_valid():
+                obj = form.save()
+                formset.save()
+                log_action(
+                    request.user, AuditLog.Action.UPDATE, target=obj,
+                    description=f'Cập nhật GRN {obj.grn_no}',
+                    ip_address=client_ip(request),
+                )
+                messages.success(request, f'Đã cập nhật GRN "{obj.grn_no}".')
+                return redirect('receiving:grn_detail', pk=obj.pk)
+    else:
+        form = GrnForm(instance=obj)
+        formset = GrnItemFormSet(instance=obj, prefix='items')
     return render(
         request, 'receiving/grn_form.html',
         {'form': form, 'formset': formset, 'mode': 'update', 'obj': obj},

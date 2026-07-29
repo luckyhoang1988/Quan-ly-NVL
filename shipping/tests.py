@@ -305,6 +305,73 @@ class GinOverrideServiceTest(TestCase):
         self.allocation.refresh_from_db()
         self.assertEqual(self.allocation.batch, partial_batch)
 
+    def test_TC_GIN_OVERRIDE_009_rejects_stale_gin_status_not_reread_from_object(self):
+        """BUG-03: view fetch allocation (kèm ``gin_item__gin`` select_related)
+        rồi 1 request khác chạy ``issue_gin`` xong (PICKING -> ISSUED) *trước*
+        khi override_allocation thực thi — object Python truyền vào vẫn còn
+        ``gin.status == PICKING`` trong bộ nhớ vì được load trước đó. Trước
+        khi vá, service chỉ đọc ``allocation.gin_item.gin`` (stale, không
+        query lại), nên vẫn cho đổi batch dù GIN đã ISSUED. Sau khi vá, service
+        tự khoá + đọc lại GIN từ DB nên phải chặn."""
+        stale_allocation = GinBatchAllocation.objects.select_related(
+            'gin_item__gin', 'gin_item__product').get(pk=self.allocation.pk)
+        self.assertEqual(stale_allocation.gin_item.gin.status, Gin.Status.PICKING)
+
+        self.gin.status = Gin.Status.ISSUED
+        self.gin.save(update_fields=['status'])
+
+        new_batch = self._batch('LOT-NEW', 50)
+        with self.assertRaises(ValidationError):
+            override_allocation(stale_allocation, new_batch, 'lý do', actor=self.manager)
+        self.allocation.refresh_from_db()
+        self.assertEqual(self.allocation.batch, self.suggested_batch)
+
+    def test_TC_GIN_OVERRIDE_010_rejects_stale_qty_allocated_not_reread_from_object(self):
+        """BUG-03: nếu ``qty_allocated`` của allocation đã bị thay đổi trong DB
+        (ví dụ do 1 luồng khác) sau khi object Python được load, service
+        không được tin ``qty_allocated`` cũ trong bộ nhớ khi so với
+        ``new_batch.qty_available`` — phải khoá + đọc lại allocation từ DB."""
+        stale_allocation = GinBatchAllocation.objects.get(pk=self.allocation.pk)
+        self.assertEqual(stale_allocation.qty_allocated, 10)
+
+        GinBatchAllocation.objects.filter(pk=self.allocation.pk).update(qty_allocated=60)
+
+        new_batch = self._batch('LOT-NEW', 50)
+        with self.assertRaises(ValidationError):
+            override_allocation(stale_allocation, new_batch, 'lý do', actor=self.manager)
+        self.allocation.refresh_from_db()
+        self.assertEqual(self.allocation.batch, self.suggested_batch)
+
+    def test_TC_GIN_OVERRIDE_011_rejects_when_total_with_other_allocation_on_same_gin_exceeds_batch(self):
+        """BUG-04: check cũ chỉ so ``new_batch.qty_available`` với
+        ``allocation.qty_allocated`` của riêng dòng đang đổi, không cộng phần
+        batch đó đã bị allocation khác (cùng GIN, vd 2 dòng do FIFO tách 1
+        item thành nhiều batch) chiếm — 2 lần override liên tiếp có thể lần
+        lượt qua được check dù tổng vượt tồn thực tế của batch."""
+        target_batch = self._batch('LOT-TARGET', 10)
+        GinBatchAllocation.objects.create(gin_item=self.item, batch=target_batch, qty_allocated=10)
+        small_batch = self._batch('LOT-SMALL2', 5)
+        second_allocation = GinBatchAllocation.objects.create(
+            gin_item=self.item, batch=small_batch, qty_allocated=5)
+
+        with self.assertRaises(ValidationError):
+            override_allocation(second_allocation, target_batch, 'lý do', actor=self.manager)
+        second_allocation.refresh_from_db()
+        self.assertEqual(second_allocation.batch, small_batch)
+
+    def test_TC_GIN_OVERRIDE_012_allows_when_total_with_other_allocation_fits_batch(self):
+        """Không false-positive: tổng 2 allocation vừa khít ``qty_available``
+        (biên bằng nhau) vẫn phải cho override, không chỉ khi dư ra."""
+        target_batch = self._batch('LOT-TARGET2', 15)
+        GinBatchAllocation.objects.create(gin_item=self.item, batch=target_batch, qty_allocated=10)
+        small_batch = self._batch('LOT-SMALL3', 5)
+        second_allocation = GinBatchAllocation.objects.create(
+            gin_item=self.item, batch=small_batch, qty_allocated=5)
+
+        override_allocation(second_allocation, target_batch, 'lý do', actor=self.manager)
+        second_allocation.refresh_from_db()
+        self.assertEqual(second_allocation.batch, target_batch)
+
 
 class GinIssueServiceTest(TestCase):
     """``issue_gin`` (FR-GIN-04/FR-GIN-05/BR-GIN-006). ``TC-GIN-ISSUE-<seq>``."""
@@ -436,6 +503,78 @@ class GinIssueServiceTest(TestCase):
         self.assertTrue(
             AuditLog.objects.filter(action=AuditLog.Action.APPROVE, target_id=str(gin.pk)).exists())
 
+    def test_TC_GIN_ISSUE_010_rejects_when_batch_expired_after_picking_started(self):
+        """BR-GIN-007: FIFO suggest chỉ loại EXPIRED lúc PICKING — batch hết hạn
+        *sau* khi đã được allocate (không có cron sync) phải bị chặn lại lúc
+        issue, không được trừ Inventory/đổi status batch hết hạn."""
+        batch = self._batch('LOT-0001', 30, exp_date=self.today - datetime.timedelta(days=1))
+        gin, item = self._gin_picking(qty_requested=30)
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=30)
+
+        with self.assertRaises(ValidationError):
+            issue_gin(gin, actor=self.manager)
+
+        gin.refresh_from_db()
+        batch.refresh_from_db()
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(batch.qty_used, 0)
+        self.assertEqual(batch.status, Batch.Status.ACTIVE)
+        self.assertEqual(inv.qty_on_hand, 100)
+
+    def test_TC_GIN_ISSUE_011_rejects_when_batch_becomes_quarantine_after_picking(self):
+        """Batch bị chuyển QUARANTINE (vd QC override/điều chỉnh) sau khi đã
+        được allocate cho GIN — issue phải chặn lại dù qty vẫn còn đủ."""
+        batch = self._batch('LOT-0001', 30)
+        gin, item = self._gin_picking(qty_requested=30)
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=30)
+        batch.status = Batch.Status.QUARANTINE
+        batch.save(update_fields=['status'])
+
+        with self.assertRaises(ValidationError):
+            issue_gin(gin, actor=self.manager)
+
+        gin.refresh_from_db()
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(inv.qty_on_hand, 100)
+
+    def test_TC_GIN_ISSUE_012_rejects_when_batch_moved_to_other_warehouse_after_picking(self):
+        """Batch bị ``transfer_stock`` sang kho khác sau khi đã được allocate —
+        không được xuất theo GIN của kho cũ nữa."""
+        batch = self._batch('LOT-0001', 30)
+        gin, item = self._gin_picking(qty_requested=30)
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=30)
+        other_warehouse = Warehouse.objects.create(code='KHO-HCM', name='Kho Hồ Chí Minh')
+        other_location = Location.objects.create(warehouse=other_warehouse, code='B-01')
+        batch.location = other_location
+        batch.save(update_fields=['location'])
+
+        with self.assertRaises(ValidationError):
+            issue_gin(gin, actor=self.manager)
+
+        gin.refresh_from_db()
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(inv.qty_on_hand, 100)
+
+    def test_TC_GIN_ISSUE_013_rejects_when_batch_status_pending_receipt_despite_sufficient_qty(self):
+        """Batch vẫn đủ qty_available nhưng status không còn ACTIVE/PARTIAL_USED
+        (vd bị trả về PENDING_RECEIPT) — không được chỉ dựa vào qty để xuất."""
+        batch = self._batch('LOT-0001', 30)
+        gin, item = self._gin_picking(qty_requested=30)
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=30)
+        batch.status = Batch.Status.PENDING_RECEIPT
+        batch.save(update_fields=['status'])
+
+        with self.assertRaises(ValidationError):
+            issue_gin(gin, actor=self.manager)
+
+        gin.refresh_from_db()
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(inv.qty_on_hand, 100)
+
 
 class GinCloseServiceTest(TestCase):
     """``close_gin``: ISSUED -> CLOSED (archive). ``TC-GIN-CLOSE-<seq>``."""
@@ -527,6 +666,20 @@ class GinViewTest(TestCase):
         self.product.save(update_fields=['is_active'])
         self.client.force_login(self.staff)
         response = self.client.post(reverse('shipping:gin_create'), self._create_payload())
+        self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không tạo GIN
+        self.assertFalse(Gin.objects.filter(warehouse=self.warehouse).exists())
+
+    def test_TC_GIN_VIEW_001_002c_duplicate_product_rejected_in_item_form(self):
+        """BUG-04: 2 dòng cùng sản phẩm trong 1 GIN phải bị chặn
+        (``unique_product_per_gin``) — nếu không, ``start_picking`` gọi FIFO
+        độc lập cho từng dòng, có thể cùng phân bổ chồng lên 1 batch."""
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('shipping:gin_create'), self._create_payload(**{
+            'items-TOTAL_FORMS': '2',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-1-product': self.product.pk,
+            'items-1-qty_requested': 5,
+        }))
         self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không tạo GIN
         self.assertFalse(Gin.objects.filter(warehouse=self.warehouse).exists())
 

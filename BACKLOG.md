@@ -291,7 +291,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] Edge case: không đủ hàng ở mọi batch cộng lại → error rõ ràng, không cho issue
 - [x] BR-GIN-001: `qty_issued <= qty_available`
 - [x] BR-GIN-006: khi `qty_on_hand` = 0 → `batch.status = CLOSED`
-- [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE (`sync_expired_batches` quét cả `ACTIVE` và `PARTIAL_USED`)
+- [x] BR-GIN-007: `exp_date < today` → warning "Batch expired", GIN không được lấy batch EXPIRED/QUARANTINE (`sync_expired_batches` quét cả `ACTIVE` và `PARTIAL_USED`) — chặn ở lúc suggest FIFO (PICKING) **và** re-validate lại status/exp_date/product/warehouse trong `issue_gin` ngay trước khi trừ kho (bug fix: batch có thể hết hạn/chuyển QUARANTINE/bị transfer sang kho khác *giữa* lúc PICKING và lúc bấm "Xuất kho", không có cron đồng bộ EXPIRED)
 - [x] BR-GIN-008: GIN chỉ được chọn kho `warehouse_type=MAIN` (`GinForm.warehouse` giới hạn queryset + `Gin.clean()` chặn ở tầng model, dropdown filter ở `gin_list` cùng convention) — bắt buộc vì FIFO chỉ lọc `status IN ('ACTIVE','PARTIAL_USED')`, không tự loại được batch đang nằm ở Kho chờ (STAGING) dù batch đó cũng cùng status; ràng buộc kho là lớp chặn duy nhất
 
 ### ✅ Definition of Done — Phase 3

@@ -431,25 +431,40 @@ def po_update(request, pk):
     """UPDATE — sửa PO + chi tiết đơn hàng. Chỉ cho sửa khi còn ở state DRAFT
     (mirror ``receiving.views.grn_update``) — sau APPROVED, trạng thái chỉ đổi
     qua transition (``po_approve``/``po_send``/``po_close``), không sửa tay.
+    Status được re-check dưới ``select_for_update()`` bên trong transaction
+    (không chỉ qua ``get_object_or_404`` trước transaction) để chặn race: nếu
+    PO bị duyệt bởi request khác ngay giữa lúc form A đang validate, ``save()``
+    trên instance cũ (còn giữ status DRAFT trong bộ nhớ) sẽ ghi đè status mới
+    xuống DB — instance dùng để save phải là bản đã khóa, không phải ``obj``
+    fetch trước đó.
     """
     obj = get_object_or_404(PurchaseOrder, pk=pk)
     if obj.status != PurchaseOrder.Status.DRAFT:
         messages.error(request, f'Không thể sửa PO "{obj.po_no}" khi đã qua state DRAFT.')
         return redirect('purchasing:po_detail', pk=obj.pk)
 
-    form = PurchaseOrderForm(request.POST or None, instance=obj)
-    formset = PurchaseOrderItemFormSet(request.POST or None, instance=obj, prefix='items')
-    if request.method == 'POST' and form.is_valid() and formset.is_valid():
+    if request.method == 'POST':
         with transaction.atomic():
-            obj = form.save()
-            formset.save()
-        log_action(
-            request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Cập nhật PO {obj.po_no}',
-            ip_address=client_ip(request),
-        )
-        messages.success(request, f'Đã cập nhật PO "{obj.po_no}".')
-        return redirect('purchasing:po_detail', pk=obj.pk)
+            locked_obj = get_object_or_404(PurchaseOrder.objects.select_for_update(), pk=pk)
+            if locked_obj.status != PurchaseOrder.Status.DRAFT:
+                messages.error(
+                    request, f'Không thể sửa PO "{locked_obj.po_no}" khi đã qua state DRAFT.')
+                return redirect('purchasing:po_detail', pk=pk)
+            form = PurchaseOrderForm(request.POST, instance=locked_obj)
+            formset = PurchaseOrderItemFormSet(request.POST, instance=locked_obj, prefix='items')
+            if form.is_valid() and formset.is_valid():
+                obj = form.save()
+                formset.save()
+                log_action(
+                    request.user, AuditLog.Action.UPDATE, target=obj,
+                    description=f'Cập nhật PO {obj.po_no}',
+                    ip_address=client_ip(request),
+                )
+                messages.success(request, f'Đã cập nhật PO "{obj.po_no}".')
+                return redirect('purchasing:po_detail', pk=obj.pk)
+    else:
+        form = PurchaseOrderForm(instance=obj)
+        formset = PurchaseOrderItemFormSet(instance=obj, prefix='items')
     return render(
         request, 'purchasing/po_form.html',
         {'form': form, 'formset': formset, 'mode': 'update', 'obj': obj},
@@ -669,7 +684,12 @@ def pr_update(request, pk):
     """UPDATE — sửa PR + chi tiết đơn hàng. Chỉ cho sửa khi còn DRAFT (mirror
     ``po_update``) và chỉ đúng chủ hoặc người có tầm nhìn toàn bộ mới sửa được
     (mirror check hiển thị ở ``pr_detail`` — quyền module ``update`` một mình
-    không đủ, còn phải đúng người).
+    không đủ, còn phải đúng người). Cả sở hữu lẫn status được re-check dưới
+    ``select_for_update()`` bên trong transaction — không chỉ tin vào check
+    trước transaction — để chặn race: PR có thể vừa được submit/duyệt bởi
+    request khác ngay giữa lúc form đang validate, và ``save()`` phải chạy
+    trên bản đã khóa chứ không phải ``obj`` fetch trước đó (vẫn giữ status
+    DRAFT cũ trong bộ nhớ).
     """
     obj = get_object_or_404(PurchaseRequest, pk=pk)
     if not _pr_can_edit(request.user, obj):
@@ -678,19 +698,30 @@ def pr_update(request, pk):
         messages.error(request, f'Không thể sửa yêu cầu "{obj.request_no}" khi đã qua state Nháp.')
         return redirect('purchasing:pr_detail', pk=obj.pk)
 
-    form = PurchaseRequestForm(request.POST or None, instance=obj)
-    formset = PurchaseRequestItemFormSet(request.POST or None, instance=obj, prefix='items')
-    if request.method == 'POST' and form.is_valid() and formset.is_valid():
+    if request.method == 'POST':
         with transaction.atomic():
-            obj = form.save()
-            formset.save()
-        log_action(
-            request.user, AuditLog.Action.UPDATE, target=obj,
-            description=f'Cập nhật yêu cầu mua hàng {obj.request_no}',
-            ip_address=client_ip(request),
-        )
-        messages.success(request, f'Đã cập nhật yêu cầu mua hàng "{obj.request_no}".')
-        return redirect('purchasing:pr_detail', pk=obj.pk)
+            locked_obj = get_object_or_404(PurchaseRequest.objects.select_for_update(), pk=pk)
+            if not _pr_can_edit(request.user, locked_obj):
+                raise PermissionDenied('Bạn chỉ sửa được yêu cầu mua hàng do chính mình tạo.')
+            if locked_obj.status != PurchaseRequest.Status.DRAFT:
+                messages.error(
+                    request, f'Không thể sửa yêu cầu "{locked_obj.request_no}" khi đã qua state Nháp.')
+                return redirect('purchasing:pr_detail', pk=pk)
+            form = PurchaseRequestForm(request.POST, instance=locked_obj)
+            formset = PurchaseRequestItemFormSet(request.POST, instance=locked_obj, prefix='items')
+            if form.is_valid() and formset.is_valid():
+                obj = form.save()
+                formset.save()
+                log_action(
+                    request.user, AuditLog.Action.UPDATE, target=obj,
+                    description=f'Cập nhật yêu cầu mua hàng {obj.request_no}',
+                    ip_address=client_ip(request),
+                )
+                messages.success(request, f'Đã cập nhật yêu cầu mua hàng "{obj.request_no}".')
+                return redirect('purchasing:pr_detail', pk=obj.pk)
+    else:
+        form = PurchaseRequestForm(instance=obj)
+        formset = PurchaseRequestItemFormSet(instance=obj, prefix='items')
     return render(
         request, 'purchasing/pr_form.html',
         {'form': form, 'formset': formset, 'mode': 'update', 'obj': obj},
