@@ -378,6 +378,15 @@ trùng lặp và dễ lệch nhau.
    đã bị thu hồi menu — POST thẳng được để điều chuyển tồn kho thật). View chỉ đọc (list/detail) trong cùng
    module thì vẫn chỉ cần `can_view_menu` như bình thường — không áp actor-gate của thao tác ghi lên các view
    đọc, giữ đúng nguyên tắc "xem" và "ghi" là 2 quyền tách biệt.
+
+   **Khi audit 1 module menu-only, kiểm tra HẾT mọi view/decorator trong app đó, không dừng lại ở view có chữ
+   `list` trong tên** (BUG-06, 2026-07-29 — phát hiện ngay sau BUG-05, cùng 1 lớp lỗi): `batch_detail`/
+   `product_eoq` (inventory), `warehouse_detail` (warehouse), `supplier_detail` (partners) chỉ có
+   `@login_required`, thiếu hẳn `can_view_menu` dù view `list` cùng module đã có. Ngược lại, các decorator
+   role-only dùng chung cho nhóm view GHI (`warehouse_manager_required`, `catalog_manager_required`,
+   `partners_create_required`) chỉ check role, không check `can_view_menu` — thu hồi menu của 1 Manager/Admin
+   cụ thể không chặn được họ tạo/sửa qua các view đó. Xem CLAUDE.md mục "Established patterns to apply
+   proactively" (bullet BUG-06) để biết fix đầy đủ.
 3. **Trang "Phân quyền chi tiết"** — `menu_rows` (context của `user_permission_edit`) build từ `MENU_ITEMS`,
    render trong khối `<div class="card mt-3">` "Ứng dụng được phép truy cập" (`user_permission_form.html`) —
    checkbox độc lập, KHÔNG nằm trong bảng CRUD.

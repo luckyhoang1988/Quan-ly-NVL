@@ -51,3 +51,7 @@ class Product(models.Model):
     def clean(self):
         if self.min_level is not None and self.max_level is not None and self.min_level > self.max_level:
             raise ValidationError({'max_level': 'max_level phải >= min_level.'})
+        if (self.qc_sampling_method == self.SamplingMethod.PERCENT
+                and self.qc_sampling_value is not None and self.qc_sampling_value > 100):
+            raise ValidationError(
+                {'qc_sampling_value': 'Với cách lấy mẫu PERCENT, giá trị phải <= 100.'})

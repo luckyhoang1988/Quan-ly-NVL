@@ -71,6 +71,19 @@ class WarehouseCrudTest(TestCase):
         self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không redirect
         self.assertFalse(Warehouse.objects.filter(name='Kho Hà Nội').exists())
 
+    def test_TC_WM_01_004b_menu_access_revoked_forbids_create_and_detail(self):
+        """BUG-06: thu hồi ``can_view_menu_warehouse`` phải chặn được cả
+        ``warehouse_create``/``warehouse_update``/... lẫn ``warehouse_detail``,
+        không chỉ ``warehouse_list`` (xem TC-WM-01-003)."""
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        perm = Permission.objects.get(
+            codename='can_view_menu_warehouse', content_type__app_label='accounts')
+        self.manager.user_permissions.remove(perm)
+        response = self.client.post(reverse('warehouse:warehouse_create'), self._create_payload())
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[warehouse.pk]))
+        self.assertEqual(response.status_code, 403)
+
     def test_TC_WM_01_005_any_authenticated_user_can_view(self):
         warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
         self.client.force_login(self.staff)

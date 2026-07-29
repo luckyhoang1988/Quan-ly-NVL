@@ -1,5 +1,6 @@
 import datetime
 
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
@@ -16,6 +17,7 @@ from quality.models import QcInspection
 from receiving.models import Grn
 from warehouse.models import Location, Warehouse
 
+from .admin import BatchAdmin, InventoryAdmin, StockMovementAdmin, StockTransferAdmin
 from .forms import StockTransferForm
 from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 from .services import (
@@ -54,6 +56,14 @@ class InventoryModelTest(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=5)
+
+    def test_TC_INV_001_004_qty_reserved_exceeds_on_hand_rejected_by_db_constraint(self):
+        """BUG-09: CheckConstraint chặn ở tầng DB — phòng khi có đường ghi nào
+        (Admin, shell, script...) bỏ qua validate ở tầng service/form."""
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Inventory.objects.create(
+                    product=self.product, warehouse=self.warehouse, qty_on_hand=10, qty_reserved=20)
 
 
 class BatchModelTest(TestCase):
@@ -97,6 +107,16 @@ class BatchModelTest(TestCase):
             qty_received=50, mfg_date=datetime.date(2026, 1, 1),
         )
         self.assertIsNone(batch.exp_date)
+
+    def test_TC_INV_002_005_qty_used_exceeds_received_rejected_by_db_constraint(self):
+        """BUG-09: CheckConstraint chặn ở tầng DB — phòng khi có đường ghi nào
+        (Admin, shell, script...) bỏ qua validate ở tầng service/form."""
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Batch.objects.create(
+                    product=self.product, batch_code='LOT-0002', supplier=self.supplier,
+                    location=self.location, qty_received=10, qty_used=20,
+                )
 
 
 class StockMovementServiceTest(TestCase):
@@ -167,6 +187,43 @@ class ExpiredBatchSyncServiceTest(TestCase):
         batch.refresh_from_db()
         self.assertEqual(count, 1)
         self.assertEqual(batch.status, Batch.Status.EXPIRED)
+
+    def test_TC_INV_EXP_007_active_batch_expiry_creates_audit_log(self):
+        """BUG-11: chuyển ACTIVE -> EXPIRED phải ghi AuditLog, không được bỏ
+        qua qua ``.update()`` hàng loạt."""
+        batch = self._batch('LOT-0001', self.today - datetime.timedelta(days=1))
+        sync_expired_batches()
+        log = AuditLog.objects.filter(
+            action=AuditLog.Action.UPDATE,
+            target_type__model='batch', target_id=str(batch.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertIsNone(log.actor)
+        self.assertEqual(log.changes, {'status': [Batch.Status.ACTIVE, Batch.Status.EXPIRED]})
+
+    def test_TC_INV_EXP_008_partial_used_batch_expiry_creates_audit_log(self):
+        batch = self._batch('LOT-0001', self.today - datetime.timedelta(days=1), status=Batch.Status.PARTIAL_USED)
+        sync_expired_batches()
+        log = AuditLog.objects.filter(
+            action=AuditLog.Action.UPDATE,
+            target_type__model='batch', target_id=str(batch.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.changes, {'status': [Batch.Status.PARTIAL_USED, Batch.Status.EXPIRED]})
+
+    def test_TC_INV_EXP_009_non_expired_batches_get_no_audit_log(self):
+        self._batch('LOT-0001', self.today + datetime.timedelta(days=1))
+        sync_expired_batches()
+        self.assertFalse(AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_type__model='batch').exists())
+
+    def test_TC_INV_EXP_010_running_twice_does_not_duplicate_audit_log(self):
+        batch = self._batch('LOT-0001', self.today - datetime.timedelta(days=1))
+        sync_expired_batches()
+        count_second_run = sync_expired_batches()
+        self.assertEqual(count_second_run, 0, 'batch đã EXPIRED rồi thì lần 2 không quét lại')
+        logs = AuditLog.objects.filter(
+            action=AuditLog.Action.UPDATE, target_type__model='batch', target_id=str(batch.pk))
+        self.assertEqual(logs.count(), 1)
 
     def test_TC_INV_EXP_004_expiring_soon_includes_within_window_excludes_beyond(self):
         near = self._batch('LOT-NEAR', self.today + datetime.timedelta(days=10))
@@ -427,6 +484,51 @@ class InventoryDashboardViewTest(TestCase):
         self.assertFalse(response.context['can_create_pr'])
         self.assertTrue(response.context['rows'][0]['below_min'])
         self.assertNotContains(response, 'Tạo yêu cầu mua hàng')
+
+    def test_TC_INV_DASH_010_total_across_main_warehouses_not_below_min(self):
+        """BUG-07: SKU tồn ở 2 kho MAIN, mỗi kho riêng lẻ dưới min_level nhưng
+        tổng 2 kho đã đủ min_level -> không được báo dưới Min (trước fix, mỗi
+        dòng so trực tiếp với qty_on_hand riêng của kho đó nên báo sai cả hai)."""
+        product = Product.objects.create(product_code='NVL-0009', name='Nghệ', uom='kg', min_level=100)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=60)
+        Inventory.objects.create(product=product, warehouse=self.other_warehouse, qty_on_hand=60)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertEqual(response.context['below_min_count'], 0)
+        for row in response.context['rows']:
+            self.assertFalse(row['below_min'])
+
+    def test_TC_INV_DASH_011_total_across_main_warehouses_above_max(self):
+        """BUG-07: tổng 2 kho MAIN vượt max_level dù từng kho riêng lẻ chưa
+        vượt -> phải báo trên Max."""
+        product = Product.objects.create(product_code='NVL-0010', name='Sả', uom='kg', max_level=100)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=60)
+        Inventory.objects.create(product=product, warehouse=self.other_warehouse, qty_on_hand=60)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertEqual(response.context['above_max_count'], 1)
+        for row in response.context['rows']:
+            self.assertTrue(row['above_max'])
+
+    def test_TC_INV_DASH_012_below_min_count_not_doubled_across_warehouses(self):
+        """BUG-07: 1 SKU thực sự dưới Min nhưng có mặt ở 2 kho MAIN chỉ được
+        đếm 1 lần trong below_min_count (không nhân theo số kho/số dòng)."""
+        product = Product.objects.create(product_code='NVL-0011', name='Lá chanh', uom='kg', min_level=100)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        Inventory.objects.create(product=product, warehouse=self.other_warehouse, qty_on_hand=10)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        self.assertEqual(response.context['below_min_count'], 1)
+
+    def test_TC_INV_DASH_013_staging_scrap_excluded_from_main_total(self):
+        """BUG-07: tồn ở Kho chờ/Kho phế không được cộng vào tổng MAIN dùng để
+        so Min Level của SKU."""
+        staging = Warehouse.objects.create(
+            code='KHO-CHO2', name='Kho chờ 2', warehouse_type=Warehouse.WarehouseType.STAGING)
+        product = Product.objects.create(product_code='NVL-0012', name='Riềng', uom='kg', min_level=100)
+        Inventory.objects.create(product=product, warehouse=staging, qty_on_hand=500)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=10)
+        response = self.client.get(reverse('inventory:inventory_list'))
+        rows_by_warehouse = {row['inventory'].warehouse_id: row for row in response.context['rows']}
+        self.assertTrue(rows_by_warehouse[self.warehouse.pk]['below_min'])
+        self.assertEqual(response.context['below_min_count'], 1)
 
 
 class BatchViewTest(TestCase):
@@ -968,6 +1070,20 @@ class StockTransferViewTest(TestCase):
         })
         self.assertRedirects(response, reverse('inventory:transfer_list'))
 
+    def test_TC_INV_TRF_VIEW_012_menu_access_revoked_forbids_batch_and_eoq_views(self):
+        """BUG-06: thu hồi ``can_view_menu_inventory`` phải chặn được cả
+        ``batch_list``/``batch_detail``/``product_eoq``, không chỉ ``inventory_list``
+        và ``transfer_create``/``transfer_list`` (đã sửa ở BUG-05)."""
+        perm = Permission.objects.get(
+            codename='can_view_menu_inventory', content_type__app_label='accounts')
+        self.staff.user_permissions.remove(perm)
+        response = self.client.get(reverse('inventory:batch_list'))
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('inventory:batch_detail', args=[self.batch.pk]))
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('inventory:product_eoq', args=[self.product.pk]))
+        self.assertEqual(response.status_code, 403)
+
     def test_TC_INV_TRF_VIEW_012_admin_can_create(self):
         """BUG-05."""
         admin = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
@@ -1324,3 +1440,35 @@ class WarehouseHandoffViewTest(TestCase):
         self.assertRedirects(response, reverse('inventory:handoff_list'))
         self.batch.refresh_from_db()
         self.assertEqual(self.batch.status, Batch.Status.ACTIVE)
+
+
+class InventoryAdminReadOnlyTest(TestCase):
+    """BUG-09 (2026-07-29): Inventory/Batch/StockMovement/StockTransfer chỉ
+    được tạo/sửa qua service layer (``inventory.services``/
+    ``quality.services``/``stocktake.services``...) — sửa trực tiếp qua Admin
+    bỏ qua audit log và phá đồng bộ Batch<->Inventory<->StockMovement.
+    ``TC-INV-ADM-<seq>``."""
+
+    def test_TC_INV_ADM_001_inventory_admin_denies_add_change_delete(self):
+        model_admin = InventoryAdmin(Inventory, admin.site)
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))
+
+    def test_TC_INV_ADM_002_batch_admin_denies_add_change_delete(self):
+        model_admin = BatchAdmin(Batch, admin.site)
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))
+
+    def test_TC_INV_ADM_003_stock_movement_admin_denies_add_change_delete(self):
+        model_admin = StockMovementAdmin(StockMovement, admin.site)
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))
+
+    def test_TC_INV_ADM_004_stock_transfer_admin_denies_add_change_delete(self):
+        model_admin = StockTransferAdmin(StockTransfer, admin.site)
+        self.assertFalse(model_admin.has_add_permission(None))
+        self.assertFalse(model_admin.has_change_permission(None))
+        self.assertFalse(model_admin.has_delete_permission(None))

@@ -32,12 +32,29 @@ def sync_expired_batches():
     luôn phản ánh đúng thực tế trước khi dùng. Bao gồm cả PARTIAL_USED: lô đã
     xuất một phần vẫn còn ``qty_available`` > 0 nên vẫn phải hết hạn đúng lúc,
     không chỉ ACTIVE mới hết hạn được (bug fix 2026-07-27, xem CLAUDE.md).
+
+    Đi từng batch một (``select_for_update()`` + ``save()``) thay vì
+    ``.update()`` hàng loạt — mọi chuyển trạng thái Batch đều cần ghi
+    ``AuditLog`` (xem CLAUDE.md "Audit trail"), ``.update()`` bỏ qua
+    ``save()`` nên không ghi được (BUG-11, 2026-07-29). ``actor=None`` vì đây
+    là hành động hệ thống, không phải do người dùng bấm.
     """
     today = timezone.now().date()
-    return Batch.objects.filter(
-        status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
-        exp_date__isnull=False, exp_date__lt=today,
-    ).update(status=Batch.Status.EXPIRED)
+    with transaction.atomic():
+        batches = list(Batch.objects.select_for_update().filter(
+            status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
+            exp_date__isnull=False, exp_date__lt=today,
+        ))
+        for batch in batches:
+            old_status = batch.status
+            batch.status = Batch.Status.EXPIRED
+            batch.save(update_fields=['status'])
+            log_action(
+                None, AuditLog.Action.UPDATE, target=batch,
+                description=f'Batch {batch.batch_code} hết hạn: {old_status} -> EXPIRED (tự động).',
+                changes={'status': [old_status, Batch.Status.EXPIRED]},
+            )
+    return len(batches)
 
 
 def expiring_soon_batches(days=30, warehouse=None, warehouse_type=None):

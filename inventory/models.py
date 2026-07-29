@@ -12,6 +12,7 @@ qty_reserved là computed, không phải stored input".
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.db.models import F, Q
 from django.urls import reverse
 from django.utils import timezone
 
@@ -37,6 +38,8 @@ class Inventory(models.Model):
         ordering = ['warehouse__code', 'product__product_code']
         constraints = [
             models.UniqueConstraint(fields=['product', 'warehouse'], name='unique_inventory_product_warehouse'),
+            models.CheckConstraint(
+                check=Q(qty_reserved__lte=F('qty_on_hand')), name='inventory_reserved_lte_on_hand'),
         ]
         verbose_name = 'Tồn kho'
         verbose_name_plural = 'Tồn kho'
@@ -101,6 +104,10 @@ class Batch(models.Model):
 
     class Meta:
         ordering = ['exp_date', 'created_at']
+        constraints = [
+            models.CheckConstraint(
+                check=Q(qty_used__lte=F('qty_received')), name='batch_qty_used_lte_received'),
+        ]
         verbose_name = 'Lô hàng'
         verbose_name_plural = 'Lô hàng'
 

@@ -48,11 +48,16 @@ def can_edit_supplier(user, supplier):
 
 
 def partners_create_required(view):
-    """Decorator: chưa đăng nhập -> về login; không đủ quyền TẠO Supplier -> 403."""
+    """Decorator: chưa đăng nhập -> về login; không có quyền menu "Nhà cung cấp"
+    hoặc không đủ quyền TẠO Supplier -> 403. Menu-access phải kiểm tra trước
+    role, vì thu hồi quyền menu (Phân quyền chi tiết) phải chặn cả thao tác ghi,
+    không chỉ ẩn sidebar (BUG-06, 2026-07-29)."""
 
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
+        if not request.user.can_view_menu('partners'):
+            raise PermissionDenied('Bạn không có quyền truy cập mục "Nhà cung cấp".')
         if not can_create_supplier(request.user):
             raise PermissionDenied('Không có quyền tạo Nhà cung cấp.')
         return view(request, *args, **kwargs)
@@ -83,6 +88,8 @@ def supplier_list(request):
 @login_required
 def supplier_detail(request, pk):
     """READ — chi tiết Supplier theo 5 nhóm field, kèm PO gần đây tham chiếu NCC này."""
+    if not request.user.can_view_menu('partners'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Nhà cung cấp".')
     obj = get_object_or_404(Supplier, pk=pk)
     return render(request, 'partners/supplier_detail.html', {
         'obj': obj,
@@ -118,6 +125,8 @@ def supplier_update(request, pk):
     Quyền theo ``can_edit_supplier`` (Manager/Admin sửa mọi NCC; PURCHASING chỉ
     sửa NCC do chính mình tạo).
     """
+    if not request.user.can_view_menu('partners'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Nhà cung cấp".')
     obj = get_object_or_404(Supplier, pk=pk)
     if not can_edit_supplier(request.user, obj):
         raise PermissionDenied('Bạn không có quyền sửa Nhà cung cấp này.')

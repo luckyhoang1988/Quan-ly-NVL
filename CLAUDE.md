@@ -233,10 +233,22 @@ names, exact dates) live in `git log`, not here.
   object's own status is mutated and saved, not before — calling `sync_po_status` before `grn.status =
   CANCELLED` is persisted means its exclude-CANCELLED query still sees the old status and silently no-ops.
 - Any code that mutates `Inventory.qty_on_hand` directly must also keep `Batch` in sync (create a new
-  `ACTIVE` batch for a surplus, consume existing `ACTIVE`/`PARTIAL_USED` batches FIFO-order for a shortage)
-  — established for GRN/QC/GIN from the start, and retrofitted onto Stock Opname adjustments
-  (`stocktake.services.apply_adjustment`) after Batch and Inventory drifted out of sync. Grep for direct
+  `ACTIVE` batch for a surplus, consume existing batches FIFO-order for a shortage) — established for
+  GRN/QC/GIN from the start, and retrofitted onto Stock Opname adjustments (`stocktake.services.
+  apply_adjustment`) after Batch and Inventory drifted out of sync. Grep for direct
   `Inventory.objects...qty_on_hand` writes when auditing a new module for this pattern.
+  **`Inventory.qty_on_hand` (and a location-scoped `qty_system` snapshot) reflects every batch physically
+  sitting in the warehouse, not just FIFO-eligible ones** — `PENDING_RECEIPT`/`EXPIRED`/`QUARANTINE` batches
+  still count (only `CLOSED` doesn't). A shortage-consumption query that narrows to `ACTIVE`/`PARTIAL_USED`
+  only (the FIFO-eligible set) will under-count available batches and reject a shortage adjustment the
+  Inventory total can actually cover (BUG-08, 2026-07-29:
+  `stocktake.services._consume_shortage_batches`/`PHYSICAL_BATCH_STATUSES`) — use the FIFO-eligible set only
+  for "what can GIN issue", use the full physical set for "what can absorb a physical count adjustment".
+  The inverse hazard when widening a consumption query to the full physical set: **don't let partial
+  consumption promote a non-`ACTIVE` batch to `PARTIAL_USED`** — only `ACTIVE → PARTIAL_USED` is a valid
+  mid-consumption transition; a `PENDING_RECEIPT`/`EXPIRED`/`QUARANTINE` batch that isn't fully depleted must
+  keep its original status (fully depleted always closes to `CLOSED` regardless of starting status), or the
+  consumption silently resurrects hold/expired/quarantined stock as FIFO-eligible again.
 - **Audit trail** (who/what/when/why) is required on every GRN/QC/Batch state transition via
   `accounts.AuditLog`/`log_action()` — treat this as non-negotiable on any new transition, it's much harder
   to retrofit than to add up front.
@@ -358,6 +370,19 @@ names, exact dates) live in `git log`, not here.
   `transfer_list` (read-only history) only needed the `can_view_menu` check to match its sibling
   `inventory_list`. Apply generally: whenever a menu-only module gains a write action, add a dedicated
   actor-gate for that action specifically — don't assume `can_view_menu` on the module covers it.
+- **`can_view_menu(key)` must gate every view in a menu-only module, not just its primary list view**
+  (BUG-06, 2026-07-29, found auditing the same 7 modules after BUG-05): `inventory.views.batch_list`/
+  `batch_detail`/`product_eoq`, `warehouse.views.warehouse_detail`, and `partners.views.supplier_detail`
+  only had `@login_required` — revoking a user's menu access via "Phân quyền chi tiết" hid the sidebar link
+  and blocked the module's list view, but detail/sibling read views (and a direct URL hit) stayed open. The
+  role-only write decorators (`warehouse_manager_required`, `catalog_manager_required`,
+  `partners_create_required`) had the identical gap the other direction — they checked role but not
+  `can_view_menu`, so a Manager/Admin stripped of a module's menu access could still create/edit through
+  that module's write views even though the module was supposed to be fully revoked for them. Fixed by
+  adding the `can_view_menu(key)` check to every read view in these modules and to the top of each shared
+  role-decorator (checked before the role check). Apply generally when auditing a menu-only module: grep
+  every view function in it (not just the one with `list` in its name) and every shared decorator, not just
+  the view the original bug report happened to name.
 
 ### Established patterns to apply proactively (from accumulated bug fixes)
 
@@ -483,6 +508,30 @@ rather than rediscovering the failure.
 - **A numeric field/derived value with a sibling that has a bound** (a percentage field capped elsewhere, a
   sample-size floor on one sampling method but not another) should get the same bound by default — the
   asymmetry itself is usually evidence the bound was simply never added.
+- **Any model that a service layer says "don't create directly — use `X.services.y()`" must have that rule
+  enforced in Django Admin too, not just in code comments** (BUG-09, 2026-07-29): `inventory.admin`'s
+  `Inventory`/`Batch`/`StockMovement`/`StockTransfer` `ModelAdmin`s originally used defaults, so a
+  superuser could edit `qty_on_hand`/`qty_received`/`qty_used`/`status` or add/delete `StockMovement` rows
+  straight through `/admin/`, bypassing `record_movement()`, `log_action()`, and the Batch↔Inventory sync
+  invariant above. Fixed with a shared `ServiceManagedAdminMixin` (`has_add_permission`/
+  `has_change_permission`/`has_delete_permission` all `False`, view-only) applied to all four
+  `ModelAdmin`s, plus DB-level `CheckConstraint`s (`batch_qty_used_lte_received`,
+  `inventory_reserved_lte_on_hand`) as defense in depth against any other write path (shell, fixtures,
+  future code) that skips service-layer validation. Apply the mixin to any future model whose docstring
+  says "don't create directly."
+- **A bulk `QuerySet.update()` on a model that needs an audit trail silently skips it** — `.update()` never
+  calls `save()`, so any `log_action()` call a service normally makes on that transition just doesn't run
+  (BUG-11, 2026-07-29): `inventory.services.sync_expired_batches()` flipped ACTIVE/PARTIAL_USED batches to
+  EXPIRED with a single `.update(status=EXPIRED)` — fast, but left zero `AuditLog` rows for a real Batch
+  state transition, violating the "every GRN/QC/Batch state transition needs audit" invariant above. Fixed
+  by replacing the bulk update with `select_for_update()` + a per-row loop calling
+  `batch.save(update_fields=['status'])` and `log_action(None, ...)` (actor `None` since it's a
+  system-triggered transition, not a user action) inside one `transaction.atomic()` block — still returns
+  the same integer count callers/tests expect, just no longer bulk. Apply generally: before reaching for
+  `.update()`/`.bulk_update()`/`.bulk_create()` on a model whose transitions are normally logged, check
+  whether the perf win is actually needed at current row counts — if the model's docstring or a service
+  function nearby calls `log_action()` on this same transition elsewhere, the bulk path needs the identical
+  per-row loop, not a shortcut around it.
 - **Performance**: prefer fixing a missing index or reducing per-request query count over reaching for
   caching. Reserve caching for values that are both expensive to compute *and* tolerate staleness (e.g. the
   audit-log filter dropdowns are cached 300s via Django's default `LocMemCache` — the first use of the cache

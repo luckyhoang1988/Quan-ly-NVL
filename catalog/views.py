@@ -30,11 +30,16 @@ def can_manage_catalog(user):
 
 
 def catalog_manager_required(view):
-    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không đủ quyền -> 403."""
+    """Decorator: chưa đăng nhập -> về login; không có quyền menu "Sản phẩm" hoặc
+    không đủ quyền -> 403. Menu-access phải kiểm tra trước role, vì thu hồi
+    quyền menu (Phân quyền chi tiết) phải chặn cả thao tác ghi, không chỉ ẩn
+    sidebar (BUG-06, 2026-07-29)."""
 
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
+        if not request.user.can_view_menu('catalog'):
+            raise PermissionDenied('Bạn không có quyền truy cập mục "Sản phẩm".')
         if not can_manage_catalog(request.user):
             raise PermissionDenied('Chỉ Quản lý (Manager) hoặc Admin được quản lý Product/SKU.')
         return view(request, *args, **kwargs)

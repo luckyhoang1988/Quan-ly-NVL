@@ -22,9 +22,13 @@ RECONCILIATION -> ADJUSTMENT.
   model "Adjustment" riêng — xem ``stocktake.models`` docstring). Dòng khớp
   đúng (variance = 0) không tạo movement. Đồng thời đồng bộ luôn ``Batch``
   (bug fix 2026-07-27, xem CLAUDE.md): thừa thì tạo 1 Batch mới ACTIVE đại
-  diện phần phát hiện thêm; thiếu thì trừ dần vào các batch ACTIVE/
-  PARTIAL_USED hiện có (thứ tự FIFO) — không làm vậy thì Inventory và tổng
-  Batch lệch nhau, FIFO/GIN không thấy đúng thực tế.
+  diện phần phát hiện thêm; thiếu thì trừ dần (thứ tự FIFO) vào batch hiện có
+  ở bất kỳ status vật lý nào (``PHYSICAL_BATCH_STATUSES`` — bug fix
+  2026-07-29, xem CLAUDE.md BUG-08: ``Inventory.qty_on_hand``/``qty_system``
+  phản ánh mọi hàng đang nằm vật lý trong kho kể cả EXPIRED/PENDING_RECEIPT/
+  QUARANTINE, không chỉ ACTIVE/PARTIAL_USED, nên phần trừ thiếu cũng phải
+  chọn được từ các batch đó) — không làm vậy thì Inventory và tổng Batch lệch
+  nhau, FIFO/GIN không thấy đúng thực tế.
 """
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -38,6 +42,20 @@ from inventory.services import record_movement
 from warehouse.services import get_default_location
 
 from .models import StocktakeItem, StocktakeSession
+
+#: Status nào cũng tính là tồn vật lý đang nằm trong kho (phản ánh trong
+#: ``Inventory.qty_on_hand`` — xem CLAUDE.md "Batch status enum"), trừ
+#: ``CLOSED`` (đã dùng hết, ``qty_available`` luôn 0). Dùng khi cần trừ đúng
+#: phần thiếu phát hiện qua kiểm kê, KHÁC với danh sách FIFO-eligible hẹp hơn
+#: (``ACTIVE``/``PARTIAL_USED`` only) mà ``inventory.services.
+#: suggest_fifo_batches`` dùng để chọn batch cho GIN xuất kho.
+PHYSICAL_BATCH_STATUSES = [
+    Batch.Status.ACTIVE,
+    Batch.Status.PARTIAL_USED,
+    Batch.Status.PENDING_RECEIPT,
+    Batch.Status.EXPIRED,
+    Batch.Status.QUARANTINE,
+]
 
 
 @transaction.atomic
@@ -257,17 +275,26 @@ def _infer_supplier(product):
 
 
 def _consume_shortage_batches(*, session, item, qty):
-    """Chênh lệch âm (thiếu, bug fix 2026-07-27, xem CLAUDE.md): trừ dần
-    ``qty`` vào các batch ``ACTIVE``/``PARTIAL_USED`` hiện có, thứ tự FIFO
-    (``exp_date`` rồi ``created_at`` — cùng convention
+    """Chênh lệch âm (thiếu): trừ dần ``qty`` vào các batch hiện có, thứ tự
+    FIFO (``exp_date`` rồi ``created_at`` — cùng convention
     ``inventory.services.suggest_fifo_batches``), giới hạn đúng vị trí nếu
-    phiếu chỉ kiểm 1 vị trí (FR-SO-07), cả kho nếu kiểm toàn kho. Không đủ
-    batch để phủ hết phần thiếu thì báo lỗi rõ ràng thay vì âm thầm để
-    Inventory lệch khỏi tổng Batch — nếu không làm vậy, Inventory đã giảm
-    nhưng batch vẫn báo đủ hàng để FIFO xuất tiếp.
+    phiếu chỉ kiểm 1 vị trí (FR-SO-07), cả kho nếu kiểm toàn kho.
+
+    Chọn theo ``PHYSICAL_BATCH_STATUSES`` (bug fix 2026-07-29, BUG-08), KHÔNG
+    chỉ ``ACTIVE``/``PARTIAL_USED`` như bản gốc 2026-07-27: ``qty_system``
+    (snapshot từ ``Inventory.qty_on_hand`` cấp kho, hoặc tổng
+    ``qty_received - qty_used`` không lọc status cấp vị trí — xem
+    ``create_session``) đã tính cả batch ``PENDING_RECEIPT``/``EXPIRED``/
+    ``QUARANTINE``, nên hàng thiếu hoàn toàn có thể nằm ở một trong các batch
+    đó (vd kho có lô EXPIRED, kiểm thực tế thấy vật lý ít hơn) — lọc hẹp chỉ
+    ACTIVE/PARTIAL_USED khiến service báo "không đủ lô" và rollback toàn
+    phiếu dù Inventory dư sức trừ. Không đủ batch để phủ hết phần thiếu thì
+    báo lỗi rõ ràng thay vì âm thầm để Inventory lệch khỏi tổng Batch — nếu
+    không làm vậy, Inventory đã giảm nhưng batch vẫn báo đủ hàng để FIFO xuất
+    tiếp.
     """
     batches = Batch.objects.select_for_update().filter(
-        product=item.product, status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
+        product=item.product, status__in=PHYSICAL_BATCH_STATUSES,
         **({'location': session.location} if session.location_id else {'location__warehouse': session.warehouse}),
     ).order_by('exp_date', 'created_at')
 
@@ -280,13 +307,22 @@ def _consume_shortage_batches(*, session, item, qty):
             continue
         take = min(available, remaining)
         batch.qty_used += take
-        batch.status = Batch.Status.CLOSED if batch.qty_available <= 0 else Batch.Status.PARTIAL_USED
+        if batch.qty_available <= 0:
+            batch.status = Batch.Status.CLOSED
+        elif batch.status == Batch.Status.ACTIVE:
+            # Chỉ ACTIVE mới chuyển PARTIAL_USED (hành vi gốc). Batch đang
+            # EXPIRED/QUARANTINE/PENDING_RECEIPT bị trừ một phần vẫn PHẢI giữ
+            # nguyên status đó — nếu đẩy thành PARTIAL_USED sẽ vô tình biến
+            # hàng hết hạn/QC fail/chờ xác nhận thành FIFO-eligible trở lại
+            # (xem CLAUDE.md "Batch status enum": FIFO chỉ lọc
+            # ACTIVE/PARTIAL_USED).
+            batch.status = Batch.Status.PARTIAL_USED
         batch.save(update_fields=['qty_used', 'status'])
         remaining -= take
 
     if remaining > 0:
         raise ValidationError(
-            f'SKU {item.product.product_code}: không đủ lô hàng (ACTIVE/PARTIAL_USED) tại '
+            f'SKU {item.product.product_code}: không đủ lô hàng tại '
             f'{"vị trí " + str(session.location) if session.location_id else session.warehouse} '
             f'để trừ đúng phần thiếu {qty} (còn thiếu {remaining} không có lô nào che phủ).'
         )

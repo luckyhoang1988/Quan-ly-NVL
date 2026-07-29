@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.test import TestCase
 from django.urls import reverse
 
@@ -56,6 +57,21 @@ class SupplierCrudTest(TestCase):
         response = self.client.post(reverse('partners:supplier_create'), self._create_payload())
         self.assertEqual(response.status_code, 200)  # re-render form với lỗi, không redirect
         self.assertFalse(Supplier.objects.filter(name='Công ty TNHH ABC').exists())
+
+    def test_TC_PTN_001_004b_menu_access_revoked_forbids_create_detail_update(self):
+        """BUG-06: thu hồi ``can_view_menu_partners`` phải chặn được cả
+        ``supplier_create``/``supplier_detail``/``supplier_update``, không chỉ
+        ``supplier_list``."""
+        supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        perm = Permission.objects.get(
+            codename='can_view_menu_partners', content_type__app_label='accounts')
+        self.manager.user_permissions.remove(perm)
+        response = self.client.post(reverse('partners:supplier_create'), self._create_payload())
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('partners:supplier_detail', args=[supplier.pk]))
+        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse('partners:supplier_update', args=[supplier.pk]))
+        self.assertEqual(response.status_code, 403)
 
     def test_TC_PTN_001_005_any_authenticated_user_can_view(self):
         Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')

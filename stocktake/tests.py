@@ -468,6 +468,105 @@ class ApplyAdjustmentServiceTest(TestCase):
         with self.assertRaises(ValidationError):
             apply_adjustment(self.session, actor=self.manager)
 
+    def test_TC_SO_05_014_shortage_consumes_expired_batch_and_keeps_expired_status(self):
+        """BUG-08: Inventory.qty_on_hand tính cả batch EXPIRED (hàng vẫn nằm vật
+        lý trong kho) nên trừ thiếu phải chọn được batch này, KHÔNG chỉ
+        ACTIVE/PARTIAL_USED — nếu không, service báo "không đủ lô" và rollback
+        toàn phiếu dù Inventory dư sức trừ."""
+        self._inventory(self.product, 100)
+        batch = self._batch(self.product, 100, status=Batch.Status.EXPIRED)
+        self._item(self.product, qty_system=100, qty_actual=90)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.qty_available, 90)
+        self.assertEqual(batch.status, Batch.Status.EXPIRED, 'trừ một phần không được đẩy EXPIRED thành PARTIAL_USED (sẽ vô tình FIFO-eligible trở lại)')
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(inv.qty_on_hand, 90)
+
+    def test_TC_SO_05_015_shortage_fully_depleting_expired_batch_closes_it(self):
+        self._inventory(self.product, 10)
+        batch = self._batch(self.product, 10, status=Batch.Status.EXPIRED)
+        self._item(self.product, qty_system=10, qty_actual=0)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.qty_available, 0)
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+
+    def test_TC_SO_05_016_shortage_consumes_pending_receipt_batch_and_keeps_status(self):
+        self._inventory(self.product, 50)
+        batch = self._batch(self.product, 50, status=Batch.Status.PENDING_RECEIPT)
+        self._item(self.product, qty_system=50, qty_actual=40)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.qty_available, 40)
+        self.assertEqual(batch.status, Batch.Status.PENDING_RECEIPT)
+
+    def test_TC_SO_05_017_shortage_consumes_quarantine_batch_in_scrap_warehouse(self):
+        scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        scrap_location = Location.objects.create(warehouse=scrap_warehouse, code='PHE-01')
+        scrap_session = StocktakeSession.objects.create(
+            warehouse=scrap_warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-QT-0001', supplier=self.supplier,
+            location=scrap_location, qty_received=30, status=Batch.Status.QUARANTINE,
+        )
+        Inventory.objects.create(product=self.product, warehouse=scrap_warehouse, qty_on_hand=30)
+        StocktakeItem.objects.create(session=scrap_session, product=self.product, qty_system=30, qty_actual=25)
+
+        apply_adjustment(scrap_session, actor=self.manager)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.qty_available, 25)
+        self.assertEqual(batch.status, Batch.Status.QUARANTINE)
+        inv = Inventory.objects.get(product=self.product, warehouse=scrap_warehouse)
+        self.assertEqual(inv.qty_on_hand, 25)
+
+    def test_TC_SO_05_018_shortage_scoped_to_location_consumes_non_active_batch_there(self):
+        other_location = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        located_session = StocktakeSession.objects.create(
+            warehouse=self.warehouse, location=self.location, created_by=self.manager,
+            status=StocktakeSession.Status.RECONCILIATION,
+        )
+        in_scope = self._batch(self.product, 20, status=Batch.Status.EXPIRED)
+        out_of_scope = Batch.objects.create(
+            product=self.product, batch_code='LOT-OTHER-LOC', supplier=self.supplier,
+            location=other_location, qty_received=100, status=Batch.Status.ACTIVE,
+        )
+        self._inventory(self.product, 120)
+        StocktakeItem.objects.create(session=located_session, product=self.product, qty_system=20, qty_actual=15)
+
+        apply_adjustment(located_session, actor=self.manager)
+
+        in_scope.refresh_from_db()
+        out_of_scope.refresh_from_db()
+        self.assertEqual(in_scope.qty_available, 15)
+        self.assertEqual(in_scope.status, Batch.Status.EXPIRED)
+        self.assertEqual(out_of_scope.qty_available, 100, 'batch ở vị trí khác không được đụng tới')
+
+    def test_TC_SO_05_019_shortage_fifo_order_spans_mixed_statuses(self):
+        """FIFO theo exp_date/created_at áp dụng xuyên suốt mọi status trong
+        PHYSICAL_BATCH_STATUSES, không chỉ trong nội bộ ACTIVE/PARTIAL_USED."""
+        today = timezone.now().date()
+        expired_older = self._batch(
+            self.product, 10, batch_code='LOT-EXP', status=Batch.Status.EXPIRED, exp_date=today)
+        active_newer = self._batch(
+            self.product, 50, batch_code='LOT-ACT', status=Batch.Status.ACTIVE,
+            exp_date=today + datetime.timedelta(days=30))
+        self._inventory(self.product, 60)
+        self._item(self.product, qty_system=60, qty_actual=45)
+        apply_adjustment(self.session, actor=self.manager)
+
+        expired_older.refresh_from_db()
+        active_newer.refresh_from_db()
+        self.assertEqual(expired_older.qty_available, 0)
+        self.assertEqual(expired_older.status, Batch.Status.CLOSED)
+        self.assertEqual(active_newer.qty_available, 45)
+        self.assertEqual(active_newer.status, Batch.Status.PARTIAL_USED)
+
 
 class StocktakeViewTest(TestCase):
     """View/URL/permission cho Stock Opname theo ma trận quyền

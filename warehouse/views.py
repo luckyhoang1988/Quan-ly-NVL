@@ -34,11 +34,16 @@ def can_manage_warehouses(user):
 
 
 def warehouse_manager_required(view):
-    """Decorator: chưa đăng nhập -> về login; đã đăng nhập nhưng không đủ quyền -> 403."""
+    """Decorator: chưa đăng nhập -> về login; không có quyền menu "Kho hàng" hoặc
+    không đủ quyền -> 403. Menu-access phải kiểm tra trước role, vì thu hồi quyền
+    menu (Phân quyền chi tiết) phải chặn cả thao tác ghi, không chỉ ẩn sidebar
+    (BUG-06, 2026-07-29)."""
 
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
+        if not request.user.can_view_menu('warehouse'):
+            raise PermissionDenied('Bạn không có quyền truy cập mục "Kho hàng".')
         if not can_manage_warehouses(request.user):
             raise PermissionDenied('Chỉ Quản lý kho (Manager) hoặc Admin được quản lý kho.')
         return view(request, *args, **kwargs)
@@ -75,6 +80,8 @@ def warehouse_list(request):
 @login_required
 def warehouse_detail(request, pk):
     """READ — chi tiết kho + danh sách vị trí lưu trữ."""
+    if not request.user.can_view_menu('warehouse'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Kho hàng".')
     obj = get_object_or_404(Warehouse, pk=pk)
     locations = obj.locations.all()
     return render(request, 'warehouse/warehouse_detail.html', {
