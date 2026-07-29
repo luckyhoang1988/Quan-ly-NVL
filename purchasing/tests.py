@@ -18,6 +18,7 @@ from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseR
 from .services import (
     approve_po,
     close_po,
+    decide_purchase_request,
     forward_purchase_request,
     reopen_purchase_request,
     send_po,
@@ -897,7 +898,7 @@ class PurchaseRequestCrudTest(TestCase):
         response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
         self.assertEqual(response.status_code, 403)
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
 
     def test_TC_PR_001_007_purchasing_department_manager_can_approve(self):
         pr = self._pending_pr(assigned_to=self.purchasing_user)
@@ -939,18 +940,21 @@ class PurchaseRequestCrudTest(TestCase):
         pr.refresh_from_db()
         self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
 
-    def test_TC_PR_001_011_submit_notifies_department_manager_and_assigned_to(self):
+    def test_TC_PR_001_011_submit_notifies_department_manager_not_assigned_to(self):
         """Notify chỉ phát sinh khi thật sự Nộp (``pr_submit``), không phải lúc
-        tạo nháp — mirror GRN submit."""
+        tạo nháp — mirror GRN submit. ``assigned_to`` KHÔNG được báo lúc Nộp
+        nữa (xem test_TC_PR_2STAGE_008/test_TC_PR_001_019) — chỉ quản lý đang
+        giữ quyền quyết định ở cấp hiện tại (ở đây: phòng Mua hàng, vì
+        ``self.staff`` không có department nên bỏ qua bước 1) được báo."""
         self.client.post(reverse('purchasing:pr_create'), self._payload(assigned_to=self.purchasing_user.pk))
         pr = PurchaseRequest.objects.get()
         self.assertFalse(Notification.objects.exists())
         response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
         self.assertTrue(Notification.objects.filter(recipient=self.purchasing_manager).exists())
-        self.assertTrue(Notification.objects.filter(recipient=self.purchasing_user).exists())
+        self.assertFalse(Notification.objects.filter(recipient=self.purchasing_user).exists())
 
     def test_TC_PR_001_012_update_only_allowed_while_draft_and_owner(self):
         """``pr_update``: đúng chủ + còn DRAFT thì sửa được; sai chủ hoặc đã Nộp
@@ -992,12 +996,12 @@ class PurchaseRequestCrudTest(TestCase):
         self.client.force_login(self.staff)
         self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
 
         response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
 
     def test_TC_PR_001_014_purchasing_role_can_create_edit_submit_own_pr(self):
         """Bug-fix 2026-07-28 điểm 2: PURCHASING giờ tự tạo/sửa/nộp được PR của
@@ -1015,7 +1019,7 @@ class PurchaseRequestCrudTest(TestCase):
         response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
 
     def test_TC_PR_001_015_owner_can_reopen_rejected_pr(self):
         """Bước C: PR REJECTED không phải ngõ cụt — đúng chủ mở lại được về DRAFT,
@@ -1045,7 +1049,7 @@ class PurchaseRequestCrudTest(TestCase):
         response = self.client.post(reverse('purchasing:pr_reopen', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
 
     def test_TC_PR_001_018_reopen_then_edit_and_resubmit_creates_new_approval(self):
         """Sau reopen, sửa (``pr_update``) rồi nộp lại (``pr_submit``) tạo được
@@ -1065,19 +1069,17 @@ class PurchaseRequestCrudTest(TestCase):
         response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
         self.assertRedirects(response, reverse('purchasing:pr_detail', args=[pr.pk]))
         pr.refresh_from_db()
-        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING)
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
         self.assertEqual(Approval.objects.filter(target_id=str(pr.pk)).count(), 2)
         self.assertEqual(
             Approval.objects.filter(target_id=str(pr.pk), status=Approval.Status.PENDING).count(), 1)
 
     def test_TC_PR_001_019_assigned_to_notified_at_approve_not_submit(self):
-        """Bug fix M1: lúc Nộp, PR còn PENDING nên ``assigned_to`` chưa tạo PO
-        được — thông báo lúc nộp không được ghi "cần bạn xử lý". Thông báo thật
-        sự "cần xử lý" (tạo PO) chỉ gửi lúc PR được duyệt (APPROVED)."""
+        """Bug fix M1 + luồng 2 cấp: ``assigned_to`` không được báo lúc Nộp nữa
+        (tránh lộ PR sớm — xem test_TC_PR_2STAGE_008). Thông báo thật sự "cần
+        xử lý" (tạo PO) chỉ gửi lúc PR được duyệt hẳn (APPROVED)."""
         pr = self._pending_pr(assigned_to=self.purchasing_user)
-        submit_notification = Notification.objects.get(recipient=self.purchasing_user)
-        self.assertIn('đang chờ duyệt', submit_notification.verb)
-        self.assertNotIn('cần bạn xử lý', submit_notification.verb)
+        self.assertFalse(Notification.objects.filter(recipient=self.purchasing_user).exists())
 
         self.client.force_login(self.purchasing_manager)
         response = self.client.post(reverse('purchasing:pr_approve', args=[pr.pk]))
@@ -1172,8 +1174,12 @@ class PurchaseRequestCrudTest(TestCase):
 class PurchaseRequestVisibilityTest(TestCase):
     """Phạm vi xem PR: nhân viên phòng khác chỉ thấy PR do chính mình tạo; nhân
     viên phòng Mua hàng THƯỜNG (không phải quản lý) chỉ thấy PR được chỉ định/
-    chuyển tiếp cho mình (``assigned_to``); quản lý phòng Mua hàng và Manager/
-    Admin xem toàn bộ (cần bức tranh tổng để duyệt/chuyển tiếp). ``TC-PR-002-<seq>``.
+    chuyển tiếp cho mình SAU KHI đã ``APPROVED`` (chưa duyệt xong thì chưa được
+    thấy — tránh lộ PR sớm, xem luồng duyệt 2 cấp); quản lý phòng Mua hàng
+    KHÔNG còn xem được PR nháp/chưa từng qua tay mình của phòng khác (thu hẹp
+    so với thiết kế 1 cấp cũ — xem ``PurchaseRequestTwoStageVisibilityTest`` cho
+    các kịch bản xoay quanh 2 cấp duyệt); chỉ Manager/Admin xem toàn bộ.
+    ``TC-PR-002-<seq>``.
     """
 
     def setUp(self):
@@ -1200,15 +1206,15 @@ class PurchaseRequestVisibilityTest(TestCase):
         prs = list(response.context['prs'])
         self.assertEqual(prs, [self.pr_a])
 
-    def test_TC_PR_002_002_purchasing_staff_sees_only_assigned_pr_in_list(self):
-        """Nhân viên mua hàng thường KHÔNG còn thấy toàn bộ PR — chỉ thấy PR
-        được chỉ định/chuyển tiếp đích danh cho mình."""
+    def test_TC_PR_002_002_purchasing_staff_does_not_see_assigned_pr_before_approved(self):
+        """``assigned_to`` KHÔNG thấy được PR khi còn DRAFT/chờ duyệt — chỉ
+        thấy sau khi PR đã ``APPROVED`` (xem test 007)."""
         self.pr_b.assigned_to = self.purchasing_user
         self.pr_b.save(update_fields=['assigned_to'])
         self.client.force_login(self.purchasing_user)
         response = self.client.get(reverse('purchasing:pr_list'))
         prs = set(response.context['prs'])
-        self.assertEqual(prs, {self.pr_b})
+        self.assertEqual(prs, set())
 
     def test_TC_PR_002_003_manager_sees_all_pr_in_list(self):
         self.client.force_login(self.manager)
@@ -1231,18 +1237,33 @@ class PurchaseRequestVisibilityTest(TestCase):
         response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
         self.assertEqual(response.status_code, 403)
 
-    def test_TC_PR_002_007_purchasing_staff_can_view_assigned_pr_detail(self):
+    def test_TC_PR_002_007_purchasing_staff_can_view_assigned_pr_detail_once_approved(self):
         self.pr_b.assigned_to = self.purchasing_user
-        self.pr_b.save(update_fields=['assigned_to'])
+        self.pr_b.status = PurchaseRequest.Status.APPROVED
+        self.pr_b.save(update_fields=['assigned_to', 'status'])
         self.client.force_login(self.purchasing_user)
         response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
         self.assertEqual(response.status_code, 200)
 
-    def test_TC_PR_002_008_purchasing_manager_sees_all_pr_in_list(self):
+    def test_TC_PR_002_007b_purchasing_staff_cannot_view_assigned_pr_detail_while_pending(self):
+        """Cùng PR/cùng ``assigned_to`` như test 007 nhưng còn đang chờ duyệt
+        (``PENDING_PUR``) — chưa thấy được, đúng yêu cầu #2 (không lộ PR sớm)."""
+        self.pr_b.assigned_to = self.purchasing_user
+        self.pr_b.status = PurchaseRequest.Status.PENDING_PUR
+        self.pr_b.save(update_fields=['assigned_to', 'status'])
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr_b.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_002_008_purchasing_manager_does_not_see_other_dept_draft_pr(self):
+        """Thu hẹp so với thiết kế 1 cấp cũ: quản lý phòng Mua hàng không còn
+        nằm trong tầng "xem toàn bộ" — PR nháp của phòng khác, chưa từng qua
+        tay Mua hàng (chưa có ``Approval(department=PURCHASING)``), không hiện
+        trong danh sách của họ nữa."""
         self.client.force_login(self.purchasing_manager)
         response = self.client.get(reverse('purchasing:pr_list'))
         prs = set(response.context['prs'])
-        self.assertEqual(prs, {self.pr_a, self.pr_b})
+        self.assertEqual(prs, set())
 
 
 class PurchaseRequestForwardTest(TestCase):
@@ -1266,8 +1287,15 @@ class PurchaseRequestForwardTest(TestCase):
             username='staff', password='staff-pass-123', role=User.Role.STAFF)
         self.warehouse = Warehouse.objects.create(
             code='KHO-01', name='Kho chính', warehouse_type=Warehouse.WarehouseType.MAIN)
-        self.pr = PurchaseRequest.objects.create(
-            requested_by=self.staff, warehouse=self.warehouse, status=PurchaseRequest.Status.APPROVED)
+        # Đi qua flow thật (submit + decide) thay vì gán status=APPROVED trực
+        # tiếp — quản lý phòng Mua hàng chỉ xem được PR đã/đang qua cấp Mua
+        # hàng nhờ lịch sử ``Approval(department=PURCHASING)`` thật
+        # (``_pr_reached_pur_approval``), gán tay không tạo ra bản ghi đó.
+        self.pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        submit_purchase_request(self.pr, actor=self.staff)
+        approval = Approval.objects.get(target_id=str(self.pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(approval, True, actor=self.purchasing_manager)
+        self.pr.refresh_from_db()
 
     def test_TC_PR_003_001_manager_can_forward_to_staff(self):
         self.client.force_login(self.purchasing_manager)
@@ -1354,7 +1382,7 @@ class PoCreateFromPrTest(TestCase):
         self.assertEqual(self.pr.linked_po, po)
 
     def test_TC_PR_PO_003_pending_pr_cannot_be_used(self):
-        self.pr.status = PurchaseRequest.Status.PENDING
+        self.pr.status = PurchaseRequest.Status.PENDING_PUR
         self.pr.save(update_fields=['status'])
         response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
         self.assertEqual(response.status_code, 404)
@@ -1407,3 +1435,242 @@ class PoCreateFromPrTest(TestCase):
     def test_TC_PR_PO_008_get_no_prefill_supplier_when_product_has_none(self):
         response = self.client.get(reverse('purchasing:po_create'), {'from_pr': self.pr.pk})
         self.assertNotIn('supplier', response.context['form'].initial)
+
+
+class PurchaseRequestTwoStageServiceTest(TestCase):
+    """Service layer thuần (``submit_purchase_request``/``decide_purchase_request``
+    gọi trực tiếp, không qua URL — view layer duyệt 2 cấp còn ở bước kế tiếp)
+    cho luồng mới DRAFT -> PENDING_DEPT -> PENDING_PUR -> APPROVED/REJECTED.
+    ``TC-PR-2STAGE-<seq>``.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='kho-nv', password='kho-nv-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.warehouse_manager = User.objects.create_user(
+            username='kho-ql', password='kho-ql-123', role=User.Role.MANAGER,
+            department=User.Department.WAREHOUSE, is_manager=True)
+        self.purchasing_manager = User.objects.create_user(
+            username='mua-ql', password='mua-ql-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.purchasing_staff = User.objects.create_user(
+            username='mua-nv', password='mua-nv-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-2ST', name='Kho test 2 cấp', warehouse_type=Warehouse.WarehouseType.MAIN)
+
+    def _draft_pr(self, requested_by=None, assigned_to=None):
+        pr = PurchaseRequest.objects.create(
+            requested_by=requested_by or self.staff, warehouse=self.warehouse, assigned_to=assigned_to)
+        product = Product.objects.create(product_code=f'NVL-{pr.pk}', name='NVL test', uom='kg')
+        PurchaseRequestItem.objects.create(purchase_request=pr, product=product, qty_requested=10)
+        return pr
+
+    def test_TC_PR_2STAGE_001_submit_goes_to_pending_dept_for_non_purchasing_requester(self):
+        pr = self._draft_pr()
+        submit_purchase_request(pr, actor=self.staff)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_DEPT)
+        approval = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        self.assertEqual(approval.department, User.Department.WAREHOUSE)
+
+    def test_TC_PR_2STAGE_002_dept_approve_advances_to_pending_pur_without_integrity_error(self):
+        """Điểm rủi ro cao nhất của toàn bộ thiết kế 2 cấp: tạo Approval cấp 2
+        (PURCHASING) ngay sau khi Approval cấp 1 (WAREHOUSE) vừa APPROVED —
+        không được đụng ràng buộc ``unique_pending_approval_per_target`` (chặn
+        2 bản ghi PENDING cùng target). Nếu thứ tự gọi sai (tạo Approval cấp 2
+        bên trong ``on_approve()``, trước khi ``decide_approval()`` lưu status
+        cấp 1), test này sẽ raise ``ValidationError`` thay vì pass."""
+        pr = self._draft_pr()
+        submit_purchase_request(pr, actor=self.staff)
+        stage1_approval = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+
+        decide_purchase_request(stage1_approval, True, actor=self.warehouse_manager)
+
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
+        self.assertIsNone(pr.decided_by)
+
+        stage1_approval.refresh_from_db()
+        self.assertEqual(stage1_approval.status, Approval.Status.APPROVED)
+
+        self.assertEqual(Approval.objects.filter(target_id=str(pr.pk)).count(), 2)
+        stage2_approval = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        self.assertEqual(stage2_approval.department, User.Department.PURCHASING)
+
+    def test_TC_PR_2STAGE_003_pur_approve_after_dept_approve_finalizes(self):
+        pr = self._draft_pr(assigned_to=self.purchasing_staff)
+        submit_purchase_request(pr, actor=self.staff)
+        stage1 = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(stage1, True, actor=self.warehouse_manager)
+
+        stage2 = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(stage2, True, actor=self.purchasing_manager)
+
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+        self.assertEqual(pr.decided_by, self.purchasing_manager)
+        self.assertIsNotNone(pr.decided_at)
+        self.assertTrue(Notification.objects.filter(
+            recipient=self.purchasing_staff, verb__contains='tạo PO').exists())
+
+    def test_TC_PR_2STAGE_004_reject_at_dept_stage_ends_immediately(self):
+        pr = self._draft_pr()
+        submit_purchase_request(pr, actor=self.staff)
+        stage1 = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(stage1, False, actor=self.warehouse_manager, note='Không cần thiết')
+
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.REJECTED)
+        self.assertEqual(pr.reject_reason, 'Không cần thiết')
+        self.assertEqual(pr.decided_by, self.warehouse_manager)
+        self.assertEqual(Approval.objects.filter(target_id=str(pr.pk)).count(), 1)
+
+    def test_TC_PR_2STAGE_005_reject_at_pur_stage_ends_immediately(self):
+        pr = self._draft_pr()
+        submit_purchase_request(pr, actor=self.staff)
+        stage1 = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(stage1, True, actor=self.warehouse_manager)
+        stage2 = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(stage2, False, actor=self.purchasing_manager, note='Giá quá cao')
+
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.REJECTED)
+        self.assertEqual(pr.reject_reason, 'Giá quá cao')
+        self.assertEqual(pr.decided_by, self.purchasing_manager)
+
+    def test_TC_PR_2STAGE_006_purchasing_requester_skips_stage_one(self):
+        pr = self._draft_pr(requested_by=self.purchasing_staff)
+        submit_purchase_request(pr, actor=self.purchasing_staff)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
+        approval = Approval.objects.get(target_id=str(pr.pk), status=Approval.Status.PENDING)
+        self.assertEqual(approval.department, User.Department.PURCHASING)
+
+    def test_TC_PR_2STAGE_007_blank_department_requester_skips_stage_one(self):
+        requester = User.objects.create_user(
+            username='no-dept', password='no-dept-123', role=User.Role.STAFF)
+        pr = self._draft_pr(requested_by=requester)
+        submit_purchase_request(pr, actor=requester)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+    def test_TC_PR_2STAGE_008_submit_does_not_notify_assigned_to(self):
+        """Bug fix: ``assigned_to`` không còn được báo lúc Nộp — chỉ báo khi PR
+        thật sự APPROVED (xem test_TC_PR_2STAGE_003)."""
+        pr = self._draft_pr(assigned_to=self.purchasing_staff)
+        submit_purchase_request(pr, actor=self.staff)
+        self.assertFalse(Notification.objects.filter(recipient=self.purchasing_staff).exists())
+
+
+class PurchaseRequestTwoStageVisibilityTest(TestCase):
+    """View layer (qua HTTP client, không gọi service trực tiếp) cho các quy
+    tắc tầm nhìn/quyền hành động riêng của luồng duyệt 2 cấp — bổ sung cho
+    ``PurchaseRequestTwoStageServiceTest`` (thuần service). ``TC-PR-2STAGE-VIS-<seq>``.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='kho-nv2', password='kho-nv2-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        # role=STAFF (không phải MANAGER) cố ý: role MANAGER có quyền
+        # 'approve' pr toàn cục (ROLE_PERMISSIONS, dùng làm fallback
+        # Manager/Admin trong can_decide_pr) — dùng role đó ở đây sẽ che mất
+        # đúng ranh giới "chỉ còn quyền xem, hết quyền duyệt" mà VIS_005 cần
+        # kiểm chứng cho quản lý phòng ban gốc (is_department_manager-scoped).
+        self.warehouse_manager = User.objects.create_user(
+            username='kho-ql2', password='kho-ql2-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE, is_manager=True)
+        self.qc_manager = User.objects.create_user(
+            username='qc-ql2', password='qc-ql2-123', role=User.Role.QC,
+            department=User.Department.QC, is_manager=True)
+        self.purchasing_manager = User.objects.create_user(
+            username='mua-ql2', password='mua-ql2-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.purchasing_staff = User.objects.create_user(
+            username='mua-nv2', password='mua-nv2-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-2STV', name='Kho test 2 cấp view', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, assigned_to=self.purchasing_staff)
+        product = Product.objects.create(product_code=f'NVL-{self.pr.pk}', name='NVL test', uom='kg')
+        PurchaseRequestItem.objects.create(purchase_request=self.pr, product=product, qty_requested=10)
+        submit_purchase_request(self.pr, actor=self.staff)
+        self.pr.refresh_from_db()
+
+    def test_TC_PR_2STAGE_VIS_001_other_department_manager_cannot_view_pending_dept(self):
+        """PR đang chờ duyệt ở phòng Kho — quản lý phòng QC (không liên quan)
+        không xem được, dù biết pk."""
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_DEPT)
+        self.client.force_login(self.qc_manager)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_2STAGE_VIS_002_other_department_manager_cannot_approve_pending_dept(self):
+        self.client.force_login(self.qc_manager)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[self.pr.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_DEPT)
+
+    def test_TC_PR_2STAGE_VIS_003_origin_department_manager_can_approve_stage_one_via_http(self):
+        self.client.force_login(self.warehouse_manager)
+        response = self.client.post(reverse('purchasing:pr_approve', args=[self.pr.pk]))
+        self.assertRedirects(response, reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+    def test_TC_PR_2STAGE_VIS_004_assigned_to_cannot_view_while_pending_dept_or_pending_pur(self):
+        """Yêu cầu #2: nhân viên PUR được ``assigned_to`` không thấy PR ở CẢ
+        HAI cấp chờ duyệt — chỉ thấy sau khi PR ``APPROVED`` hẳn."""
+        self.client.force_login(self.purchasing_staff)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(response.status_code, 403)
+
+        decide_purchase_request(
+            Approval.objects.get(target_id=str(self.pr.pk), status=Approval.Status.PENDING),
+            True, actor=self.warehouse_manager,
+        )
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PR_2STAGE_VIS_005_origin_department_manager_readonly_after_stage_one(self):
+        """Yêu cầu chốt: sau khi PR chuyển sang cấp Mua hàng, quản lý phòng gốc
+        vẫn xem được (theo dõi tiến độ) nhưng không còn action gì — không phải
+        chỉ ẩn nút, view thật (``pr_approve``) cũng phải 403."""
+        decide_purchase_request(
+            Approval.objects.get(target_id=str(self.pr.pk), status=Approval.Status.PENDING),
+            True, actor=self.warehouse_manager,
+        )
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+        self.client.force_login(self.warehouse_manager)
+        response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['can_approve'])
+        self.assertFalse(response.context['can_edit'])
+        self.assertFalse(response.context['can_delete'])
+
+        approve_response = self.client.post(reverse('purchasing:pr_approve', args=[self.pr.pk]))
+        self.assertEqual(approve_response.status_code, 403)
+
+    def test_TC_PR_2STAGE_VIS_006_purchasing_manager_sees_pr_once_at_pending_pur(self):
+        """Đối xứng với ``PurchaseRequestVisibilityTest`` (không còn xem
+        DRAFT/PENDING_DEPT của phòng khác): một khi PR đã tới cấp Mua hàng,
+        quản lý Mua hàng phải thấy nó trong danh sách để duyệt."""
+        decide_purchase_request(
+            Approval.objects.get(target_id=str(self.pr.pk), status=Approval.Status.PENDING),
+            True, actor=self.warehouse_manager,
+        )
+        self.client.force_login(self.purchasing_manager)
+        response = self.client.get(reverse('purchasing:pr_list'))
+        prs = set(response.context['prs'])
+        self.assertEqual(prs, {self.pr})
+        detail_response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertTrue(detail_response.context['can_approve'])

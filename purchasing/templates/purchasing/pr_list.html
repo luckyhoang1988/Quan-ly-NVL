@@ -23,7 +23,7 @@
   <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
     <h1 class="panel-title">
       Yêu cầu mua hàng (PR)
-      {% if not can_view_all %}<small class="text-muted fw-normal">— chỉ hiển thị yêu cầu do bạn tạo hoặc được giao phụ trách</small>{% endif %}
+      {% if not can_view_all %}<small class="text-muted fw-normal">— chỉ hiển thị yêu cầu do bạn tạo, thuộc phạm vi phòng ban bạn quản lý, hoặc được giao phụ trách sau khi đã duyệt</small>{% endif %}
     </h1>
     <div class="page-toolbar">
       {% if can_create %}
@@ -78,12 +78,16 @@
             <td>
               {% if pr.status == 'DRAFT' %}
                 <span class="badge bg-secondary">{{ pr.get_status_display }}</span>
-              {% elif pr.status == 'PENDING' %}
+              {% elif pr.status == 'PENDING_DEPT' %}
+                <span class="badge bg-info text-dark">{{ pr.get_status_display }}</span>
+              {% elif pr.status == 'PENDING_PUR' %}
                 <span class="badge bg-warning text-dark">{{ pr.get_status_display }}</span>
               {% elif pr.status == 'APPROVED' %}
                 <span class="badge bg-success">{{ pr.get_status_display }}</span>
-              {% else %}
+              {% elif pr.status == 'REJECTED' %}
                 <span class="badge bg-danger">{{ pr.get_status_display }}</span>
+              {% else %}
+                <span class="badge bg-dark">{{ pr.get_status_display }}</span>
               {% endif %}
             </td>
             <td>{{ pr.items.count }}</td>

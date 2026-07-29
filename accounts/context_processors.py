@@ -5,6 +5,7 @@ hiển thị ở mọi trang (navbar/`base.html`).
 truyền thủ công ``unread_notification_count``/các flag quyền ở từng view.
 """
 from .models import Notification
+from .permissions import can_view_audit_log
 
 
 def notifications(request):
@@ -32,6 +33,11 @@ def sidebar_permissions(request):
     ``can_view_menu_*`` (thêm cùng lúc với ``MENU_ITEMS``) phủ các mục sidebar
     KHÔNG có ma trận CRUD (warehouse/catalog/partners/inventory/handoff/
     user_mgmt/audit_log) — xem `.claude/skills/wms-conventions/SKILL.md` §6.
+
+    ``can_view_menu_audit_log`` gộp thêm ``can_view_audit_log(user)`` (chỉ Admin/
+    superuser) ngay tại đây trong Python — KHÔNG viết ``{% if a or b and c %}`` phức
+    hợp trong template, ``and`` bind chặt hơn ``or`` nên dễ để lọt role-check bypass
+    menu-check (xem CLAUDE.md mục "Menu-access permission axis").
     """
     if not request.user.is_authenticated:
         return {}
@@ -50,5 +56,5 @@ def sidebar_permissions(request):
         'can_view_menu_inventory': user.can_view_menu('inventory'),
         'can_view_menu_handoff': user.can_view_menu('handoff'),
         'can_view_menu_user_mgmt': user.can_view_menu('user_mgmt'),
-        'can_view_menu_audit_log': user.can_view_menu('audit_log'),
+        'can_view_menu_audit_log': user.can_view_menu('audit_log') and can_view_audit_log(user),
     }

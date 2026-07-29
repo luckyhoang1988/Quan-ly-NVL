@@ -1237,6 +1237,18 @@ class AuditLogListViewTest(TestCase):
         self.assertContains(response, 'Tạo mới')
         self.assertNotContains(response, '>CREATE<')
 
+    def test_TC_AUDITLOG_007_department_manager_forbidden(self):
+        """Thu hẹp quyền xem Audit Log về Admin/superuser toàn hệ thống — quản
+        lý phòng ban (``is_manager=True``, không phải role ADMIN/superuser)
+        không còn xem được nữa, dù trước đây có quyền này."""
+        dept_manager = User.objects.create_user(
+            username='u_dept_manager', password='x', role='MANAGER',
+            department='WAREHOUSE', is_manager=True,
+        )
+        self.client.force_login(dept_manager)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 403)
+
 
 class NotificationMarkReadTest(TestCase):
     """M7: đánh dấu đã đọc phải là POST (có CSRF), không còn side-effect qua GET."""

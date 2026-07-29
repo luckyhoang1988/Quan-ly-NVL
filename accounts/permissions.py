@@ -134,6 +134,13 @@ ROLE_PERMISSIONS = {
 }
 
 
+def can_view_audit_log(user):
+    """Chỉ Admin hệ thống (role ``ADMIN`` hoặc Django superuser) — quản lý phòng ban
+    (``is_manager``) không còn quyền này, áp dụng cho MỌI module (GRN/GIN/Handoff/PR...),
+    không riêng gì Purchase Request."""
+    return user.is_superuser or user.role == 'ADMIN'
+
+
 def all_menu_codenames():
     """Toàn bộ codename truy cập menu = MENU_ITEMS (dùng khi sinh Meta.permissions)."""
     return [f'can_view_menu_{key}' for key in MENU_ITEMS]

@@ -125,9 +125,16 @@ phải `<button>`. Bất kỳ model nào được truyền vào `notify(..., tar
 trỏ `get_absolute_url()` về đúng trang cha/hàng-đợi đó thay vì cố tạo 1 trang detail mới chỉ để có URL.
 
 **Tra cứu lịch sử**: `accounts.audit_log_list` (`/audit-log/`) đã có sẵn, filter theo module/actor/phòng
-ban/hành động/khoảng ngày, gate quyền `user.is_manager or user.role == 'ADMIN' or user.is_superuser`. Mọi
-transition mới (Approval, WarehouseHandoff...) chỉ cần tiếp tục gọi `log_action()` như cũ — không cần tạo
-trang tra cứu riêng.
+ban/hành động/khoảng ngày. Gate quyền (thu hẹp 2026-07-29, áp dụng toàn hệ thống — không riêng PR):
+`accounts.permissions.can_view_audit_log(user)` = `user.is_superuser or user.role == 'ADMIN'` — quản lý
+phòng ban thường (`is_manager=True`) KHÔNG còn xem được trang này nữa, kể cả log của đúng phòng mình; lịch
+sử duyệt theo phòng ban của họ đã có sẵn ngay trên trang detail của từng đối tượng (PR/GRN/GIN) qua
+`Approval`, không cần tới log toàn hệ thống. Gate cả 3 lớp: view (`can_view_audit_log`), sidebar
+(`accounts.context_processors.sidebar_permissions` gộp `can_view_menu('audit_log') and
+can_view_audit_log(user)` trong Python — xem bẫy `{% if a or b and c %}` ở mục 6.1), và
+`can_view_menu('audit_log')` (trục MENU_ITEMS riêng, xem mục 6.1) — 2 điều kiện độc lập, thiếu 1 trong 2 vẫn
+lộ/ẩn sai. Mọi transition mới (Approval, WarehouseHandoff...) chỉ cần tiếp tục gọi `log_action()` như cũ —
+không cần tạo trang tra cứu riêng.
 
 **Gán nhân viên theo kho**: `Warehouse.staff` (M2M→User, giới hạn `department=WAREHOUSE` qua
 `WarehouseForm.__init__`) — dùng để chọn/mặc định người nhận khi bàn giao lô hàng về kho cụ thể; nếu rỗng,
@@ -139,20 +146,48 @@ submit + GrnReturn QC-confirm (Phase B, `receiving/services.py`), GIN confirm (P
 `decide_purchase_request`), dùng lại y hệt cho mọi bước duyệt mới sau này. **PR (2026-07-28)** giờ mirror
 đúng shape DRAFT/submit của GRN/GIN — trước đó tạo PR *là* nộp PR luôn (PENDING ngay), không có bước DRAFT
 tách biệt; nay `pr_create` chỉ lưu ở `DRAFT`, người tạo tự sửa tiếp qua `pr_update` rồi bấm "Nộp yêu cầu"
-(`pr_submit` → `submit_purchase_request`, DRAFT→PENDING) khi sẵn sàng — sửa/nộp chỉ cho đúng chủ hoặc người
-có tầm nhìn toàn bộ (`purchasing.views._pr_can_edit`, mirror check hiển thị ở `_pr_can_view_all`), không chỉ
-dựa quyền module. PR còn có 1 nhánh KHÔNG có ở GRN/GIN: `REJECTED` không phải ngõ cụt — mở lại được về
-`DRAFT` qua `purchasing.services.reopen_purchase_request` (giữ nguyên `decided_by`/`decided_at`/
-`reject_reason` làm lịch sử, chỉ đổi `status`) rồi sửa/nộp lại bằng đúng `pr_update`/`pr_submit` đã có, không
-cần view riêng — do `Approval` cũ đã REJECTED (không còn PENDING) nên nộp lại không đụng
-`unique_pending_approval_per_target`. `pr_detail.html` chỉ hiện dòng "Lý do từ chối" khi `obj.status ==
-'REJECTED'` (bug fix 2026-07-28, L1) — `reject_reason` vẫn còn giá trị trong DB sau khi reopen (làm lịch
-sử) nên KHÔNG được coi field có giá trị = còn hiển thị, phải luôn kèm check `status` khi template hiện 1
-field lịch sử kiểu này. Một PR còn `DRAFT` (chưa từng qua `Approval`, không cần giữ lịch sử) xoá được thật
-qua `purchasing.services.delete_purchase_request`/view `pr_delete` (bug fix 2026-07-28, L2) — POST-only,
-gate kép `@pr_permission_required('delete')` (mặc định chỉ MANAGER/ADMIN có `delete` trên module `pr`) VÀ
+(`pr_submit` → `submit_purchase_request`) khi sẵn sàng — sửa/nộp chỉ cho đúng chủ hoặc người có tầm nhìn
+toàn bộ (`purchasing.views._pr_can_edit`, mirror check hiển thị ở `_pr_can_view_all`), không chỉ dựa quyền
+module. PR còn có 1 nhánh KHÔNG có ở GRN/GIN: `REJECTED` không phải ngõ cụt — mở lại được về `DRAFT` qua
+`purchasing.services.reopen_purchase_request` (giữ nguyên `decided_by`/`decided_at`/`reject_reason` làm
+lịch sử, chỉ đổi `status`) rồi sửa/nộp lại bằng đúng `pr_update`/`pr_submit` đã có, không cần view riêng —
+do `Approval` cũ đã REJECTED (không còn PENDING) nên nộp lại không đụng `unique_pending_approval_per_target`.
+`pr_detail.html` chỉ hiện dòng "Lý do từ chối" khi `obj.status == 'REJECTED'` (bug fix 2026-07-28, L1) —
+`reject_reason` vẫn còn giá trị trong DB sau khi reopen (làm lịch sử) nên KHÔNG được coi field có giá trị =
+còn hiển thị, phải luôn kèm check `status` khi template hiện 1 field lịch sử kiểu này. Một PR còn `DRAFT`
+(chưa từng qua `Approval`, không cần giữ lịch sử) xoá được thật qua
+`purchasing.services.delete_purchase_request`/view `pr_delete` (bug fix 2026-07-28, L2) — POST-only, gate
+kép `@pr_permission_required('delete')` (mặc định chỉ MANAGER/ADMIN có `delete` trên module `pr`) VÀ
 `_pr_can_edit` (đúng chủ hoặc tầm nhìn toàn bộ), mirror y hệt cặp gate của `pr_update`/`pr_reopen` — khác
 `user_delete` (soft-delete, giữ bản ghi), đây là delete cứng vì DRAFT chưa có gì cần giữ audit.
+
+**PR duyệt 2 CẤP tuần tự (2026-07-29), khác mọi flow `Approval` khác trong dự án (chỉ 1 cấp)**: trước đó
+`submit_purchase_request` hard-code luôn tạo `Approval(department=PURCHASING)`, bỏ qua hoàn toàn quản lý
+của chính phòng ban người nộp. Nay `Status` có 2 state trung gian tuần tự — `PENDING_DEPT` (chờ quản lý
+*phòng gốc của người nộp*) rồi `PENDING_PUR` (chờ quản lý phòng Mua hàng) — thay vì 1 `PENDING` duy nhất.
+Không thêm field lưu lịch sử riêng: `Approval` vốn đã hỗ trợ nhiều bản ghi tuần tự cho cùng 1 target (ràng
+buộc unique chỉ chặn 2 bản ghi PENDING cùng lúc), nên mỗi cấp chỉ đơn giản là 1 `Approval` mới —
+`accounts.approvals.approval_history_for(target)` (khác `latest_approval_for` — trả TOÀN BỘ theo
+`submitted_at` tăng dần, không chỉ bản mới nhất) là hàm dùng để hiện đủ lịch sử 2 bước ở template. Người
+nộp thuộc chính phòng Mua hàng (hoặc không có `department`, vd role ADMIN) thì bỏ qua cấp 1, vào thẳng
+`PENDING_PUR` — tránh 1 người tự duyệt PR của chính họ 2 lần. `decide_purchase_request` vẫn là 1 hàm DUY
+NHẤT cho cả 2 cấp (đọc `pr.status` để biết đang ở cấp nào trước khi mutate), KHÔNG tách 2 hàm riêng —
+duyệt ở `PENDING_DEPT` chỉ chuyển tiếp sang `PENDING_PUR` (chưa phải quyết định cuối, `decided_by` chưa
+set), duyệt ở `PENDING_PUR` mới là `APPROVED` thật. **Bẫy thứ tự quan trọng nhất của flow 2 cấp**: tạo
+`Approval` cấp 2 phải làm SAU KHI `decide_approval()` (bước 1) return, không được làm trong callback
+`on_approve()` truyền vào nó — `decide_approval()` gọi callback TRƯỚC khi lưu `approval.status=APPROVED`
+vào DB, nên tạo `Approval` mới trong lúc bản ghi cấp 1 vẫn còn `PENDING` sẽ đụng ngay
+`unique_pending_approval_per_target` (2 bản ghi PENDING cùng target). `can_decide_pr(user, pr)` đổi sang
+nhận thêm `pr` — đọc `department` đang giữ quyền quyết định qua `latest_approval_for(pr).department` rồi
+check `user.is_department_manager(department)` (không còn hard-code PURCHASING), fallback
+`user.can('approve','pr')` cho Manager/Admin như cũ. Tách riêng `can_manage_pur_pr(user)` (ý nghĩa cũ của
+`can_decide_pr(user)` không gắn 1 PR cụ thể — quản lý PUR HOẶC Manager/Admin) dùng cho `pr_forward` và gate
+`?from_pr=` ở `po_create`, vì đây luôn là tác vụ ở cấp Mua hàng bất kể PR đó từng qua cấp nào.
+`_pr_can_view_all` thu hẹp chỉ còn superuser/MANAGER/ADMIN (quản lý PUR ra khỏi tầng "xem hết"); 4 tầng
+nhìn PR đầy đủ (`_pr_visible_queryset`/`_pr_can_view`, dùng đồng nhất ở cả `pr_list` VÀ `pr_detail`) xem
+docstring 2 hàm đó trong `purchasing/views.py` hoặc mục "Purchase Request (PR)" trong CLAUDE.md — điểm cần
+nhớ nhất: quản lý phòng gốc **vẫn xem được** (read-only) PR sau khi đã chuyển sang PUR, và người
+`assigned_to` **không** thấy PR ở bất kỳ cấp chờ nào, chỉ thấy sau khi `APPROVED`.
 
 1. Thêm 1 state trung gian vào `Status` enum của model đó (vd `PENDING_APPROVAL`) — KHÔNG tự chuyển thẳng
    sang state kế tiếp trong view/service khi user bấm nút "Nộp"/"Xác nhận".

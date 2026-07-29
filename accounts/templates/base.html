@@ -121,9 +121,8 @@
         </li>
         {% endif %}
 
-        {% if user.is_superuser or user.role == 'ADMIN' or user.is_manager %}
-        <li class="sidebar-section-title">Quản trị</li>
         {% if user.is_superuser or user.role == 'ADMIN' %}
+        <li class="sidebar-section-title">Quản trị</li>
           {% if can_view_menu_user_mgmt %}
           <li class="nav-item">
             <a class="nav-link {% if request.resolver_match.url_name == 'user_list' %}active{% endif %}" href="{% url 'user_list' %}">
@@ -131,7 +130,6 @@
             </a>
           </li>
           {% endif %}
-        {% endif %}
         {% if can_view_menu_audit_log %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.url_name == 'audit_log_list' %}active{% endif %}" href="{% url 'audit_log_list' %}">

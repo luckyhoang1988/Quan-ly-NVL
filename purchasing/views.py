@@ -10,13 +10,14 @@ from functools import wraps
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import F, Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from accounts.approvals import latest_approval_for
+from accounts.approvals import approval_history_for, latest_approval_for
 from accounts.audit import client_ip, log_action
 from accounts.models import Approval, AuditLog, User
 from accounts.pagination import paginate_queryset
@@ -84,23 +85,51 @@ def pr_permission_required(action):
     return decorator
 
 
+_PENDING_PR_STATUSES = (PurchaseRequest.Status.PENDING_DEPT, PurchaseRequest.Status.PENDING_PUR)
+
+
 def _pr_pending_count(user):
-    """Badge số PR đang chờ duyệt — tính on-the-fly (mirror ``overdue_count`` ở po_list).
-    Phải lọc theo cùng quyền xem với ``pr_list`` (``_pr_can_view_all``): nhân viên
-    phòng Mua hàng thường chỉ nên thấy số PR của chính mình đang chờ, không phải
-    tổng số PENDING toàn hệ thống — nếu không badge sẽ hiển thị con số không liên
-    quan đến hàng đợi thật của họ.
+    """Badge số PR đang chờ xử lý — tính on-the-fly (mirror ``overdue_count`` ở
+    po_list), theo đúng cấp user phụ trách trong luồng duyệt 2 cấp: quản lý
+    phòng ban gốc chỉ đếm PR đang ``PENDING_DEPT`` của phòng mình; quản lý
+    phòng Mua hàng chỉ đếm PR đang ``PENDING_PUR``; Manager/Admin đếm tổng cả 2
+    cấp toàn hệ thống; nhân viên thường đếm PR CHÍNH MÌNH tạo đang chờ (không
+    tính PR ``assigned_to`` — họ chưa thấy được PR lúc còn PENDING, chỉ thấy
+    sau khi APPROVED, xem ``_pr_visible_queryset``).
     """
-    prs = PurchaseRequest.objects.filter(status=PurchaseRequest.Status.PENDING)
-    if not _pr_can_view_all(user):
-        prs = prs.filter(Q(requested_by=user) | Q(assigned_to=user))
-    return prs.count()
+    if _pr_can_view_all(user):
+        return PurchaseRequest.objects.filter(status__in=_PENDING_PR_STATUSES).count()
+    if user.is_manager and user.department == User.Department.PURCHASING:
+        return PurchaseRequest.objects.filter(status=PurchaseRequest.Status.PENDING_PUR).count()
+    if user.is_manager and user.department:
+        return PurchaseRequest.objects.filter(
+            status=PurchaseRequest.Status.PENDING_DEPT, requested_by__department=user.department,
+        ).count()
+    return PurchaseRequest.objects.filter(requested_by=user, status__in=_PENDING_PR_STATUSES).count()
 
 
-def can_decide_pr(user):
-    """Quyền DUYỆT/từ chối PR: quản lý phòng Mua hàng (oversight, xem/quyết định mọi
-    PR) hoặc Manager/Admin (fallback 'approve' cũ) — KHÔNG còn cấp cho mọi nhân
-    viên role PURCHASING nữa (mirror ``receiving.views.can_decide_grn_submission``).
+def can_decide_pr(user, pr):
+    """Quyền DUYỆT/từ chối 1 PR cụ thể: quản lý ĐÚNG phòng đang giữ quyền quyết
+    định ở cấp hiện tại của PR đó (``Approval`` mới nhất — phòng gốc khi
+    ``PENDING_DEPT``, phòng Mua hàng khi ``PENDING_PUR``), hoặc Manager/Admin
+    (fallback 'approve' cũ, xét mọi cấp). Không còn hard-code phòng Mua hàng
+    như trước — mirror ``receiving.views.can_decide_grn_submission`` nhưng
+    phòng ban động theo từng PR/từng cấp thay vì cố định.
+    """
+    if user.can('approve', 'pr'):
+        return True
+    approval = latest_approval_for(pr)
+    return approval is not None and user.is_department_manager(approval.department)
+
+
+def can_manage_pur_pr(user):
+    """Quyền quản lý PR ở tầm phòng Mua hàng, không gắn với 1 PR/1 cấp cụ thể —
+    ý nghĩa cũ của ``can_decide_pr(user)`` trước khi tách theo cấp. Dùng cho
+    ``pr_forward`` (chuyển tiếp PR đã ``APPROVED`` cho nhân viên — luôn là tác
+    vụ ở cấp Mua hàng, không phụ thuộc PR từng qua cấp nào) và gate
+    ``?from_pr=`` ở ``po_create`` (PUR-manager phải tạo PO được từ MỌI PR đã
+    duyệt xong, không chỉ PR nằm trong tầng "xem toàn bộ" của
+    ``_pr_can_view_all``).
     """
     return user.is_department_manager(User.Department.PURCHASING) or user.can('approve', 'pr')
 
@@ -119,18 +148,87 @@ def _po_can_view_all(user):
 
 
 def _pr_can_view_all(user):
-    """Ai xem được TOÀN BỘ PR (không chỉ của mình): quản lý phòng Mua hàng cần
-    bức tranh tổng để duyệt/chuyển tiếp, Manager/Admin có quyền oversight sẵn
-    có. Nhân viên phòng Mua hàng thường (không phải quản lý) hay người ở phòng
-    ban khác chỉ thấy PR do chính mình tạo hoặc được chỉ định/chuyển tiếp
-    (``assigned_to`` — xem lọc ở ``pr_list``/``pr_detail``), KHÔNG còn thấy toàn
-    bộ chỉ vì cùng role PURCHASING nữa.
+    """Ai xem+sửa được TOÀN BỘ PR (không chỉ của mình/phòng mình): chỉ
+    superuser/MANAGER/ADMIN (oversight hệ thống). Quản lý phòng Mua hàng
+    KHÔNG còn nằm trong tầng này nữa kể từ khi PR chuyển sang duyệt 2 cấp —
+    họ chỉ xem được PR đã/đang qua cấp Mua hàng (xem
+    ``_pr_visible_queryset``/``_pr_can_view``), không toàn quyền xem/sửa mọi
+    PR như trước (kể cả PR nháp của phòng khác chưa từng tới lượt họ).
     """
-    return (
-        user.is_superuser
-        or user.role in (User.Role.MANAGER, User.Role.ADMIN)
-        or user.is_department_manager(User.Department.PURCHASING)
+    return user.is_superuser or user.role in (User.Role.MANAGER, User.Role.ADMIN)
+
+
+def _pr_content_type():
+    return ContentType.objects.get_for_model(PurchaseRequest)
+
+
+def _pr_ids_with_pur_approval():
+    """PK các PurchaseRequest đã/đang từng có ``Approval(department=PURCHASING)``
+    — nghĩa là đã/đang ở cấp duyệt Mua hàng (``PENDING_PUR`` trở đi), bất kể
+    trạng thái hiện tại (``APPROVED``/``REJECTED`` cũng tính) — dùng để quản lý
+    phòng Mua hàng vẫn xem được PR đã qua tay mình dù đã kết thúc.
+    """
+    target_ids = Approval.objects.filter(
+        target_type=_pr_content_type(), department=User.Department.PURCHASING,
+    ).values_list('target_id', flat=True).distinct()
+    return [int(tid) for tid in target_ids]
+
+
+def _pr_reached_pur_approval(pr_pk):
+    """Bản 1-PR của ``_pr_ids_with_pur_approval`` — dùng ở check đơn lẻ
+    (``_pr_can_view``) để không phải fetch cả danh sách chỉ để kiểm tra 1 pk.
+    """
+    return Approval.objects.filter(
+        target_type=_pr_content_type(), target_id=str(pr_pk), department=User.Department.PURCHASING,
+    ).exists()
+
+
+def _pr_visible_queryset(user, base_qs):
+    """4 tầng nhìn PR (chi tiết xem CLAUDE.md mục "Purchase Request (PR)"):
+    1. Toàn quyền (``_pr_can_view_all``) -> xem hết.
+    2. Quản lý phòng ban gốc -> PR đã nộp (khác DRAFT) của đúng phòng mình, kể
+       cả sau khi đã chuyển sang cấp Mua hàng (read-only — không còn quyền
+       duyệt/sửa ở cấp đó, xem ``can_decide_pr``/``_pr_can_edit``), cộng PR do
+       chính họ tự tạo (mọi trạng thái, kể cả DRAFT của chính họ).
+    3. Quản lý phòng Mua hàng -> PR đã/đang ở cấp Mua hàng
+       (``_pr_ids_with_pur_approval``), không phụ thuộc trạng thái hiện tại,
+       cộng PR do chính họ tự tạo.
+    4. Còn lại -> PR do chính mình tạo, hoặc được chỉ định (``assigned_to``)
+       VÀ đã ``APPROVED`` — chưa duyệt xong thì người được chỉ định chưa được
+       thấy (tránh lộ PR sớm hơn mức cần thiết).
+    """
+    if _pr_can_view_all(user):
+        return base_qs
+    if user.is_manager and user.department == User.Department.PURCHASING:
+        return base_qs.filter(Q(pk__in=_pr_ids_with_pur_approval()) | Q(requested_by=user))
+    if user.is_manager and user.department:
+        return base_qs.filter(
+            Q(requested_by=user)
+            | (Q(requested_by__department=user.department) & ~Q(status=PurchaseRequest.Status.DRAFT))
+        )
+    return base_qs.filter(
+        Q(requested_by=user) | (Q(assigned_to=user) & Q(status=PurchaseRequest.Status.APPROVED))
     )
+
+
+def _pr_can_view(user, pr):
+    """Check tầm nhìn cho 1 PR cụ thể — mirror đúng 4 tầng ở
+    ``_pr_visible_queryset`` (dùng ở ``pr_detail`` cho truy cập trực tiếp qua
+    URL, không chỉ lọc danh sách — tránh lệch giữa 2 nơi, xem cảnh báo về bẫy
+    này trong CLAUDE.md).
+    """
+    if _pr_can_view_all(user):
+        return True
+    if pr.requested_by_id == user.id:
+        return True
+    if user.is_manager and user.department == User.Department.PURCHASING:
+        return _pr_reached_pur_approval(pr.pk)
+    if (
+        user.is_manager and user.department
+        and pr.requested_by_id and pr.requested_by.department == user.department
+    ):
+        return pr.status != PurchaseRequest.Status.DRAFT
+    return pr.assigned_to_id == user.id and pr.status == PurchaseRequest.Status.APPROVED
 
 
 @po_permission_required('read')
@@ -273,10 +371,11 @@ def po_create(request):
     if from_pr_id:
         source_pr = get_object_or_404(
             PurchaseRequest, pk=from_pr_id, status=PurchaseRequest.Status.APPROVED, linked_po__isnull=True)
-        if (
-            not _pr_can_view_all(request.user)
-            and source_pr.requested_by_id != request.user.id
-            and source_pr.assigned_to_id != request.user.id
+        if not (
+            _pr_can_view_all(request.user)
+            or source_pr.requested_by_id == request.user.id
+            or source_pr.assigned_to_id == request.user.id
+            or can_manage_pur_pr(request.user)
         ):
             raise PermissionDenied(
                 'Bạn chỉ tạo được PO từ yêu cầu mua hàng do chính mình tạo hoặc được giao phụ trách.')
@@ -435,13 +534,12 @@ def po_supplier_performance(request):
 
 @pr_permission_required('read')
 def pr_list(request):
-    """READ — danh sách PR (Tab 1). Nhân viên phòng Mua hàng/Manager/Admin xem
-    toàn bộ (cần bức tranh tổng để xử lý/duyệt); nhân viên phòng khác chỉ xem PR
-    do chính mình tạo (``_pr_can_view_all``).
+    """READ — danh sách PR (Tab 1), lọc theo 4 tầng nhìn của luồng duyệt 2 cấp
+    (``_pr_visible_queryset`` — xem docstring hàm đó để biết chi tiết từng
+    tầng).
     """
     prs = PurchaseRequest.objects.select_related('warehouse', 'requested_by', 'assigned_to', 'linked_po').all()
-    if not _pr_can_view_all(request.user):
-        prs = prs.filter(Q(requested_by=request.user) | Q(assigned_to=request.user))
+    prs = _pr_visible_queryset(request.user, prs)
     selected_status = request.GET.get('status', '')
     if selected_status:
         prs = prs.filter(status=selected_status)
@@ -464,10 +562,11 @@ def pr_list(request):
 
 @pr_permission_required('read')
 def pr_detail(request, pk):
-    """READ — chi tiết PR: item, trạng thái duyệt (qua ``Approval``), link sang PO
-    tạo từ PR này (nếu có). Người ngoài phòng Mua hàng, hoặc nhân viên phòng Mua
-    hàng thường không được chỉ định/chuyển tiếp, chỉ xem được PR do chính mình
-    tạo (mirror lọc ở ``pr_list`` — chặn cả truy cập trực tiếp qua URL).
+    """READ — chi tiết PR: item, lịch sử duyệt đủ 2 cấp (``approval_history_for``
+    — khác ``pr_list`` chỉ cần đếm, trang chi tiết cần thấy từng bước ai duyệt),
+    link sang PO tạo từ PR này (nếu có). Tầm nhìn dùng ``_pr_can_view`` — mirror
+    đúng ``_pr_visible_queryset`` ở ``pr_list`` để chặn cả truy cập trực tiếp
+    qua URL, không chỉ ẩn khỏi danh sách.
     """
     obj = get_object_or_404(
         PurchaseRequest.objects
@@ -475,22 +574,18 @@ def pr_detail(request, pk):
         .prefetch_related('items__product'),
         pk=pk,
     )
-    if (
-        not _pr_can_view_all(request.user)
-        and obj.requested_by_id != request.user.id
-        and obj.assigned_to_id != request.user.id
-    ):
+    if not _pr_can_view(request.user, obj):
         raise PermissionDenied('Bạn chỉ xem được yêu cầu mua hàng do chính mình tạo hoặc được giao phụ trách.')
     can_forward = (
-        can_decide_pr(request.user)
+        can_manage_pur_pr(request.user)
         and obj.status == PurchaseRequest.Status.APPROVED
         and not obj.linked_po_id
     )
     is_owner_editable = _pr_can_edit(request.user, obj)
     return render(request, 'purchasing/pr_detail.html', {
         'obj': obj,
-        'approval': latest_approval_for(obj),
-        'can_approve': can_decide_pr(request.user) and obj.status == PurchaseRequest.Status.PENDING,
+        'approvals': approval_history_for(obj),
+        'can_approve': obj.status in _PENDING_PR_STATUSES and can_decide_pr(request.user, obj),
         'can_create_po': (
             request.user.can('create', 'po')
             and obj.status == PurchaseRequest.Status.APPROVED
@@ -561,9 +656,10 @@ def pr_create(request):
 
 
 def _pr_can_edit(user, pr):
-    """Ai sửa/nộp/mở lại được 1 PR: chỉ đúng chủ (``requested_by``) hoặc người có
-    tầm nhìn toàn bộ (``_pr_can_view_all`` — quản lý phòng Mua hàng/Manager/Admin),
-    mirror check hiển thị ở ``pr_detail`` — không dựa mỗi decorator quyền module.
+    """Ai sửa/nộp/mở lại/xoá được 1 PR: chỉ đúng chủ (``requested_by``) hoặc
+    người có tầm nhìn toàn bộ (``_pr_can_view_all`` — nay chỉ còn
+    superuser/MANAGER/ADMIN, KHÔNG còn quản lý phòng Mua hàng — họ chỉ
+    read-only trên PR của phòng khác kể từ khi chuyển sang duyệt 2 cấp).
     """
     return _pr_can_view_all(user) or pr.requested_by_id == user.id
 
@@ -661,9 +757,12 @@ def pr_delete(request, pk):
 
 @login_required
 def pr_approve(request, pk):
-    """Quản lý phòng Mua hàng (hoặc Manager/Admin) duyệt PR: PENDING -> APPROVED (POST-only)."""
+    """Quản lý phòng đang giữ quyền quyết định ở cấp hiện tại (bộ phận gốc khi
+    ``PENDING_DEPT``, Mua hàng khi ``PENDING_PUR``), hoặc Manager/Admin, duyệt
+    PR: chuyển sang cấp kế tiếp hoặc ``APPROVED`` nếu đã ở cấp cuối (POST-only,
+    xem ``purchasing.services.decide_purchase_request``)."""
     obj = get_object_or_404(PurchaseRequest, pk=pk)
-    if not can_decide_pr(request.user):
+    if not can_decide_pr(request.user, obj):
         raise PermissionDenied('Không có quyền duyệt yêu cầu mua hàng.')
     if request.method == 'POST':
         approval = latest_approval_for(obj)
@@ -679,10 +778,11 @@ def pr_approve(request, pk):
 
 @login_required
 def pr_reject(request, pk):
-    """Quản lý phòng Mua hàng (hoặc Manager/Admin) từ chối PR kèm lý do: PENDING ->
-    REJECTED (POST-only)."""
+    """Quản lý phòng đang giữ quyền quyết định ở cấp hiện tại (hoặc Manager/
+    Admin) từ chối PR kèm lý do — kết thúc PR ngay ở cấp nào cũng vậy
+    (``-> REJECTED``, POST-only)."""
     obj = get_object_or_404(PurchaseRequest, pk=pk)
-    if not can_decide_pr(request.user):
+    if not can_decide_pr(request.user, obj):
         raise PermissionDenied('Không có quyền từ chối yêu cầu mua hàng.')
     if request.method == 'POST':
         approval = latest_approval_for(obj)
@@ -708,7 +808,7 @@ def pr_forward(request, pk):
     1 nhân viên phòng Mua hàng cụ thể tạo PO (POST-only) — xem
     ``purchasing.services.forward_purchase_request``."""
     obj = get_object_or_404(PurchaseRequest, pk=pk)
-    if not can_decide_pr(request.user):
+    if not can_manage_pur_pr(request.user):
         raise PermissionDenied('Không có quyền chuyển tiếp yêu cầu mua hàng.')
     if request.method == 'POST':
         form = PurchaseRequestForwardForm(request.POST)

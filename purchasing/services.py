@@ -244,29 +244,32 @@ def supplier_lead_time_stats():
 
 @transaction.atomic
 def submit_purchase_request(pr, actor, ip_address=None):
-    """DRAFT -> PENDING: nộp PR để chờ duyệt (mirror
-    ``receiving.services.request_submission``/GIN confirm) — tạo ``Approval`` cho
-    ``department=PURCHASING`` (tự báo toàn bộ quản lý phòng Mua hàng qua
-    ``create_approval``), cộng thêm báo riêng ``pr.assigned_to`` nếu người tạo
-    có chỉ định — ``assigned_to`` chỉ để biết ai sẽ xử lý, không tự có quyền
-    duyệt (xem module docstring). Chấp nhận cả PR đang REJECTED đã được
-    ``reopen_purchase_request`` đưa về DRAFT. ``assigned_to`` (nếu có) chỉ được
-    báo PR đã nộp — PR còn PENDING nên họ chưa tạo PO được; báo "cần xử lý"
-    thật sự chỉ gửi lúc PR được duyệt, xem ``decide_purchase_request``.
+    """DRAFT -> PENDING_DEPT/PENDING_PUR: nộp PR để chờ duyệt (mirror
+    ``receiving.services.request_submission``/GIN confirm), theo đúng thiết kế
+    duyệt 2 cấp mô tả ở module docstring — tạo ``Approval`` cho quản lý phòng
+    ban của chính người nộp trước (``PENDING_DEPT``); nếu người nộp thuộc
+    chính phòng Mua hàng (hoặc không có ``department``) thì bỏ qua cấp 1, tạo
+    thẳng ``Approval(department=PURCHASING)`` (``PENDING_PUR``) — tránh 1
+    người tự duyệt PR của chính họ 2 lần. Không báo ``pr.assigned_to`` ở bước
+    này — người này chỉ được thấy/báo PR sau khi PR ``APPROVED`` (xem
+    ``decide_purchase_request``), nộp PR không phải lúc họ cần biết.
     """
     pr = PurchaseRequest.objects.select_for_update().get(pk=pr.pk)
     if pr.status != PurchaseRequest.Status.DRAFT:
         raise ValidationError(f'Chỉ nộp được yêu cầu đang ở trạng thái Nháp (hiện tại: {pr.get_status_display()}).')
 
-    pr.status = PurchaseRequest.Status.PENDING
+    origin_department = pr.requested_by.department if pr.requested_by_id else ''
+    if origin_department and origin_department != User.Department.PURCHASING:
+        pr.status = PurchaseRequest.Status.PENDING_DEPT
+        approval_department = origin_department
+    else:
+        pr.status = PurchaseRequest.Status.PENDING_PUR
+        approval_department = User.Department.PURCHASING
     pr.save(update_fields=['status'])
     create_approval(
-        pr, department=User.Department.PURCHASING,
+        pr, department=approval_department,
         action_label=f'Yêu cầu mua hàng {pr.request_no}', submitted_by=actor, ip_address=ip_address,
     )
-    if pr.assigned_to_id:
-        notify(
-            pr.assigned_to, f'{actor.username} đã nộp yêu cầu mua hàng {pr.request_no}, đang chờ duyệt.', target=pr)
     return pr
 
 
@@ -344,23 +347,46 @@ def forward_purchase_request(pr, staff, actor, ip_address=None):
 
 @transaction.atomic
 def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
-    """Quản lý phòng Mua hàng (hoặc Manager/Admin) duyệt/từ chối 1 PR đang chờ,
-    thông qua ``Approval`` (xem ``accounts.approvals.decide_approval``). Nếu PR
-    có ``assigned_to``, duyệt xong báo họ ngay để tạo PO — đây mới là thời điểm
-    họ thật sự cần xử lý (xem ``submit_purchase_request``)."""
+    """Quản lý phòng ban đang giữ quyền quyết định ở cấp hiện tại (bộ phận gốc
+    ở ``PENDING_DEPT``, Mua hàng ở ``PENDING_PUR`` — hoặc Manager/Admin) duyệt/
+    từ chối 1 PR đang chờ, thông qua ``Approval`` (xem
+    ``accounts.approvals.decide_approval``).
+
+    Duyệt ở ``PENDING_DEPT`` chỉ CHUYỂN TIẾP sang cấp Mua hàng
+    (``PENDING_PUR``) — chưa phải quyết định cuối cùng nên không set
+    ``decided_by``/``decided_at``. Duyệt ở ``PENDING_PUR`` mới là quyết định
+    cuối (``APPROVED``) và là lúc báo ``pr.assigned_to`` để tạo PO (xem
+    ``submit_purchase_request`` — không báo lúc nộp). Từ chối ở cấp nào cũng
+    kết thúc PR ngay (``REJECTED``).
+
+    ⚠️ Việc tạo ``Approval`` cho cấp 2 PHẢI làm SAU KHI ``decide_approval()``
+    trả về, không được làm trong ``on_approve()`` — ``decide_approval()`` gọi
+    callback trước khi lưu ``approval.status=APPROVED``, nên tạo Approval mới
+    trong lúc bản ghi cấp 1 vẫn còn ``status='PENDING'`` trong DB sẽ đụng ràng
+    buộc ``unique_pending_approval_per_target`` (2 PENDING cùng target).
+    """
     pr = PurchaseRequest.objects.select_for_update().get(pk=approval.target_id)
-    if pr.status != PurchaseRequest.Status.PENDING:
-        raise ValidationError(f'Yêu cầu "{pr.request_no}" không ở trạng thái Chờ duyệt.')
+    stage = pr.status
+    if stage not in (PurchaseRequest.Status.PENDING_DEPT, PurchaseRequest.Status.PENDING_PUR):
+        raise ValidationError(f'Yêu cầu "{pr.request_no}" không ở trạng thái chờ duyệt.')
+
+    advance_to_pur = False
 
     def on_approve():
-        pr.status = PurchaseRequest.Status.APPROVED
-        pr.decided_by = actor
-        pr.decided_at = timezone.now()
-        pr.save(update_fields=['status', 'decided_by', 'decided_at'])
-        if pr.assigned_to_id:
-            notify(
-                pr.assigned_to,
-                f'Yêu cầu mua hàng {pr.request_no} đã được duyệt — hãy tạo PO.', target=pr)
+        nonlocal advance_to_pur
+        if stage == PurchaseRequest.Status.PENDING_DEPT:
+            pr.status = PurchaseRequest.Status.PENDING_PUR
+            pr.save(update_fields=['status'])
+            advance_to_pur = True
+        else:
+            pr.status = PurchaseRequest.Status.APPROVED
+            pr.decided_by = actor
+            pr.decided_at = timezone.now()
+            pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+            if pr.assigned_to_id:
+                notify(
+                    pr.assigned_to,
+                    f'Yêu cầu mua hàng {pr.request_no} đã được duyệt — hãy tạo PO.', target=pr)
 
     def on_reject():
         pr.status = PurchaseRequest.Status.REJECTED
@@ -373,4 +399,9 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None)
         approval, approved, actor=actor, note=note,
         on_approve=on_approve, on_reject=on_reject, ip_address=ip_address,
     )
+    if advance_to_pur:
+        create_approval(
+            pr, department=User.Department.PURCHASING,
+            action_label=f'Yêu cầu mua hàng {pr.request_no}', submitted_by=pr.requested_by, ip_address=ip_address,
+        )
     return pr

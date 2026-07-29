@@ -8,22 +8,31 @@ PARTIAL_RECEIVED/RECEIVED (tự động theo Qty GRN thực nhận, xem
 
 ``PurchaseRequest``/``PurchaseRequestItem`` (bổ sung ngoài FR, không có mã FR
 riêng) là "Yêu cầu mua hàng" nhân viên các phòng ban gửi lên trước khi có PO —
-tách biệt với PO thật: DRAFT (sửa được, chưa có Approval nào) -> PENDING (đã
-Nộp, ``purchasing.views.pr_submit``) -> APPROVED/REJECTED; REJECTED mở lại được
-về DRAFT (``purchasing.services.reopen_purchase_request``) để sửa và nộp lại,
+tách biệt với PO thật: DRAFT (sửa được, chưa có Approval nào) -> PENDING_DEPT
+(đã Nộp, ``purchasing.views.pr_submit`` — chờ quản lý PHÒNG BAN GỐC của người
+tạo duyệt) -> PENDING_PUR (bộ phận gốc đã duyệt, chờ quản lý phòng Mua hàng
+duyệt tiếp) -> APPROVED/REJECTED. Nếu người tạo thuộc chính phòng Mua hàng
+(hoặc không có department) thì bỏ qua PENDING_DEPT, vào thẳng PENDING_PUR
+(tránh 1 người tự duyệt 2 lần). REJECTED (ở bất kỳ cấp nào) mở lại được về
+DRAFT (``purchasing.services.reopen_purchase_request``) để sửa và nộp lại,
 không phải ngõ cụt (mirror đúng pattern DRAFT/submit/approve của GRN/GIN — xem
 CLAUDE.md "Department-manager approval axis"). 1 PR đã duyệt convert thành đúng
 1 PO (``linked_po``) qua ``purchasing.views.po_create(?from_pr=<pk>)``. Không
 tách nhiều NCC cho từng dòng, không auto-approve, không Celery/email.
 
 Duyệt PR đi qua cơ chế ``accounts.approvals`` dùng chung với GRN submit/GIN
-confirm (xem CLAUDE.md "Department-manager approval axis"): người tạo có thể
-chọn 1 ``assigned_to`` (nhân viên phòng Mua hàng cụ thể, tuỳ chọn — để trống
-thì báo cả phòng) để biết ai sẽ xử lý, nhưng chỉ quản lý phòng Mua hàng
-(``is_department_manager('PURCHASING')``) hoặc Manager/Admin mới thật sự
-DUYỆT/từ chối — ``assigned_to`` chỉ mang tính thông báo/hiển thị, không tự có
-quyền approve (xem ``purchasing.services.submit_purchase_request``/
-``decide_purchase_request``).
+confirm (xem CLAUDE.md "Department-manager approval axis") — mỗi cấp tạo 1
+``Approval`` riêng (2 bản ghi tuần tự cho 1 PR nếu đi đủ 2 cấp; xem
+``accounts.approvals.approval_history_for``), mỗi bản tự lưu
+``department``/``submitted_by``/``decided_by``/``decided_at``/``decision_note``
+riêng — đây là nguồn lịch sử "ai duyệt ở cấp nào", không lưu lặp lại lên PR.
+Người tạo có thể chọn 1 ``assigned_to`` (nhân viên phòng Mua hàng cụ thể, tuỳ
+chọn — để trống thì báo cả phòng) để biết ai sẽ xử lý, nhưng ``assigned_to``
+không tự có quyền approve và không thấy được PR khi còn đang chờ duyệt ở bất kỳ
+cấp nào (chỉ thấy khi đã APPROVED — xem ``purchasing.views._pr_can_view``);
+chỉ quản lý đúng phòng ban đang giữ cấp hiện tại (``can_decide_pr``) hoặc
+Manager/Admin mới thật sự DUYỆT/từ chối (xem
+``purchasing.services.submit_purchase_request``/``decide_purchase_request``).
 """
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
@@ -165,13 +174,16 @@ class PurchaseOrderItem(models.Model):
 
 
 class PurchaseRequest(models.Model):
-    """Yêu cầu mua hàng (PR) — nhân viên kho đề nghị mua, Purchasing/Manager
-    duyệt rồi tạo PO thật từ đây (xem ``purchasing.views.po_create``).
+    """Yêu cầu mua hàng (PR) — nhân viên phòng ban đề nghị mua, duyệt qua 2 cấp
+    tuần tự (quản lý phòng ban gốc rồi mới tới quản lý phòng Mua hàng — xem
+    ``purchasing.services.submit_purchase_request``/``decide_purchase_request``),
+    rồi tạo PO thật từ đây (xem ``purchasing.views.po_create``).
     """
 
     class Status(models.TextChoices):
         DRAFT = 'DRAFT', 'Nháp'
-        PENDING = 'PENDING', 'Chờ duyệt'
+        PENDING_DEPT = 'PENDING_DEPT', 'Chờ duyệt bộ phận'
+        PENDING_PUR = 'PENDING_PUR', 'Chờ duyệt Mua hàng'
         APPROVED = 'APPROVED', 'Đã duyệt'
         REJECTED = 'REJECTED', 'Từ chối'
 

@@ -101,6 +101,22 @@ def latest_approval_for(target):
     )
 
 
+def approval_history_for(target):
+    """Toàn bộ ``Approval`` gắn với ``target``, theo thứ tự nộp trước-sau
+    (``submitted_at`` tăng dần) — khác ``latest_approval_for`` (chỉ bản mới
+    nhất), dùng khi 1 target có thể có nhiều ``Approval`` tuần tự (vd. PR duyệt
+    2 cấp: bộ phận gốc rồi Mua hàng) và cần hiển thị đủ lịch sử từng bước.
+    """
+    if target is None or target.pk is None:
+        return Approval.objects.none()
+    content_type = ContentType.objects.get_for_model(target.__class__)
+    return (
+        Approval.objects.filter(target_type=content_type, target_id=str(target.pk))
+        .select_related('submitted_by', 'decided_by')
+        .order_by('submitted_at')
+    )
+
+
 def latest_approvals_for(model_class, pks):
     """Bản batch của ``latest_approval_for`` — 1 query cho nhiều ``target`` cùng
     model, tránh N+1 khi hiển thị danh sách (vd. các ``GrnReturn`` của 1 GRN ở

@@ -28,7 +28,9 @@ from .audit import client_ip, log_action
 from .forms import UserCreateForm, UserUpdateForm, WmsPasswordChangeForm, WmsSetPasswordForm
 from .models import AuditLog, Notification
 from .pagination import paginate_queryset
-from .permissions import ACTIONS, MENU_ITEMS, MODULES, all_permission_codenames, codenames_for_role
+from .permissions import (
+    ACTIONS, MENU_ITEMS, MODULES, all_permission_codenames, can_view_audit_log, codenames_for_role,
+)
 from .rbac import sync_user_permissions
 
 User = get_user_model()
@@ -451,19 +453,14 @@ def notification_mark_all_read(request):
     return redirect('notification_list')
 
 
-# --- Tra cứu Audit Log (FR-USER-05) — quản lý phòng ban trở lên + Admin ---
-
-def can_view_audit_log(user):
-    """Quản lý phòng ban (``is_manager``) trở lên, hoặc Admin/superuser."""
-    return user.is_superuser or user.role == User.Role.ADMIN or user.is_manager
-
+# --- Tra cứu Audit Log (FR-USER-05) — chỉ Admin hệ thống ---
 
 def audit_log_required(view):
     @wraps(view)
     @login_required
     def wrapper(request, *args, **kwargs):
         if not can_view_audit_log(request.user):
-            raise PermissionDenied('Chỉ quản lý phòng ban hoặc Admin được tra cứu nhật ký hành động.')
+            raise PermissionDenied('Chỉ Admin hệ thống được tra cứu nhật ký hành động.')
         if not request.user.can_view_menu('audit_log'):
             raise PermissionDenied('Bạn không có quyền truy cập mục "Nhật ký hành động".')
         return view(request, *args, **kwargs)

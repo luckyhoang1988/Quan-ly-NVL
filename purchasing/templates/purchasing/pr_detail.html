@@ -12,12 +12,16 @@
       {{ obj.request_no }}
       {% if obj.status == 'DRAFT' %}
         <span class="badge bg-secondary">{{ obj.get_status_display }}</span>
-      {% elif obj.status == 'PENDING' %}
+      {% elif obj.status == 'PENDING_DEPT' %}
+        <span class="badge bg-info text-dark">{{ obj.get_status_display }}</span>
+      {% elif obj.status == 'PENDING_PUR' %}
         <span class="badge bg-warning text-dark">{{ obj.get_status_display }}</span>
       {% elif obj.status == 'APPROVED' %}
         <span class="badge bg-success">{{ obj.get_status_display }}</span>
-      {% else %}
+      {% elif obj.status == 'REJECTED' %}
         <span class="badge bg-danger">{{ obj.get_status_display }}</span>
+      {% else %}
+        <span class="badge bg-dark">{{ obj.get_status_display }}</span>
       {% endif %}
     </h1>
     <div class="page-toolbar">
@@ -75,18 +79,23 @@
           <td colspan="3">{{ obj.note }}</td>
         </tr>
         {% endif %}
-        {% if approval %}
+        {% if approvals %}
         <tr>
-          <th class="text-nowrap">Yêu cầu duyệt</th>
+          <th class="text-nowrap">Lịch sử duyệt</th>
           <td colspan="3">
-            <span class="badge {% if approval.status == 'PENDING' %}bg-warning text-dark{% elif approval.status == 'APPROVED' %}bg-success{% else %}bg-danger{% endif %}">
-              {{ approval.get_status_display }}
-            </span>
-            — nộp bởi {{ approval.submitted_by.username }} lúc {{ approval.submitted_at|date:'d/m/Y H:i' }}
-            {% if approval.decided_at %}
-              ; quyết định bởi {{ approval.decided_by.username|default:'—' }} lúc {{ approval.decided_at|date:'d/m/Y H:i' }}
-              {% if approval.decision_note %}(<em>{{ approval.decision_note }}</em>){% endif %}
-            {% endif %}
+            {% for approval in approvals %}
+            <div{% if not forloop.last %} class="mb-1"{% endif %}>
+              <span class="badge {% if approval.status == 'PENDING' %}bg-warning text-dark{% elif approval.status == 'APPROVED' %}bg-success{% else %}bg-danger{% endif %}">
+                {{ approval.get_status_display }}
+              </span>
+              Duyệt — {{ approval.get_department_display }}
+              — nộp bởi {{ approval.submitted_by.username }} lúc {{ approval.submitted_at|date:'d/m/Y H:i' }}
+              {% if approval.decided_at %}
+                ; quyết định bởi {{ approval.decided_by.username|default:'—' }} lúc {{ approval.decided_at|date:'d/m/Y H:i' }}
+                {% if approval.decision_note %}(<em>{{ approval.decision_note }}</em>){% endif %}
+              {% endif %}
+            </div>
+            {% endfor %}
           </td>
         </tr>
         {% endif %}

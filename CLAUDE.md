@@ -263,20 +263,50 @@ names, exact dates) live in `git log`, not here.
   implement `get_absolute_url()` so `notification_mark_read` can deep-link to it. `Warehouse.staff`
   (M2M→User, `department=WAREHOUSE`) lets a handoff/notification target a specific warehouse's staff,
   falling back to the whole department when empty.
-- **Purchase Request (PR)**: full DRAFT→submit→Approval lifecycle mirroring GRN/GIN
-  (`purchasing.services.submit_purchase_request()`/`decide_purchase_request()`, department PURCHASING).
-  `assigned_to` (optional; staff picks it or a manager `forward_purchase_request()`s later) is
-  informational/notification only, never a decision right — only `is_department_manager('PURCHASING')` or
-  the Manager/Admin fallback can approve/reject, even if `assigned_to` names that exact person. Notify
-  `assigned_to` at **approval**, not at submit — that's the transition where they actually gain the ability
-  to act (an action-prompt notification belongs at the transition that grants the ability, not wherever the
-  recipient first becomes identifiable). A REJECTED PR can be reopened back to DRAFT
-  (`reopen_purchase_request()`), keeping `decided_by`/`reject_reason` as history — the UI only shows the
-  rejection reason while `status == REJECTED`. A DRAFT PR can be hard-deleted
-  (`delete_purchase_request()`, gated by module `delete` permission **and** ownership/view-all). Visibility
-  (`pr_list`/`pr_detail`, `_pr_can_view_all()`): a non-Purchasing requester sees only their own PRs; a plain
-  PURCHASING staffer sees only PRs where they're `assigned_to`; department manager/Manager/Admin see
-  everything — enforced identically on direct URL access, not just the list filter.
+- **Audit Log access narrowed to Admin/superuser only** (`accounts.permissions.can_view_audit_log()`,
+  2026-07-29, system-wide — not PR-specific): `/audit-log/` previously let any `is_manager=True` department
+  manager browse every module's history; a department manager's own approval history is already visible on
+  the relevant object's detail page (PR/GRN/GIN), so a global cross-module log is now Admin/superuser-only.
+  Gate at all three layers per the menu-access pattern below: `can_view_audit_log(user)` in the view,
+  `sidebar_permissions` (`can_view_menu('audit_log') and can_view_audit_log(user)`, combined in Python — not
+  as a compound `{% if %}` expression in the template), and the view itself.
+- **Purchase Request (PR) — two-stage sequential approval** (redesigned 2026-07-29 from the original
+  single-stage "always routes to PURCHASING" flow): `submit_purchase_request()` routes first to the
+  *requester's own* department manager (`PENDING_DEPT`, `Approval(department=requester.department)`) —
+  unless the requester belongs to PURCHASING or has no department, which skips straight to `PENDING_PUR`
+  (`Approval(department=PURCHASING)`) so nobody ends up approving their own PR twice. Approving at
+  `PENDING_DEPT` only *advances* the PR to `PENDING_PUR` and opens the second `Approval` — it is not a final
+  decision, so `decided_by`/`decided_at` stay unset; only approving at `PENDING_PUR` sets those fields and
+  flips to `APPROVED`. Rejecting at either stage ends the PR immediately (`REJECTED`). Both stages share one
+  service function, `decide_purchase_request()` — it reads which stage it's in from `pr.status` before
+  mutating, rather than being split into two stage-specific functions. **Ordering hazard**: the stage-2
+  `Approval` must be created *after* `decide_approval()` returns, never inside its `on_approve()` callback —
+  `decide_approval()` invokes the callback before persisting `approval.status=APPROVED`, so opening a second
+  `Approval` while the first is still `PENDING` in the DB collides with the `unique_pending_approval_per_target`
+  constraint (two PENDING rows for the same target).
+  `assigned_to` (optional; staff picks it or a manager `forward_purchase_request()`s later) is still
+  informational/notification only, never a decision right. Decision rights flow entirely through
+  `can_decide_pr(user, pr)` (`user.can('approve','pr')` Manager/Admin fallback, OR
+  `user.is_department_manager()` of whichever department currently holds the PR's `Approval`, per
+  `accounts.approvals.latest_approval_for(pr)`) — `can_manage_pur_pr(user)` is the PR-independent variant
+  (PURCHASING department manager, or the Manager/Admin fallback) used by `pr_forward` and the `?from_pr=`
+  gate on `po_create`, both of which are always PURCHASING-stage actions regardless of which PR they touch.
+  Notify `assigned_to` at **final approval** (`PENDING_PUR`→`APPROVED`), not at submit. A REJECTED PR can be
+  reopened back to DRAFT (`reopen_purchase_request()`), keeping `decided_by`/`reject_reason` as history — the
+  UI only shows the rejection reason while `status == REJECTED`. A DRAFT PR can be hard-deleted
+  (`delete_purchase_request()`, gated by module `delete` permission **and** ownership/view-all).
+  Visibility is 4 tiers, enforced identically at `pr_list` (`_pr_visible_queryset()`) and `pr_detail`
+  (`_pr_can_view()`) — never just the list filter: (1) `_pr_can_view_all()` (superuser/MANAGER/ADMIN) sees
+  everything — the PURCHASING department manager is **no longer** in this tier post-redesign; (2) the origin
+  department's manager sees every submitted (non-DRAFT) PR from their own department, including read-only
+  after it has moved on to `PENDING_PUR` (no more `can_approve`/edit once the `Approval` has left their
+  department); (3) the PURCHASING department manager sees any PR that has ever reached `PENDING_PUR`,
+  tracked via `Approval(department=PURCHASING)` history (`_pr_ids_with_pur_approval()`) rather than current
+  status, so an already-`APPROVED`/`REJECTED` PR that passed through PURCHASING stays visible; (4) everyone
+  else sees only PRs they created themselves, plus PRs where they're `assigned_to` **and** the PR is already
+  `APPROVED` — never while pending at either stage, to avoid leaking a PR before it's actually approved.
+  Approval history for a PR is shown in full (`accounts.approvals.approval_history_for()`, both stages in
+  submission order), not just the latest record like GRN/GIN — see §4 of the skill file.
 - **Supplier.managed_by**: PURCHASING role can create `Supplier` rows (not just Manager/Admin); the row
   auto-gets `managed_by=creator`, and `can_edit_supplier` limits a PURCHASING user to editing only suppliers
   they created (Manager/Admin edit any).
