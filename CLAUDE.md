@@ -360,29 +360,26 @@ names, exact dates) live in `git log`, not here.
   view's permission helper whenever a sidebar visibility condition is touched.
 - **`can_view_menu(key)` alone only gates "view"; a write action living inside a menu-only module (no
   `MODULES` CRUD column) needs its own actor-gate function too** — `can_view_menu` being satisfied says
-  nothing about who may mutate. `inventory.views.transfer_create`/`transfer_list` (BUG-05, 2026-07-29) had
-  only `@login_required` — no `can_view_menu('inventory')`, no role/department check — so any logged-in
-  user (QC, Accountant, Purchasing) could POST a real stock transfer, and revoking a user's "Tồn kho" menu
-  access didn't stop them either. Fixed the same shape as `can_decide_handoff`: added
-  `inventory.views.can_transfer_inventory(user)` (role in `{ADMIN, MANAGER, STAFF}` or superuser — those are
-  the roles already carrying create/update on `grn`/`gin`/`opname` in `ROLE_PERMISSIONS`, i.e. the "Kho"
-  roles by their own Vietnamese labels) and AND'd it with `can_view_menu('inventory')` in `transfer_create`;
-  `transfer_list` (read-only history) only needed the `can_view_menu` check to match its sibling
-  `inventory_list`. Apply generally: whenever a menu-only module gains a write action, add a dedicated
-  actor-gate for that action specifically — don't assume `can_view_menu` on the module covers it.
-- **`can_view_menu(key)` must gate every view in a menu-only module, not just its primary list view**
-  (BUG-06, 2026-07-29, found auditing the same 7 modules after BUG-05): `inventory.views.batch_list`/
-  `batch_detail`/`product_eoq`, `warehouse.views.warehouse_detail`, and `partners.views.supplier_detail`
-  only had `@login_required` — revoking a user's menu access via "Phân quyền chi tiết" hid the sidebar link
-  and blocked the module's list view, but detail/sibling read views (and a direct URL hit) stayed open. The
-  role-only write decorators (`warehouse_manager_required`, `catalog_manager_required`,
-  `partners_create_required`) had the identical gap the other direction — they checked role but not
-  `can_view_menu`, so a Manager/Admin stripped of a module's menu access could still create/edit through
-  that module's write views even though the module was supposed to be fully revoked for them. Fixed by
-  adding the `can_view_menu(key)` check to every read view in these modules and to the top of each shared
-  role-decorator (checked before the role check). Apply generally when auditing a menu-only module: grep
-  every view function in it (not just the one with `list` in its name) and every shared decorator, not just
-  the view the original bug report happened to name.
+  nothing about who may mutate. `inventory.views.transfer_create`/`transfer_list` originally had only
+  `@login_required` — no `can_view_menu('inventory')`, no role/department check — so any logged-in user
+  could POST a real stock transfer, and revoking a user's "Tồn kho" menu access didn't stop them either.
+  Fixed the same shape as `can_decide_handoff`: added `can_transfer_inventory(user)` (role in `{ADMIN,
+  MANAGER, STAFF}` or superuser — the roles already carrying create/update on `grn`/`gin`/`opname`) ANDed
+  with `can_view_menu('inventory')` in `transfer_create`; `transfer_list` (read-only history) only needed
+  the `can_view_menu` check to match its sibling `inventory_list`. Apply generally: whenever a menu-only
+  module gains a write action, add a dedicated actor-gate for that action specifically — don't assume
+  `can_view_menu` on the module covers it.
+- **`can_view_menu(key)` must gate every view in a menu-only module, not just its primary list view**:
+  `batch_detail`/`product_eoq`/`warehouse_detail`/`supplier_detail` only had `@login_required` — revoking a
+  user's menu access hid the sidebar link and blocked the module's list view, but detail/sibling read
+  views (and a direct URL hit) stayed open. The role-only write decorators (`warehouse_manager_required`,
+  `catalog_manager_required`, `partners_create_required`) had the identical gap the other direction — they
+  checked role but not `can_view_menu`, so a Manager/Admin stripped of a module's menu access could still
+  create/edit through that module's write views. Fixed by adding the `can_view_menu(key)` check to every
+  read view in these modules and to the top of each shared role-decorator (checked before the role check).
+  Apply generally when auditing a menu-only module: grep every view function in it (not just the one with
+  `list` in its name) and every shared decorator, not just the view the original bug report happened to
+  name.
 
 ### Established patterns to apply proactively (from accumulated bug fixes)
 
@@ -397,50 +394,35 @@ rather than rediscovering the failure.
   field.
 - **Form querysets filter, services must re-validate independently** — a `ModelChoiceField` queryset
   restricting to e.g. active suppliers/valid statuses/same-warehouse locations is a UX convenience only;
-  the paired service function must re-assert every one of those constraints itself (grep the form's
-  queryset filters and confirm a matching check exists in the service). The idiom
-  `Q(is_active=True) | Q(pk=self.instance.fk_id)` keeps a since-deactivated value selectable when editing an
-  existing record, without allowing it on create. The same staleness risk exists **across two steps of one
-  multi-step workflow**, not just form-vs-service: `shipping.services.issue_gin` only re-checked
-  `qty_allocated <= batch.qty_available` at issue time, trusting the batch's `status`/`exp_date`/
-  `product`/`warehouse` were still whatever `suggest_fifo_batches` validated back at `start_picking` —
-  but a `GinBatchAllocation` can sit in `PICKING` for days, during which the batch can expire (no cron
-  syncs `EXPIRED` between requests), get overridden to `QUARANTINE`, or get `transfer_stock`'d to another
-  warehouse. Fixed by re-asserting `status IN (ACTIVE, PARTIAL_USED)` + `exp_date`/`product_id`/
-  `location.warehouse_id` inside `issue_gin` itself, under the same `select_for_update()` lock as the qty
-  check. Apply generally: whenever a later step of a workflow consumes a reference selected/validated by an
-  earlier step, re-validate the full set of invariants at the later step too, not just the one invariant
-  (usually qty) that happens to be racy. **`shipping.services.override_allocation` had the same gap the
-  other direction** (BUG-03, 2026-07-29): it read `gin`/`allocation`/`new_batch` straight off the caller's
-  in-memory objects with zero locking, so a concurrent `issue_gin()` on the same GIN could deduct inventory
-  from the pre-override batch while the override committed the allocation row pointing at a different
-  batch — allocation and the actual stock deduction would disagree, with no way to recover which batch was
-  really issued. Fixed by locking in the same order `issue_gin` already locks in — **GIN → GinItem →
-  Allocation → Batch → Inventory is the standing lock order for the whole GIN workflow; any new
-  GIN-mutating function must acquire locks in this order** (locking the GIN row first is what serializes
-  `override_allocation` against `issue_gin` on the same GIN; independently locking the target batch also
-  serializes two concurrent overrides that happen to target the same batch across different GINs) — and
-  re-reading `gin.status`/`allocation`/`new_batch` fresh from the DB under those locks before repeating every
-  existing check (product/warehouse/status/qty), rather than trusting the caller's objects at all. Tested
-  deterministically (no threading precedent in this repo — see the `*_update` TOCTOU bullet below for the
-  established substitute): mutate the DB directly between fetching a "stale" Python object and calling the
-  service, then assert the service doesn't trust it.
+  the paired service function must re-assert every one of those constraints itself. The idiom
+  `Q(is_active=True) | Q(pk=self.instance.fk_id)` keeps a since-deactivated value selectable when editing
+  an existing record, without allowing it on create. The same staleness risk exists **across two steps of
+  one multi-step workflow**, not just form-vs-service: `issue_gin` re-validates `status`/`exp_date`/
+  `product`/`location.warehouse_id` (not just qty) under the same lock, since a `GinBatchAllocation` can
+  sit in `PICKING` for days while the batch expires (no cron syncs `EXPIRED` between requests), gets
+  overridden to `QUARANTINE`, or gets transferred elsewhere — whatever `suggest_fifo_batches` validated
+  back at `start_picking` may no longer hold. Apply generally: whenever a later step of a workflow consumes
+  a reference selected/validated by an earlier step, re-validate the full set of invariants at the later
+  step too, not just the one invariant (usually qty) that happens to be racy.
+  `override_allocation` had the same gap the other direction: it read `gin`/`allocation`/`new_batch`
+  straight off the caller's in-memory objects with zero locking, so a concurrent `issue_gin()` on the same
+  GIN could deduct inventory from the pre-override batch while the override committed the allocation row
+  pointing at a different batch. Fixed by locking in the same order `issue_gin` already locks in —
+  **`GIN → GinItem → Inventory → Batch` is the standing lock order for the whole GIN workflow**
+  (`override_allocation` itself only needs `GIN → Allocation → Batch`, since it never touches
+  `Inventory`) — and re-reading `gin.status`/`allocation`/`new_batch` fresh from the DB under those locks
+  before repeating every existing check, rather than trusting the caller's objects at all.
 - **A per-target quantity check must sum every existing claim on that target, not just the one being
-  changed** — `shipping.services.override_allocation` (BUG-04, 2026-07-29) checked
-  `new_batch.qty_available < allocation.qty_allocated` using only the allocation being overridden, so two
-  allocations from the same GIN (e.g. one `GinItem` FIFO-split across two batches) could each override onto
-  the same batch and independently pass the check while their *sum* exceeded `qty_available` — `issue_gin`
-  would then fail partway through with the GIN stuck in `PICKING` and no user-facing way to fix it besides
-  cancelling. Fixed by summing every other `GinBatchAllocation` already pointing at `new_batch` within the
-  same GIN (`gin_item__gin=gin`, excluding the current allocation's own pk) and comparing that total against
-  `qty_available`, not just the one row being changed. The companion half of the same bug — two separate
-  `GinItem` rows for the *same product* on one GIN independently double-booking a batch during
-  `start_picking` (each calls `suggest_fifo_batches` on its own, blind to the other's in-flight plan) — is
-  closed structurally instead: `GinItem.Meta` now has `UniqueConstraint(fields=['gin', 'product'],
-  name='unique_product_per_gin')`, one line per product per GIN. Apply the general lesson elsewhere: any
-  "does X fit in Y" check on a shared, not-yet-committed resource (a batch during PICKING, before `issue_gin`
-  actually decrements it) must aggregate every other pending claim on that same resource, not compare the
-  one claim being validated in isolation.
+  changed** — `override_allocation` originally checked `new_batch.qty_available` against only the
+  allocation being overridden, so two allocations from the same GIN (e.g. one `GinItem` FIFO-split across
+  two batches) could each override onto the same batch and independently pass the check while their *sum*
+  exceeded `qty_available`. Fixed by summing every other `GinBatchAllocation` already pointing at
+  `new_batch` within the same GIN, not just the one row being changed. The companion half of the same bug
+  — two separate `GinItem` rows for the *same product* on one GIN independently double-booking a batch
+  during `start_picking` — is closed structurally instead via `UniqueConstraint(['gin', 'product'])`.
+  Apply the general lesson elsewhere: any "does X fit in Y" check on a shared, not-yet-committed resource
+  must aggregate every other pending claim on that same resource, not compare the one claim being
+  validated in isolation.
 - **"At most/at least N of X" invariants need both directions guarded** — e.g. the warehouse-type singleton
   (STAGING/SCRAP) needed both `deactivate_warehouse()` *and* `activate_warehouse()` to check the other side;
   "a warehouse needs ≥1 active location" needed a guard on deactivating a `Location` too, not just at
@@ -468,24 +450,23 @@ rather than rediscovering the failure.
   transaction (`select_for_update()` + re-validate), not only via a pre-transaction `get_object_or_404` —
   closes both "guess another user's pk" and the TOCTOU race between two concurrent submits.
 - **This TOCTOU guard also applies to the `*_update` DRAFT-only edit views** (`po_update`, `pr_update`,
-  `grn_update`), even though their pk *is* a URL path segment already scoped by permission — a
-  URL-scoped pk only proves the actor is allowed to edit *some* object at that pk, not that its status
-  hasn't changed since the request's own `get_object_or_404` ran (BUG-02, 2026-07-29). The unsafe shape:
-  check `obj.status == DRAFT` once at the top, then later call `form.save()`/`formset.save()` on that same
-  `obj` inside `transaction.atomic()` — if another request transitions the row in between (e.g. approves
-  it), `ModelForm.save()` does a full-row `UPDATE` using the in-memory instance, so any field the form
-  doesn't own (like `status`) still holds the stale pre-transition value and gets written straight back
-  over the real one, silently reverting an approved/submitted document to DRAFT and desyncing any
-  `Approval` row already opened for it. Fix shape: only lock+re-check+re-bind on `POST` — construct a
-  fresh form bound to `Model.objects.select_for_update().get(pk=pk)` *inside* `transaction.atomic()`, after
-  re-checking `.status == DRAFT` on that freshly locked row, and call `is_valid()`/`save()` on that new
-  form/instance; reassigning `form.instance` to the locked row after the original `is_valid()` already ran
-  does **not** work, since `construct_instance` (which copies `cleaned_data` onto `instance`) only runs
-  during that original `full_clean()` — the swapped-in instance never receives the user's edits. No
-  `TransactionTestCase`/threading precedent exists in this repo for regression-testing the race itself;
-  the established substitute is patching `get_object_or_404` in the view module with a `side_effect` that
-  mutates the row's status on the *second* call (the locked re-fetch) — deterministic, no real concurrency
-  needed, and it fails on the old code path while passing on the fixed one.
+  `grn_update`), even though their pk *is* a URL path segment already scoped by permission — that only
+  proves the actor may edit *some* object at that pk, not that its status hasn't changed since this
+  request's own `get_object_or_404` ran. The unsafe shape: check `obj.status == DRAFT` once at the top,
+  then later call `form.save()`/`formset.save()` on that same in-memory `obj` inside
+  `transaction.atomic()` — if another request transitions the row in between (e.g. approves it),
+  `ModelForm.save()` does a full-row `UPDATE` using the in-memory instance, so any field the form doesn't
+  own (like `status`) still holds the stale pre-transition value and gets written straight back over the
+  real one, silently reverting an approved/submitted document to DRAFT. Fix shape: only
+  lock+re-check+re-bind on `POST` — construct a fresh form bound to
+  `Model.objects.select_for_update().get(pk=pk)` *inside* `transaction.atomic()`, after re-checking
+  `.status == DRAFT` on that freshly locked row, and call `is_valid()`/`save()` on that new form/instance;
+  reassigning `form.instance` to the locked row after the original `is_valid()` already ran does **not**
+  work, since `construct_instance` only runs during that original `full_clean()` — the swapped-in instance
+  never receives the user's edits. No threading precedent needed for this class of bug: the established
+  substitute is patching `get_object_or_404` in the view module with a `side_effect` that mutates the
+  row's status on the *second* call (the locked re-fetch) — deterministic, fails on the old code path,
+  passes on the fixed one.
 - **Login rate limiting**: IP-keyed counter in Django's default `LocMemCache` (`accounts.forms.LoginForm`,
   5 attempts / 15 min). `client_ip()` only trusts `X-Forwarded-For` when `settings.TRUST_X_FORWARDED_FOR` is
   explicitly `True` (no reverse proxy yet — an unconditionally-trusted XFF header is a rate-limit bypass).
@@ -500,38 +481,103 @@ rather than rediscovering the failure.
   with a safe fallback — Django never validates raw querystring access, and `parse_date()` specifically can
   both return `None` (malformed shape) *and* raise `ValueError` (valid shape, invalid calendar date), so
   both failure modes need catching.
-- **Per-SKU thresholds/KPIs must aggregate across every row in scope before comparing**, not check
-  row-by-row — e.g. `low_stock_count` must sum a SKU's qty across all MAIN warehouses before comparing to
-  `min_level`, or a split-stock SKU gets double-counted/miscounted. Similarly, a KPI naming a business
-  concept that maps to a multi-value status enum (e.g. "pending GRN") must enumerate every status belonging
-  to that concept, not just the one that existed when the KPI was first written.
+- **Per-SKU thresholds/KPIs must aggregate across every row in scope before comparing**, not row-by-row —
+  e.g. `low_stock_count` must sum a SKU's qty across all MAIN warehouses before comparing to `min_level`,
+  or a split-stock SKU gets miscounted. A KPI naming a business concept that maps to a multi-value status
+  enum (e.g. "pending GRN") must enumerate every status belonging to that concept, not just the one that
+  existed when the KPI was first written. **The same aggregation discipline applies to the UI action
+  attached to a KPI, not just the KPI's count**: `inventory_list` already deduped `below_min_count` per
+  SKU, but each `Inventory` row for a SKU spanning 2+ MAIN warehouses still independently rendered its own
+  "Tạo yêu cầu mua hàng" button with an arbitrarily-picked destination warehouse — letting a user create
+  duplicate PRs for the same shortage. Fixed by tracking which SKUs already rendered the button while
+  building rows, and only pre-filling the destination warehouse when exactly one MAIN warehouse holds that
+  SKU (`Count(distinct=True)`); with 2+ candidates, leave it blank and let the required form field force
+  the user to choose — never auto-pick one of several equally-valid warehouses. Apply generally: once a
+  KPI count is deduped to one-per-aggregate-key, check whether any per-row UI action tied to that KPI needs
+  the identical dedup, and whether any field it prefills is actually unambiguous before defaulting it.
+- **`timezone.now().date()` is a UTC date, not the business date, even with `TIME_ZONE='Asia/Ho_Chi_Minh'`**:
+  `USE_TZ=True` only affects how datetimes are *stored/displayed*, not what `.date()` returns on
+  `timezone.now()` — that's always sliced in UTC, so during Vietnam's 00:00–06:59 window (UTC+7) it
+  silently returns yesterday's date, no exception raised. `sync_expired_batches`/`expiring_soon_batches`
+  and `issue_gin`'s expiry check all used this for business-date comparisons (an expired batch could still
+  ship; expiry sync ran a day late). Fixed by switching to `timezone.localdate()`
+  (`timezone.localtime(timezone.now()).date()`) everywhere a local business date is compared. Apply
+  generally: grep for `timezone.now().date()` whenever adding new date-comparison logic — a local
+  business-date comparison must use `timezone.localdate()`, never `timezone.now().date()`. Test by mocking
+  `timezone.now()` (patch the call site's own module namespace, e.g. `inventory.services.timezone.now`,
+  not `django.utils.timezone.now`) to a fixed UTC datetime that falls on the previous calendar day in
+  Vietnam time, and assert the comparison uses the VN-local date.
+- **A ground-truth event that terminates a resource must also terminate any pending workflow record that
+  depends on that resource still being "live"**: a stocktake shortage adjustment can deduct a
+  `PENDING_RECEIPT` batch down to zero (closing it to `CLOSED`), but `accept_handoff()`/`reject_handoff()`
+  both require the batch to still be `PENDING_RECEIPT` — a `WarehouseHandoff` left `PENDING` against a
+  now-`CLOSED` batch has nothing left to accept/reject and would stay stuck forever. Fixed by adding
+  `WarehouseHandoff.Status.CANCELLED` and, inside the same `select_for_update()`+transaction that closes
+  the batch, cancelling any `PENDING` handoff pointing at it (`decided_by`/`decided_at` set, audit-logged)
+  — but only when the batch is *fully* depleted; a partial deduction leaves both batch and handoff
+  untouched. This deliberately does **not** follow `transfer_stock`'s precedent of *blocking* an action on
+  a batch with a pending handoff — a manual transfer is discretionary and can wait for the handoff to
+  resolve, but a physical stocktake count is a ground-truth correction that can't be deferred, so
+  auto-cancelling the now-meaningless handoff is the right response instead of blocking the count. General
+  lesson: whenever one workflow's terminal state change can leave a *different* workflow's pending record
+  referencing a resource that's no longer in a decidable state, cancel the dependent record in the same
+  transaction rather than leaving it orphaned — check whether the triggering action is discretionary
+  (block) or a ground-truth fact (cancel forward).
+- **Standing lock order whenever a transaction touches 2+ of `Inventory`/`Batch`/`WarehouseHandoff`:
+  always `Inventory → Batch → WarehouseHandoff`** (settled 2026-07-29 after three rounds of real Postgres
+  deadlocks surfaced by concurrent-workflow review). Any function locking more than one of these —
+  `accept_handoff`/`reject_handoff`, `_consume_shortage_batches`, `issue_gin`, `move_batch_qty` (and its
+  callers `transfer_stock`, `qc_pass`/`qc_fail`/`qc_partial_pass`, `reject_handoff(..., TO_SCRAP)`),
+  `cancel_qc_inspection` — must acquire locks in this order. A caller that pre-locks `Batch` before
+  delegating into `move_batch_qty` must lock `Inventory` itself first: `move_batch_qty`'s own internal
+  ordering only protects callers that let it acquire the `Batch` lock too. Helper:
+  `inventory.services.lock_inventories(product, warehouses)` locks 1+ `Inventory` rows in stable
+  `warehouse_id`-ascending order before any `Batch` lock — this also closes the narrower case of two
+  transactions locking the *same two* `Inventory` rows in opposite order (e.g. two transfers running in
+  opposite directions between the same warehouse pair).
+  **A multi-line document extends this one level up**: any loop that locks one `Inventory` row per item
+  (`issue_gin`, `apply_adjustment`, `start_qc`/`qc_pass`/`qc_fail`/`qc_partial_pass`) must iterate
+  `.order_by('product_id', 'pk')` — never rely on a model's incidental `Meta.ordering` (e.g. `StocktakeItem`
+  actually sorts by `product_code`) or the DB's default insertion-order return — so two transactions
+  touching the same two SKUs in opposite line-order can't deadlock across resources even though each line's
+  own Inventory→Batch→WarehouseHandoff order is correct. `pk` is only a tiebreaker for documents that allow
+  2+ lines per product (e.g. `GrnItem`); the correctness-bearing key is `product_id`.
+  Two secondary traps found along the way, worth checking whenever this pattern is touched again: (1)
+  `select_related(X).select_for_update()` **without** `of=` also locks table `X`, not just the base table —
+  if the join is only for N+1 avoidance and `X` isn't meant to be locked (e.g. `StocktakeItem`
+  `select_related('product')`), scope it with `select_for_update(of=('self',))`. (2) a lock acquired by the
+  caller *before* delegating into a shared helper still counts as that transaction's first lock for
+  Postgres's deadlock-cycle purposes — re-locking an already-held row inside the helper afterward is
+  harmless, but locking out of order beforehand isn't.
+  Regression-tested with real `TransactionTestCase` + threads — the first threading precedent in this repo,
+  since the deterministic `get_object_or_404`-patching substitute used for the `*_update` TOCTOU bullet
+  above only proves one code path's logical correctness at a time and can't observe an actual
+  cross-transaction deadlock. See `stocktake.tests.HandoffStocktakeDeadlockTests`/`InventoryBatchLockOrderDeadlockTests`/
+  `MultiSkuLockOrderDeadlockTests` as the pattern to copy for any new lock-order regression test: two
+  threads + a `threading.Barrier`, asserting no `OperationalError`, no thread hangs, and no resource ends up
+  over-consumed or orphaned regardless of which side wins the race.
 - **A numeric field/derived value with a sibling that has a bound** (a percentage field capped elsewhere, a
   sample-size floor on one sampling method but not another) should get the same bound by default — the
   asymmetry itself is usually evidence the bound was simply never added.
 - **Any model that a service layer says "don't create directly — use `X.services.y()`" must have that rule
-  enforced in Django Admin too, not just in code comments** (BUG-09, 2026-07-29): `inventory.admin`'s
-  `Inventory`/`Batch`/`StockMovement`/`StockTransfer` `ModelAdmin`s originally used defaults, so a
-  superuser could edit `qty_on_hand`/`qty_received`/`qty_used`/`status` or add/delete `StockMovement` rows
-  straight through `/admin/`, bypassing `record_movement()`, `log_action()`, and the Batch↔Inventory sync
-  invariant above. Fixed with a shared `ServiceManagedAdminMixin` (`has_add_permission`/
-  `has_change_permission`/`has_delete_permission` all `False`, view-only) applied to all four
-  `ModelAdmin`s, plus DB-level `CheckConstraint`s (`batch_qty_used_lte_received`,
-  `inventory_reserved_lte_on_hand`) as defense in depth against any other write path (shell, fixtures,
-  future code) that skips service-layer validation. Apply the mixin to any future model whose docstring
-  says "don't create directly."
+  enforced in Django Admin too, not just in code comments** — `inventory.admin`'s `Inventory`/`Batch`/
+  `StockMovement`/`StockTransfer` `ModelAdmin`s originally used defaults, so a superuser could edit
+  `qty_on_hand`/`status` or add/delete `StockMovement` rows straight through `/admin/`, bypassing
+  `record_movement()`, `log_action()`, and the Batch↔Inventory sync invariant above. Fixed with a shared
+  `ServiceManagedAdminMixin` (`has_add_permission`/`has_change_permission`/`has_delete_permission` all
+  `False`, view-only) applied to all four `ModelAdmin`s, plus DB-level `CheckConstraint`s
+  (`batch_qty_used_lte_received`, `inventory_reserved_lte_on_hand`) as defense in depth against any other
+  write path that skips service-layer validation. Apply the mixin to any future model whose docstring says
+  "don't create directly."
 - **A bulk `QuerySet.update()` on a model that needs an audit trail silently skips it** — `.update()` never
-  calls `save()`, so any `log_action()` call a service normally makes on that transition just doesn't run
-  (BUG-11, 2026-07-29): `inventory.services.sync_expired_batches()` flipped ACTIVE/PARTIAL_USED batches to
-  EXPIRED with a single `.update(status=EXPIRED)` — fast, but left zero `AuditLog` rows for a real Batch
-  state transition, violating the "every GRN/QC/Batch state transition needs audit" invariant above. Fixed
-  by replacing the bulk update with `select_for_update()` + a per-row loop calling
-  `batch.save(update_fields=['status'])` and `log_action(None, ...)` (actor `None` since it's a
-  system-triggered transition, not a user action) inside one `transaction.atomic()` block — still returns
-  the same integer count callers/tests expect, just no longer bulk. Apply generally: before reaching for
-  `.update()`/`.bulk_update()`/`.bulk_create()` on a model whose transitions are normally logged, check
-  whether the perf win is actually needed at current row counts — if the model's docstring or a service
-  function nearby calls `log_action()` on this same transition elsewhere, the bulk path needs the identical
-  per-row loop, not a shortcut around it.
+  calls `save()`, so any `log_action()` a service normally makes on that transition just doesn't run.
+  `sync_expired_batches()` flipped batches to EXPIRED with a single `.update()` — fast, but left zero
+  `AuditLog` rows for a real Batch state transition. Fixed with `select_for_update()` + a per-row loop
+  calling `batch.save(update_fields=['status'])` and `log_action(None, ...)` (actor `None` for a
+  system-triggered transition) inside one `transaction.atomic()` — still returns the same integer count
+  callers expect, just no longer bulk. Apply generally: before reaching for `.update()`/`.bulk_update()`/
+  `.bulk_create()` on a model whose transitions are normally logged, check whether the perf win is actually
+  needed at current row counts — the bulk path needs the identical per-row loop, not a shortcut around it.
 - **Performance**: prefer fixing a missing index or reducing per-request query count over reaching for
   caching. Reserve caching for values that are both expensive to compute *and* tolerate staleness (e.g. the
   audit-log filter dropdowns are cached 300s via Django's default `LocMemCache` — the first use of the cache

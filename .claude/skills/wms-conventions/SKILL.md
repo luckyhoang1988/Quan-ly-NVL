@@ -304,6 +304,32 @@ pattern nhẹ hơn — xem `inventory.models.WarehouseHandoff` + `inventory.serv
    để phục vụ nhánh từ chối ở bước 4, mở rộng guard ngay tại primitive đó (không viết lại logic tách batch
    riêng) — xem `move_batch_qty`'s status-nguồn guard được mở rộng thêm `PENDING_RECEIPT` cho
    `reject_handoff(..., destination=TO_SCRAP)`.
+6. **Trạng thái thứ 4, `CANCELLED`** (BUG-13, 2026-07-29, xem `inventory.models.WarehouseHandoff`): khác
+   `ACCEPTED`/`REJECTED` (luôn do người quyết định chủ động bấm), `CANCELLED` là do HỆ THỐNG tự chuyển khi
+   batch `PENDING_RECEIPT` mà handoff đang trỏ vào bị 1 nghiệp vụ KHÁC đóng hẳn (`CLOSED`) trước khi ai kịp
+   Nhận/Từ chối — cụ thể là `stocktake.services._consume_shortage_batches` trừ hết batch đó khi kiểm kê phát
+   hiện không còn tồn vật lý. Batch không còn gì để bàn giao nữa, giữ handoff ở `PENDING` sẽ kẹt vĩnh viễn
+   (`accept_handoff`/`reject_handoff` đều yêu cầu batch còn `PENDING_RECEIPT`). Chuyển sang `CANCELLED` +
+   `decided_by`/`decided_at` + audit log, trong CÙNG transaction/`select_for_update()` với việc đóng batch —
+   chỉ khi batch bị trừ hết HOÀN TOÀN; trừ một phần (batch vẫn `PENDING_RECEIPT`) thì giữ nguyên handoff
+   `PENDING`. Áp dụng chung: nếu sau này thêm 1 nghiệp vụ khác cũng có thể đóng hẳn 1 batch `PENDING_RECEIPT`
+   (không qua `accept_handoff`), nhớ check/huỷ handoff `PENDING` liên quan giống pattern này thay vì để mồ
+   côi.
+7. **Lock order toàn hệ thống: `Inventory` → `Batch` → `WarehouseHandoff`, luôn theo thứ tự này** — mọi hàm
+   khoá từ 2 model trở lên trong bộ ba này (`accept_handoff`/`reject_handoff`/`_consume_shortage_batches`/
+   `issue_gin`/`move_batch_qty`/`transfer_stock`/`qc_pass`/`qc_fail`/`qc_partial_pass`/
+   `cancel_qc_inspection`) phải khoá theo đúng thứ tự này — khoá ngược ở 1 trong nhiều phía sẽ tạo deadlock
+   thật khi 2 nghiệp vụ chạm cùng SKU/batch đồng thời (kiểm kê vs xử lý handoff, kiểm kê vs xuất GIN, kiểm
+   kê vs QC...). Dùng `inventory.services.lock_inventories(product, warehouses)` để khoá Inventory đúng thứ
+   tự trước khi khoá Batch.
+   **Chứng từ nhiều dòng SKU cần thêm 1 tầng thứ tự nữa**: mọi vòng lặp khoá Inventory 1 lần/dòng
+   (`issue_gin`, `apply_adjustment`, `start_qc`/`qc_pass`/`qc_fail`/`qc_partial_pass`) phải duyệt item theo
+   `.order_by('product_id', 'pk')` — không dựa vào thứ tự chèn/pk mặc định hay `Meta.ordering` tình cờ của
+   model đó (vd `StocktakeItem` sắp theo `product_code`) — vì 2 chứng từ chạm cùng 2 SKU nhưng duyệt theo
+   chiều khác nhau vẫn deadlock được dù mỗi dòng riêng lẻ đã khoá đúng thứ tự trên.
+   Xem CLAUDE.md mục "Established patterns" (bullet lock order) để biết danh sách đầy đủ hàm đã sửa, 2 bẫy
+   phụ (`select_related().select_for_update()` khoá luôn bảng join; lock acquired trước khi gọi vào helper
+   dùng chung vẫn tính vào thứ tự khoá), và cách test bằng `TransactionTestCase` + thread thật.
 
 ## 6. Gate link sidebar (`base.html`) bằng `user.can()` qua context processor, KHÔNG hardcode role
 
@@ -372,21 +398,17 @@ trùng lặp và dễ lệch nhau.
    `can_view_menu(key)` chỉ gate được "xem", KHÔNG đủ để gate "ghi": mọi role có menu vẫn qua được nếu chỉ
    check `can_view_menu`. Cần thêm 1 hàm actor-gate riêng kiểu `can_decide_handoff` (mục 5, viết ở view,
    KHÔNG viết ở model — module này không có cột CRUD trong `MODULES` nên không dùng được
-   `user.can(action, module)`) và AND cả 2 điều kiện lại — xem `inventory.views.can_transfer_inventory`
-   (BUG-05, 2026-07-29: trước đó `transfer_create`/`transfer_list` chỉ có `@login_required`, không
-   `can_view_menu` lẫn actor-gate nào, nên bất kỳ user đăng nhập nào — kể cả QC/Kế toán/Mua hàng, hoặc user
-   đã bị thu hồi menu — POST thẳng được để điều chuyển tồn kho thật). View chỉ đọc (list/detail) trong cùng
-   module thì vẫn chỉ cần `can_view_menu` như bình thường — không áp actor-gate của thao tác ghi lên các view
-   đọc, giữ đúng nguyên tắc "xem" và "ghi" là 2 quyền tách biệt.
+   `user.can(action, module)`) và AND cả 2 điều kiện lại — xem `inventory.views.can_transfer_inventory` làm
+   mẫu. View chỉ đọc (list/detail) trong cùng module thì vẫn chỉ cần `can_view_menu` như bình thường — không
+   áp actor-gate của thao tác ghi lên các view đọc, giữ đúng nguyên tắc "xem" và "ghi" là 2 quyền tách biệt.
 
-   **Khi audit 1 module menu-only, kiểm tra HẾT mọi view/decorator trong app đó, không dừng lại ở view có chữ
-   `list` trong tên** (BUG-06, 2026-07-29 — phát hiện ngay sau BUG-05, cùng 1 lớp lỗi): `batch_detail`/
-   `product_eoq` (inventory), `warehouse_detail` (warehouse), `supplier_detail` (partners) chỉ có
-   `@login_required`, thiếu hẳn `can_view_menu` dù view `list` cùng module đã có. Ngược lại, các decorator
-   role-only dùng chung cho nhóm view GHI (`warehouse_manager_required`, `catalog_manager_required`,
-   `partners_create_required`) chỉ check role, không check `can_view_menu` — thu hồi menu của 1 Manager/Admin
-   cụ thể không chặn được họ tạo/sửa qua các view đó. Xem CLAUDE.md mục "Established patterns to apply
-   proactively" (bullet BUG-06) để biết fix đầy đủ.
+   **Khi audit 1 module menu-only, kiểm tra HẾT mọi view/decorator trong app đó, không dừng lại ở view có
+   chữ `list` trong tên**: `batch_detail`/`product_eoq` (inventory), `warehouse_detail` (warehouse),
+   `supplier_detail` (partners) từng chỉ có `@login_required`, thiếu hẳn `can_view_menu` dù view `list` cùng
+   module đã có. Ngược lại, các decorator role-only dùng chung cho nhóm view GHI
+   (`warehouse_manager_required`, `catalog_manager_required`, `partners_create_required`) chỉ check role,
+   không check `can_view_menu` — thu hồi menu của 1 Manager/Admin cụ thể không chặn được họ tạo/sửa qua các
+   view đó. Xem CLAUDE.md mục "Established patterns to apply proactively" để biết fix đầy đủ.
 3. **Trang "Phân quyền chi tiết"** — `menu_rows` (context của `user_permission_edit`) build từ `MENU_ITEMS`,
    render trong khối `<div class="card mt-3">` "Ứng dụng được phép truy cập" (`user_permission_form.html`) —
    checkbox độc lập, KHÔNG nằm trong bảng CRUD.
@@ -436,3 +458,45 @@ chiếm không gian dọc cố định trên MỌI trang dù ít khi thao tác. 
 - Sidebar giờ chỉ còn danh sách nav + logo/brand — không còn thông tin user ở cuối. Nếu thêm hành động
   user mới (vd đổi ngôn ngữ, xem hồ sơ...) thì thêm `<li>` vào đúng `<ul class="dropdown-menu">` này, không
   tạo lại khối user-box trong sidebar.
+
+## 8. Ngày nghiệp vụ: luôn dùng `timezone.localdate()`, không dùng `timezone.now().date()`
+
+`USE_TZ=True` + `TIME_ZONE='Asia/Ho_Chi_Minh'` chỉ quyết định cách Django LƯU/HIỂN THỊ datetime — không đổi
+việc `timezone.now()` vẫn luôn trả về UTC. Gọi `.date()` thẳng lên nó (`timezone.now().date()`) lấy ngày theo
+UTC, nên trong khung giờ VN 00:00–06:59 (UTC+7) kết quả là **ngày hôm trước** so với lịch VN thật — sai âm
+thầm, không raise lỗi gì. Bug thật (BUG-12, 2026-07-29): `inventory.services.sync_expired_batches`/
+`expiring_soon_batches` và `shipping.services.issue_gin` (check hết hạn lúc xuất kho) đều dùng
+`timezone.now().date()` cho so sánh ngày nghiệp vụ — batch hết hạn vẫn có thể xuất kho được, đồng bộ EXPIRED
+trễ 1 ngày, danh sách sắp hết hạn lệch ngày.
+
+**Quy tắc**: mọi so sánh "ngày hôm nay" cho nghiệp vụ (hạn dùng, ngày tạo phiếu, ngưỡng N-ngày-tới...) PHẢI
+dùng `timezone.localdate()` (tương đương `timezone.localtime(timezone.now()).date()`), KHÔNG bao giờ
+`timezone.now().date()`. Khi thêm logic so sánh ngày mới, grep `timezone.now().date()` trong file đang sửa để
+tự kiểm trước khi commit.
+
+**Test cho lỗi loại này**: mock `timezone.now()` (patch đúng namespace nơi gọi, vd
+`inventory.services.timezone.now`, KHÔNG phải `django.utils.timezone.now`) trả về 1 datetime UTC cố định rơi
+vào ngày hôm trước theo giờ VN (vd `2026-07-28 20:00 UTC` = `2026-07-29 03:00` giờ VN) — code dùng
+`timezone.now().date()` sẽ so sánh nhầm với 07-28, code dùng `timezone.localdate()` so đúng với 07-29. Không
+cần `freezegun` (chưa có trong dependency), `unittest.mock.patch` là đủ.
+
+## 9. KPI đã dedupe theo khoá tổng hợp (SKU...) thì hành động UI gắn theo KPI đó cũng phải dedupe riêng
+
+Dedupe 1 con số đếm (vd `below_min_count`) không tự động kéo theo dedupe hành động UI render cho từng row —
+nếu 1 SKU có N row (vd tồn tại ở N kho MAIN), mỗi row vẫn độc lập biết "SKU này dưới Min" và độc lập render 1
+nút hành động, dẫn tới N nút giống hệt nhau cho cùng 1 SKU. Bug thật (BUG-14, 2026-07-29):
+`inventory.views.inventory_list` đã dedupe đúng `below_min_count`, nhưng mỗi `Inventory` row của SKU tồn tại ở
+2+ kho MAIN vẫn tự render nút "Tạo yêu cầu mua hàng" riêng, cùng `suggested_po_qty` nhưng khác kho đích (kho
+đích lấy tuỳ tiện từ chính row đó).
+
+**Cách sửa chuẩn**: dùng 1 `set()` theo khoá tổng hợp (vd `pr_button_shown_products`) trong lúc build danh
+sách row, chỉ set `show_pr_button=True` cho row ĐẦU TIÊN gặp mỗi khoá — template chỉ render nút khi
+`row.show_pr_button`, không phải khi `row.below_min` (2 điều kiện tách biệt: "cảnh báo" hiện ở mọi row, "nút
+hành động" chỉ hiện đúng 1 lần cho cả khoá).
+
+**Không tự chọn 1 giá trị phụ trợ tuỳ tiện khi có nhiều lựa chọn ngang nhau**: nếu hành động cần 1 field phụ
+(vd kho đích nhận PR) mà khoá đó có > 1 lựa chọn hợp lệ (> 1 kho MAIN giữ SKU), ĐỪNG tự chọn đại 1 cái — chỉ
+prefill khi thực sự chỉ có đúng 1 lựa chọn (đếm bằng `Count('warehouse_id', distinct=True)` theo SKU), còn lại
+để trống và để form đích (vd `PurchaseRequestForm.warehouse`, vốn đã required) bắt người dùng tự chọn. Áp dụng
+chung: bất kỳ lúc nào thêm 1 nút hành động gắn theo 1 KPI đã tổng hợp theo khoá nào đó, tự hỏi "nút này có nên
+hiện N lần hay chỉ 1 lần cho khoá đó" VÀ "field nào đang bị điền tự động có thực sự chỉ có 1 lựa chọn không".
