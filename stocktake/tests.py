@@ -5,18 +5,27 @@ Theo cùng bố cục với ``shipping.tests`` (Model -> Service theo từng bư
 workflow -> View/permission), mã test case ``TC-SO-<FR#>-<seq>``.
 """
 import datetime
+import threading
 from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.db import connection
+from django.db.utils import OperationalError
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import AuditLog
 from catalog.models import Product
-from inventory.models import Batch, Inventory, StockMovement
+from inventory.models import Batch, Inventory, StockMovement, WarehouseHandoff
+from inventory.services import accept_handoff, reject_handoff
 from partners.models import Supplier
+from purchasing.models import PurchaseOrder
+from quality.models import QcInspection
+from receiving.models import Grn
+from shipping.models import Gin, GinBatchAllocation, GinItem
+from shipping.services import issue_gin
 from warehouse.models import Location, Warehouse
 
 from .models import StocktakeItem, StocktakeSession
@@ -504,6 +513,50 @@ class ApplyAdjustmentServiceTest(TestCase):
         self.assertEqual(batch.qty_available, 40)
         self.assertEqual(batch.status, Batch.Status.PENDING_RECEIPT)
 
+    def _pending_receipt_batch_with_handoff(self, qty):
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=qc_user)
+        inspection = QcInspection.objects.create(grn=grn, inspector=qc_user)
+        batch = self._batch(self.product, qty, status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.create(
+            batch=batch, qc_inspection=inspection, destination_warehouse=self.warehouse)
+        return batch, handoff
+
+    def test_TC_SO_05_016B_shortage_partial_depletion_keeps_pending_handoff_pending(self):
+        """BUG-13: batch PENDING_RECEIPT 50, kiểm kê còn 40 (trừ một phần, chưa
+        CLOSED) — handoff PENDING liên quan phải giữ nguyên PENDING, chỉ huỷ
+        khi batch CLOSED hẳn."""
+        self._inventory(self.product, 50)
+        batch, handoff = self._pending_receipt_batch_with_handoff(50)
+        self._item(self.product, qty_system=50, qty_actual=40)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        handoff.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.PENDING_RECEIPT)
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.PENDING)
+
+    def test_TC_SO_05_016C_shortage_full_depletion_cancels_pending_handoff(self):
+        """BUG-13: batch PENDING_RECEIPT 50, kiểm kê còn 0 — batch bị trừ hết
+        (CLOSED) trong khi còn WarehouseHandoff PENDING trỏ vào sẽ kẹt vĩnh
+        viễn (accept_handoff()/reject_handoff() đều yêu cầu batch còn
+        PENDING_RECEIPT) nếu không huỷ handoff cùng lúc. Phải huỷ trong cùng
+        transaction, ghi decided_by/decided_at + audit log."""
+        self._inventory(self.product, 50)
+        batch, handoff = self._pending_receipt_batch_with_handoff(50)
+        self._item(self.product, qty_system=50, qty_actual=0)
+        apply_adjustment(self.session, actor=self.manager)
+
+        batch.refresh_from_db()
+        handoff.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.CANCELLED)
+        self.assertEqual(handoff.decided_by, self.manager)
+        self.assertIsNotNone(handoff.decided_at)
+        self.assertTrue(
+            AuditLog.objects.filter(action=AuditLog.Action.UPDATE, target_id=str(handoff.pk)).exists())
+
     def test_TC_SO_05_017_shortage_consumes_quarantine_batch_in_scrap_warehouse(self):
         scrap_warehouse = Warehouse.objects.create(
             code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
@@ -566,6 +619,329 @@ class ApplyAdjustmentServiceTest(TestCase):
         self.assertEqual(expired_older.status, Batch.Status.CLOSED)
         self.assertEqual(active_newer.qty_available, 45)
         self.assertEqual(active_newer.status, Batch.Status.PARTIAL_USED)
+
+
+class HandoffStocktakeDeadlockTests(TransactionTestCase):
+    """BUG-15, 2026-07-29: ``inventory.services.accept_handoff``/``reject_handoff``
+    từng khoá ``WarehouseHandoff`` trước ``Batch``, ngược thứ tự
+    ``Batch`` -> ``WarehouseHandoff`` mà ``_consume_shortage_batches`` dùng khi
+    đóng batch hết hàng (BUG-13, xem test ``TC_SO_05_016C`` ở trên) — kiểm kê và
+    xử lý handoff chạy đồng thời trên cùng batch có thể deadlock. Dùng
+    ``TransactionTestCase`` (không phải ``TestCase``) vì cần 2 thread với 2
+    transaction/kết nối DB thật để tạo tranh chấp khoá thật, ``TestCase`` chỉ
+    bọc savepoint trong 1 transaction nên không mô phỏng được race thật.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=qc_user)
+        inspection = QcInspection.objects.create(grn=grn, inspector=qc_user)
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier,
+            location=self.location, qty_received=50, status=Batch.Status.PENDING_RECEIPT,
+        )
+        self.handoff = WarehouseHandoff.objects.create(
+            batch=self.batch, qc_inspection=inspection, destination_warehouse=self.warehouse,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=50)
+        self.session = StocktakeSession.objects.create(
+            warehouse=self.warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        StocktakeItem.objects.create(session=self.session, product=self.product, qty_system=50, qty_actual=0)
+
+    def test_TC_SO_15_001_concurrent_apply_adjustment_and_accept_handoff_no_deadlock(self):
+        """Kiểm kê trừ hết batch (đóng CLOSED + huỷ handoff PENDING, BUG-13) chạy
+        song song với NV kho bấm "Nhận" đúng handoff đó. Bất kể bên nào thắng
+        tranh chấp khoá, kỳ vọng: không exception deadlock từ DB, không thread
+        nào bị treo, và không có handoff PENDING nào còn trỏ vào batch CLOSED.
+        """
+        barrier = threading.Barrier(2)
+        errors = {}
+
+        def run_apply_adjustment():
+            try:
+                barrier.wait(timeout=5)
+                apply_adjustment(self.session, actor=self.manager)
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                errors['apply_adjustment'] = exc
+            finally:
+                connection.close()
+
+        def run_accept_handoff():
+            try:
+                barrier.wait(timeout=5)
+                accept_handoff(self.handoff, self.manager)
+            except Exception as exc:  # noqa: BLE001
+                errors['accept_handoff'] = exc
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=run_apply_adjustment)
+        t2 = threading.Thread(target=run_accept_handoff)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        self.assertFalse(t1.is_alive(), 'apply_adjustment bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t2.is_alive(), 'accept_handoff bị treo quá 10s (nghi deadlock)')
+
+        for name, exc in errors.items():
+            self.assertNotIsInstance(
+                exc, OperationalError,
+                f'{name} raised {exc!r} — nghi deadlock giữa apply_adjustment và accept_handoff',
+            )
+            self.assertIsInstance(
+                exc, ValidationError,
+                f'{name} raised unexpected exception {exc!r} (chỉ chấp nhận ValidationError do thua tranh '
+                f'chấp trạng thái, không phải lỗi khác)',
+            )
+
+        self.batch.refresh_from_db()
+        self.handoff.refresh_from_db()
+        if self.handoff.status == WarehouseHandoff.Status.PENDING:
+            self.assertNotEqual(
+                self.batch.status, Batch.Status.CLOSED,
+                'handoff PENDING không được trỏ vào batch đã CLOSED (BUG-13 regression)',
+            )
+
+
+class InventoryBatchLockOrderDeadlockTests(TransactionTestCase):
+    """BUG-16, 2026-07-29: trước khi sửa, ``stocktake.services.apply_adjustment``
+    khoá ``Inventory`` rồi mới ``Batch``, trong khi ``shipping.services.issue_gin``
+    và ``inventory.services.reject_handoff(..., TO_SCRAP)`` (qua
+    ``move_batch_qty``) khoá ``Batch`` rồi mới ``Inventory`` — ngược chiều nhau,
+    kiểm kê chạy đồng thời với xuất GIN hoặc từ chối bàn giao trên cùng SKU/batch
+    có thể deadlock thật. Cùng kỹ thuật ``TransactionTestCase`` + 2 thread với
+    ``HandoffStocktakeDeadlockTests`` (BUG-15) ở trên — cần 2 transaction/kết nối
+    DB thật để tạo tranh chấp khoá thật.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+
+    def _run_concurrently(self, fn_a, fn_b):
+        barrier = threading.Barrier(2)
+        errors = {}
+
+        def wrap(name, fn):
+            try:
+                barrier.wait(timeout=5)
+                fn()
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                errors[name] = exc
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=lambda: wrap('a', fn_a))
+        t2 = threading.Thread(target=lambda: wrap('b', fn_b))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        self.assertFalse(t1.is_alive(), 'Thread A bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t2.is_alive(), 'Thread B bị treo quá 10s (nghi deadlock)')
+        for name, exc in errors.items():
+            self.assertNotIsInstance(
+                exc, OperationalError, f'Thread {name} raised {exc!r} — nghi deadlock (BUG-16 regression)')
+            self.assertIsInstance(
+                exc, ValidationError,
+                f'Thread {name} raised unexpected exception {exc!r} (chỉ chấp nhận ValidationError do thua '
+                f'tranh chấp trạng thái/số lượng, không phải lỗi khác)',
+            )
+        return errors
+
+    def test_TC_SO_16_001_concurrent_apply_adjustment_and_issue_gin_no_deadlock(self):
+        """Kiểm kê phát hiện thiếu 30 (trừ hết batch ACTIVE 30) chạy song song với
+        GIN xuất 10 từ đúng batch đó. Dù bên nào thắng tranh chấp khoá, kỳ vọng:
+        không deadlock, Inventory không âm, batch không bị dùng vượt qty_received.
+        """
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier,
+            location=self.location, qty_received=30, status=Batch.Status.ACTIVE,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=30)
+        session = StocktakeSession.objects.create(
+            warehouse=self.warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        StocktakeItem.objects.create(session=session, product=self.product, qty_system=30, qty_actual=0)
+
+        gin = Gin.objects.create(
+            warehouse=self.warehouse, reference_type=Gin.ReferenceType.SALES,
+            requested_by=self.manager, status=Gin.Status.PICKING,
+        )
+        gin_item = GinItem.objects.create(gin=gin, product=self.product, qty_requested=10)
+        GinBatchAllocation.objects.create(gin_item=gin_item, batch=batch, qty_allocated=10)
+
+        self._run_concurrently(
+            lambda: apply_adjustment(session, actor=self.manager),
+            lambda: issue_gin(gin, actor=self.manager),
+        )
+
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        batch.refresh_from_db()
+        self.assertGreaterEqual(inv.qty_on_hand, 0, 'Inventory không được âm sau tranh chấp khoá')
+        self.assertLessEqual(batch.qty_used, batch.qty_received, 'Batch không được dùng vượt qty_received')
+
+    def test_TC_SO_16_002_concurrent_apply_adjustment_and_reject_handoff_to_scrap_no_deadlock(self):
+        """Kiểm kê phát hiện thiếu 30 trên 1 batch PENDING_RECEIPT chạy song song
+        với NV kho "Từ chối -> chuyển kho phế" đúng batch đó. Dù bên nào thắng
+        tranh chấp khoá, kỳ vọng: không deadlock, Inventory không âm ở cả 2 kho,
+        batch không bị dùng vượt qty_received.
+        """
+        scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        Location.objects.create(warehouse=scrap_warehouse, code='PHE-01')
+
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=qc_user)
+        inspection = QcInspection.objects.create(grn=grn, inspector=qc_user)
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier,
+            location=self.location, qty_received=50, status=Batch.Status.PENDING_RECEIPT,
+        )
+        handoff = WarehouseHandoff.objects.create(
+            batch=batch, qc_inspection=inspection, destination_warehouse=self.warehouse,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=50)
+        session = StocktakeSession.objects.create(
+            warehouse=self.warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        StocktakeItem.objects.create(session=session, product=self.product, qty_system=50, qty_actual=20)
+
+        self._run_concurrently(
+            lambda: apply_adjustment(session, actor=self.manager),
+            lambda: reject_handoff(
+                handoff, self.manager, reason='Không đạt',
+                destination=WarehouseHandoff.RejectDestination.TO_SCRAP,
+            ),
+        )
+
+        batch.refresh_from_db()
+        handoff.refresh_from_db()
+        inv_main = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertGreaterEqual(inv_main.qty_on_hand, 0, 'Inventory kho chính không được âm sau tranh chấp khoá')
+        self.assertLessEqual(batch.qty_used, batch.qty_received, 'Batch không được dùng vượt qty_received')
+        if handoff.status == WarehouseHandoff.Status.PENDING:
+            self.assertNotEqual(
+                batch.status, Batch.Status.CLOSED,
+                'handoff PENDING không được trỏ vào batch đã CLOSED (BUG-13 regression)',
+            )
+
+
+class MultiSkuLockOrderDeadlockTests(TransactionTestCase):
+    """BUG-17, 2026-07-29: trước khi sửa, các vòng lặp nhiều item
+    (``apply_adjustment``, ``issue_gin``, ``quality.services.qc_pass``/
+    ``qc_fail``/``qc_partial_pass``/``start_qc``) khoá Inventory từng dòng
+    theo thứ tự duyệt QuerySet mặc định (thứ tự chèn/pk, hoặc — riêng
+    ``StocktakeItem`` — theo ``product_code``), KHÔNG theo ``product_id``
+    thống nhất. 2 giao dịch cùng chạm 2 SKU nhưng thêm dòng theo thứ tự khác
+    nhau (vd GIN thêm dòng SKU-B trước SKU-A trong khi phiếu kiểm kê xử lý
+    SKU-A trước) có thể khoá Inventory của 2 SKU đó theo 2 chiều ngược nhau
+    và deadlock thật, dù mỗi hàm riêng lẻ đã khoá đúng thứ tự
+    Inventory->Batch (BUG-16). Cùng kỹ thuật ``TransactionTestCase`` + 2
+    thread với ``InventoryBatchLockOrderDeadlockTests`` (BUG-16) ở trên.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(username='qlk1', password='ql-pass-123', role=User.Role.MANAGER)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product_a = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.product_b = Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg')
+
+    def _run_concurrently(self, fn_a, fn_b):
+        barrier = threading.Barrier(2)
+        errors = {}
+
+        def wrap(name, fn):
+            try:
+                barrier.wait(timeout=5)
+                fn()
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                errors[name] = exc
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=lambda: wrap('a', fn_a))
+        t2 = threading.Thread(target=lambda: wrap('b', fn_b))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        self.assertFalse(t1.is_alive(), 'Thread A bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t2.is_alive(), 'Thread B bị treo quá 10s (nghi deadlock)')
+        for name, exc in errors.items():
+            self.assertNotIsInstance(
+                exc, OperationalError, f'Thread {name} raised {exc!r} — nghi deadlock (BUG-17 regression)')
+            self.assertIsInstance(
+                exc, ValidationError,
+                f'Thread {name} raised unexpected exception {exc!r} (chỉ chấp nhận ValidationError do thua '
+                f'tranh chấp trạng thái/số lượng, không phải lỗi khác)',
+            )
+        return errors
+
+    def test_TC_SO_17_001_concurrent_apply_adjustment_and_issue_gin_reversed_item_order_no_deadlock(self):
+        """2 SKU (A, B) cùng có tồn/batch ở 1 kho. Phiếu kiểm kê xử lý SKU-A
+        rồi SKU-B (thứ tự tạo ``StocktakeItem``). GIN thêm dòng SKU-B TRƯỚC
+        SKU-A (thứ tự chèn ``GinItem`` ngược lại) — mô phỏng đúng kịch bản
+        BUG-17: 2 giao dịch nhiều-SKU chạm cùng cặp SKU nhưng theo thứ tự
+        item ngược nhau. Bất kể bên nào thắng tranh chấp khoá, kỳ vọng:
+        không deadlock, Inventory không âm ở cả 2 SKU, batch không bị dùng
+        vượt qty_received.
+        """
+        batch_a = Batch.objects.create(
+            product=self.product_a, batch_code='LOT-A', supplier=self.supplier,
+            location=self.location, qty_received=30, status=Batch.Status.ACTIVE,
+        )
+        batch_b = Batch.objects.create(
+            product=self.product_b, batch_code='LOT-B', supplier=self.supplier,
+            location=self.location, qty_received=30, status=Batch.Status.ACTIVE,
+        )
+        Inventory.objects.create(product=self.product_a, warehouse=self.warehouse, qty_on_hand=30)
+        Inventory.objects.create(product=self.product_b, warehouse=self.warehouse, qty_on_hand=30)
+
+        session = StocktakeSession.objects.create(
+            warehouse=self.warehouse, created_by=self.manager, status=StocktakeSession.Status.RECONCILIATION)
+        StocktakeItem.objects.create(session=session, product=self.product_a, qty_system=30, qty_actual=0)
+        StocktakeItem.objects.create(session=session, product=self.product_b, qty_system=30, qty_actual=0)
+
+        gin = Gin.objects.create(
+            warehouse=self.warehouse, reference_type=Gin.ReferenceType.SALES,
+            requested_by=self.manager, status=Gin.Status.PICKING,
+        )
+        # Cố ý thêm dòng SKU-B TRƯỚC SKU-A: thứ tự chèn (pk) ngược thứ tự
+        # product_id/product_code — nếu issue_gin không tự order_by('product_id')
+        # thì sẽ duyệt B rồi A, ngược chiều với apply_adjustment (A rồi B).
+        gin_item_b = GinItem.objects.create(gin=gin, product=self.product_b, qty_requested=10)
+        GinBatchAllocation.objects.create(gin_item=gin_item_b, batch=batch_b, qty_allocated=10)
+        gin_item_a = GinItem.objects.create(gin=gin, product=self.product_a, qty_requested=10)
+        GinBatchAllocation.objects.create(gin_item=gin_item_a, batch=batch_a, qty_allocated=10)
+
+        self._run_concurrently(
+            lambda: apply_adjustment(session, actor=self.manager),
+            lambda: issue_gin(gin, actor=self.manager),
+        )
+
+        inv_a = Inventory.objects.get(product=self.product_a, warehouse=self.warehouse)
+        inv_b = Inventory.objects.get(product=self.product_b, warehouse=self.warehouse)
+        batch_a.refresh_from_db()
+        batch_b.refresh_from_db()
+        self.assertGreaterEqual(inv_a.qty_on_hand, 0, 'Inventory SKU-A không được âm sau tranh chấp khoá')
+        self.assertGreaterEqual(inv_b.qty_on_hand, 0, 'Inventory SKU-B không được âm sau tranh chấp khoá')
+        self.assertLessEqual(batch_a.qty_used, batch_a.qty_received, 'Batch A không được dùng vượt qty_received')
+        self.assertLessEqual(batch_b.qty_used, batch_b.qty_received, 'Batch B không được dùng vượt qty_received')
 
 
 class StocktakeViewTest(TestCase):

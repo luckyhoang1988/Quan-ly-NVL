@@ -39,7 +39,7 @@ from accounts.audit import log_action
 from accounts.models import AuditLog
 from catalog.models import Product
 from inventory.models import Batch, Inventory, StockMovement
-from inventory.services import create_handoff, move_batch_qty, record_movement
+from inventory.services import create_handoff, lock_inventories, move_batch_qty, record_movement
 from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Warehouse
 from warehouse.services import get_default_location, get_scrap_warehouse, get_staging_warehouse
@@ -123,6 +123,12 @@ def start_qc(grn, inspector, actor=None, ip_address=None):
     """DRAFT/PENDING_QC -> QC_IN_PROGRESS: tạo ``QcInspection`` + đưa từng item
     vào Kho chờ (1 Batch ACTIVE/item tại vị trí mặc định, Inventory Kho chờ
     tăng tương ứng, ghi RECEIPT — hàng đã nhận vật lý, chỉ chưa qua QC).
+
+    Duyệt item theo ``product_id`` tăng dần, không theo thứ tự chèn mặc định
+    (BUG-17, 2026-07-29, xem CLAUDE.md) — mỗi item khoá 1 dòng Inventory Kho
+    chờ (``_credit_inventory``) tuần tự; 1 GRN nhiều SKU duyệt sai thứ tự
+    chuẩn toàn hệ thống có thể khoá ngược chiều với 1 giao dịch nhiều-SKU
+    khác chạm cùng cặp SKU đó và deadlock thật.
     """
     grn = Grn.objects.select_for_update().get(pk=grn.pk)
     if grn.status not in (Grn.Status.DRAFT, Grn.Status.PENDING_QC):
@@ -133,7 +139,7 @@ def start_qc(grn, inspector, actor=None, ip_address=None):
 
     inspection = QcInspection.objects.create(grn=grn, inspector=inspector, started_at=timezone.now())
 
-    for item in grn.items.select_for_update():
+    for item in grn.items.select_for_update().order_by('product_id', 'pk'):
         if item.qty_received <= 0:
             continue
         batch = Batch.objects.create(
@@ -170,11 +176,25 @@ def cancel_qc_inspection(grn, actor=None, ip_address=None):
     ở đây QC CHƯA có quyết định (batch vẫn còn nguyên ở Kho chờ, chưa qua
     ``qc_pass``/``qc_fail``/``qc_partial_pass``), nên đảo được — không phải
     undo một giao dịch nghiệp vụ đã hoàn tất.
+
+    Khoá Inventory (mọi SKU liên quan tại Kho chờ, thứ tự ổn định theo
+    ``product_id``) TRƯỚC các batch Kho chờ — chuẩn hoá thứ tự
+    ``Inventory -> Batch -> WarehouseHandoff`` toàn hệ thống (BUG-16,
+    2026-07-29, xem CLAUDE.md). Đọc danh sách batch UNLOCKED trước chỉ để xác
+    định SKU nào cần khoá Inventory; batch thật sự được khoá ở bước dưới.
     """
     inspection = grn.qc_inspections.select_for_update().filter(
         status=QcInspection.Result.PENDING_QC).first()
     if inspection is None:
         return None
+
+    staging_batches_ref = list(Batch.objects.filter(
+        grn_item__grn=grn, status=Batch.Status.ACTIVE,
+        location__warehouse__warehouse_type=Warehouse.WarehouseType.STAGING,
+    ).select_related('product', 'location__warehouse'))
+    products_by_id = {b.product_id: (b.product, b.location.warehouse) for b in staging_batches_ref}
+    for product, staging_warehouse in sorted(products_by_id.values(), key=lambda pair: pair[0].id):
+        lock_inventories(product, [staging_warehouse])
 
     staging_batches = list(Batch.objects.select_for_update().filter(
         grn_item__grn=grn, status=Batch.Status.ACTIVE,
@@ -217,18 +237,31 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
     ``PENDING_RECEIPT`` tại ``location`` (phải thuộc kho loại MAIN), GRN ->
     RECEIVED, tạo ``WarehouseHandoff``/item chờ NV kho xác nhận nhận hàng
     (Phase D — ``assigned_to`` tuỳ chọn, để trống thì báo cả kho đích).
+
+    Khoá Inventory (Kho chờ + kho đích) TRƯỚC batch Kho chờ (``_get_staging_batch``
+    khoá Batch) — chuẩn hoá thứ tự ``Inventory -> Batch -> WarehouseHandoff``
+    toàn hệ thống (BUG-16, 2026-07-29, xem CLAUDE.md), tránh deadlock với
+    ``stocktake.services.apply_adjustment`` (khoá Inventory rồi mới Batch) khi
+    2 nghiệp vụ chạm cùng batch/SKU đồng thời.
+
+    Duyệt item theo ``product_id`` tăng dần, không theo thứ tự chèn mặc định
+    (BUG-17, 2026-07-29, xem CLAUDE.md) — cùng lý do đã nêu ở ``start_qc``:
+    1 GRN nhiều SKU khoá Inventory từng dòng tuần tự, duyệt sai thứ tự chuẩn
+    toàn hệ thống có thể khoá ngược chiều với giao dịch nhiều-SKU khác.
     """
     _require_pending_inspection(inspection)
     if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     grn = inspection.grn
+    staging_warehouse = get_staging_warehouse()
 
-    for item in grn.items.select_for_update():
+    for item in grn.items.select_for_update().order_by('product_id', 'pk'):
         item.qty_pass = item.qty_received
         item.status = GrnItem.Status.RECEIVED
         item.save(update_fields=['qty_pass', 'status'])
         if item.qty_received <= 0:
             continue
+        lock_inventories(item.product, [staging_warehouse, location.warehouse])
         staging_batch = _get_staging_batch(item)
         new_batch = move_batch_qty(
             source_batch=staging_batch, qty=item.qty_received, to_location=location,
@@ -259,18 +292,25 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
 def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
     """QC FAIL: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
     QUARANTINE tại Kho phế, GRN -> REJECTED, vẫn tạo ``GrnReturn``.
+
+    Khoá Inventory (Kho chờ + Kho phế) TRƯỚC batch Kho chờ — cùng lý do/thứ
+    tự đã áp dụng ở ``qc_pass`` (BUG-16). Duyệt item theo ``product_id`` tăng
+    dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17, 2026-07-29,
+    xem CLAUDE.md).
     """
     _require_pending_inspection(inspection)
     grn = inspection.grn
+    staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
 
-    for item in grn.items.select_for_update():
+    for item in grn.items.select_for_update().order_by('product_id', 'pk'):
         item.status = GrnItem.Status.REJECTED
         item.qty_pass = 0
         item.save(update_fields=['status', 'qty_pass'])
         if item.qty_received <= 0:
             continue
+        lock_inventories(item.product, [staging_warehouse, scrap_warehouse])
         staging_batch = _get_staging_batch(item)
         move_batch_qty(
             source_batch=staging_batch, qty=item.qty_received, to_location=scrap_location,
@@ -303,12 +343,18 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
 
     ``item_results``: ``{grn_item_id: qty_pass}`` — bắt buộc có đủ mọi item
     của GRN, ``0 <= qty_pass <= qty_received``.
+
+    Khoá Inventory (Kho chờ + đích thực sự dùng đến — MAIN nếu ``qty_pass>0``,
+    Kho phế nếu ``qty_fail>0``) TRƯỚC batch Kho chờ — cùng lý do/thứ tự đã áp
+    dụng ở ``qc_pass``/``qc_fail`` (BUG-16). Duyệt item theo ``product_id``
+    tăng dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17,
+    2026-07-29, xem CLAUDE.md).
     """
     _require_pending_inspection(inspection)
     if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     grn = inspection.grn
-    items = list(grn.items.select_for_update())
+    items = list(grn.items.select_for_update().order_by('product_id', 'pk'))
 
     missing = {item.pk for item in items} - set(item_results)
     if missing:
@@ -318,6 +364,7 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
             'Tất cả item đều có qty_pass = 0 — dùng hành động "Fail" thay vì "Partial Pass".'
         )
 
+    staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
 
@@ -329,6 +376,12 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         has_both = qty_pass > 0 and qty_fail > 0
 
         if item.qty_received > 0:
+            warehouses_needed = [staging_warehouse]
+            if qty_pass > 0:
+                warehouses_needed.append(location.warehouse)
+            if qty_fail > 0:
+                warehouses_needed.append(scrap_warehouse)
+            lock_inventories(item.product, warehouses_needed)
             staging_batch = _get_staging_batch(item)
             if qty_pass > 0:
                 pass_batch = move_batch_qty(

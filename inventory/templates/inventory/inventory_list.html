@@ -68,9 +68,9 @@
             <td>
               {% if row.below_min %}
                 <span class="badge bg-danger">Dưới Min</span>
-                {% if row.suggested_po_qty > 0 and can_create_pr %}
+                {% if row.show_pr_button and row.suggested_po_qty > 0 and can_create_pr %}
                   <a class="btn btn-sm btn-outline-danger ms-1"
-                     href="{% url 'purchasing:pr_create' %}?product={{ row.inventory.product_id }}&qty={{ row.suggested_po_qty }}&warehouse={{ row.inventory.warehouse_id }}"><i class="bi bi-cart-plus"></i> Tạo yêu cầu mua hàng</a>
+                     href="{% url 'purchasing:pr_create' %}?product={{ row.inventory.product_id }}&qty={{ row.suggested_po_qty }}{% if row.pr_warehouse_id %}&warehouse={{ row.pr_warehouse_id }}{% endif %}"><i class="bi bi-cart-plus"></i> Tạo yêu cầu mua hàng</a>
                 {% endif %}
               {% elif row.above_max %}
                 <span class="badge bg-warning text-dark">Trên Max</span>

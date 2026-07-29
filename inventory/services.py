@@ -39,7 +39,7 @@ def sync_expired_batches():
     ``save()`` nên không ghi được (BUG-11, 2026-07-29). ``actor=None`` vì đây
     là hành động hệ thống, không phải do người dùng bấm.
     """
-    today = timezone.now().date()
+    today = timezone.localdate()
     with transaction.atomic():
         batches = list(Batch.objects.select_for_update().filter(
             status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
@@ -69,7 +69,7 @@ def expiring_soon_batches(days=30, warehouse=None, warehouse_type=None):
     không truyền tham số này — trang quản lý lô hàng cần thấy cảnh báo hết hạn
     ở MỌI kho, kể cả Kho chờ/Kho phế.
     """
-    threshold = timezone.now().date() + datetime.timedelta(days=days)
+    threshold = timezone.localdate() + datetime.timedelta(days=days)
     qs = Batch.objects.filter(
         status__in=[Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED],
         exp_date__isnull=False, exp_date__lt=threshold,
@@ -158,6 +158,25 @@ def record_movement(*, product, warehouse, movement_type, qty, batch=None, refer
     )
 
 
+def lock_inventories(product, warehouses):
+    """Khoá 1+ dòng ``Inventory`` của ``product`` tại nhiều kho, theo thứ tự
+    ỔN ĐỊNH (``warehouse_id`` tăng dần) — chuẩn hoá thứ tự khoá toàn hệ thống
+    ``Inventory`` -> ``Batch`` -> ``WarehouseHandoff`` (BUG-16, 2026-07-29, xem
+    CLAUDE.md), đồng thời tránh deadlock Inventory-Inventory nếu 2 giao dịch
+    cùng chạm 2 kho theo chiều ngược nhau (vd 2 lượt điều chuyển ngược hướng
+    cùng lúc). Trả về dict ``{warehouse_id: Inventory}`` (tạo mới nếu kho đó
+    chưa từng có dòng Inventory cho SKU này — mirror ``get_or_create`` gốc).
+    Mọi hàm khoá cả Batch lẫn Inventory của cùng 1 giao dịch phải gọi hàm này
+    (hoặc tự khoá Inventory theo đúng thứ tự) TRƯỚC KHI khoá Batch.
+    """
+    deduped = sorted({w.id: w for w in warehouses}.values(), key=lambda w: w.id)
+    return {
+        warehouse.id: Inventory.objects.select_for_update().get_or_create(
+            product=product, warehouse=warehouse)[0]
+        for warehouse in deduped
+    }
+
+
 @transaction.atomic
 def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status, actor=None, reference=''):
     """Nguyên thủy dùng chung: tách ``qty`` từ ``source_batch`` thành 1 batch
@@ -172,7 +191,24 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
     ``StockMovement`` TRANSFER_OUT/TRANSFER_IN; cùng kho thì Inventory không
     đổi. ``grn_item`` của batch mới copy từ ``source_batch`` để giữ lineage qua
     nhiều lần tách (Kho chờ -> MAIN/SCRAP).
+
+    Khoá Inventory (nếu khác kho) TRƯỚC Batch — chuẩn hoá thứ tự khoá
+    ``Inventory -> Batch -> WarehouseHandoff`` toàn hệ thống (BUG-16,
+    2026-07-29, xem CLAUDE.md). Đọc ``source_batch`` UNLOCKED trước để biết
+    SKU/kho nguồn cần khoá Inventory nào — an toàn vì vị trí/sản phẩm của 1
+    batch không bao giờ đổi sau khi tạo (bất biến, xem docstring trên), cùng
+    nguyên tắc "chỉ tin FK ổn định để CHỌN hàng cần khoá" đã dùng ở BUG-15.
+    Caller nào tự cần khoá Batch trước khi gọi hàm này (validate riêng trước
+    khi mutate) phải tự gọi ``lock_inventories()`` trước đó — xem
+    ``transfer_stock``/``reject_handoff``/``quality.services.qc_pass`` làm ví
+    dụ; nếu không, Batch sẽ bị khoá trước Inventory ngay tại caller, phá vỡ
+    thứ tự dù bản thân hàm này vẫn khoá đúng thứ tự nội bộ.
     """
+    ref = Batch.objects.select_related('product', 'location__warehouse').get(pk=source_batch.pk)
+    same_warehouse = ref.location.warehouse_id == to_location.warehouse_id
+    locked_inv = {} if same_warehouse else lock_inventories(
+        ref.product, [ref.location.warehouse, to_location.warehouse])
+
     source_batch = Batch.objects.select_for_update().get(pk=source_batch.pk)
     if source_batch.status not in (
         Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
@@ -190,7 +226,6 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
         raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
 
     from_location = source_batch.location
-    same_warehouse = from_location.warehouse_id == to_location.warehouse_id
 
     new_batch = Batch.objects.create(
         product=source_batch.product, batch_code=new_batch_code, supplier=source_batch.supplier,
@@ -205,9 +240,7 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
     source_batch.save(update_fields=['qty_used', 'status'])
 
     if not same_warehouse:
-        src_inv = Inventory.objects.select_for_update().get(
-            product=source_batch.product, warehouse=from_location.warehouse,
-        )
+        src_inv = locked_inv[from_location.warehouse_id]
         src_inv.qty_on_hand -= qty
         src_inv.save(update_fields=['qty_on_hand', 'updated_at'])
         record_movement(
@@ -215,9 +248,7 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
             movement_type=StockMovement.MovementType.TRANSFER_OUT, qty=-qty,
             reference=reference, actor=actor,
         )
-        dst_inv, _ = Inventory.objects.select_for_update().get_or_create(
-            product=source_batch.product, warehouse=to_location.warehouse,
-        )
+        dst_inv = locked_inv[to_location.warehouse_id]
         dst_inv.qty_on_hand += qty
         dst_inv.save(update_fields=['qty_on_hand', 'updated_at'])
         record_movement(
@@ -254,7 +285,18 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
     ``reject_handoff``), không qua điều chuyển tay — nếu không, batch mới sẽ
     mang ``status=ACTIVE`` trong Kho chờ/Kho phế, vi phạm invariant "hàng ở
     STAGING/SCRAP luôn phải qua QC quyết định trước".
+
+    Khoá Inventory (nếu khác kho) TRƯỚC Batch (BUG-16, 2026-07-29, xem
+    CLAUDE.md) — đọc unlocked trước để biết SKU/kho nguồn cần khoá Inventory
+    nào, an toàn vì vị trí/sản phẩm của batch bất biến (cùng nguyên tắc dùng ở
+    ``move_batch_qty``). ``move_batch_qty()`` gọi sau đó sẽ tự khoá lại đúng
+    những dòng Inventory này (vô hại, cùng transaction) rồi mới khoá Batch —
+    khoá Batch ở đây PHẢI đứng sau bước này, không được đứng trước.
     """
+    ref = Batch.objects.select_related('product', 'location__warehouse').get(pk=batch.pk)
+    if ref.location.warehouse_id != to_location.warehouse_id:
+        lock_inventories(ref.product, [ref.location.warehouse, to_location.warehouse])
+
     batch = Batch.objects.select_for_update().get(pk=batch.pk)
     if not to_location.is_active:
         raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
@@ -343,11 +385,20 @@ def create_handoff(*, batch, qc_inspection, destination_warehouse, assigned_to=N
 def accept_handoff(handoff, actor, ip_address=None):
     """NV kho "Nhận" (mục 6): batch ``PENDING_RECEIPT`` -> ``ACTIVE`` (khả dụng
     FIFO), báo lại QC inspector đã tạo đợt kiểm liên quan.
+
+    Khóa ``Batch`` trước rồi mới đến ``WarehouseHandoff`` — khớp thứ tự
+    ``stocktake.services._consume_shortage_batches`` đã dùng (khóa Batch rồi
+    mới khóa WarehouseHandoff PENDING trỏ vào nó khi đóng batch). Thứ tự khóa
+    phải thống nhất toàn hệ thống cho cặp (Batch, WarehouseHandoff), nếu
+    không kiểm kê và xử lý handoff chạy đồng thời trên cùng batch có thể
+    deadlock (BUG-15, 2026-07-29). ``handoff.batch_id`` từ đối tượng chưa
+    khóa vẫn tin được để chọn Batch cần khóa vì FK này không bao giờ bị gán
+    lại sau khi tạo handoff.
     """
+    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
     handoff = WarehouseHandoff.objects.select_for_update().get(pk=handoff.pk)
     if handoff.status != WarehouseHandoff.Status.PENDING:
         raise ValidationError(f'Phiếu bàn giao này đã được xử lý ({handoff.get_status_display()}).')
-    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
     if batch.status != Batch.Status.PENDING_RECEIPT:
         raise ValidationError(f'Batch "{batch.batch_code}" không ở trạng thái chờ xác nhận.')
 
@@ -380,16 +431,28 @@ def reject_handoff(handoff, actor, reason, destination, ip_address=None):
       không tự re-open — cùng boundary đã chốt cho QC override), chỉ đổi
       ``status`` -> REJECTED + báo phòng QC xử lý thủ công (điều chuyển bằng
       tay qua ``transfer_stock`` nếu cần).
+
+    Khóa ``Batch`` trước rồi mới đến ``WarehouseHandoff`` — cùng lý do và thứ
+    tự đã áp dụng ở ``accept_handoff`` (BUG-15). Nhánh ``TO_SCRAP`` còn đụng
+    ``Inventory`` (qua ``move_batch_qty``, batch nguồn luôn ở kho MAIN khác
+    Kho phế) nên phải khoá Inventory hai đầu TRƯỚC CẢ Batch — nếu không, batch
+    bị khoá ở đây (dòng dưới) trước khi ``move_batch_qty`` kịp khoá Inventory,
+    phá vỡ thứ tự chuẩn ``Inventory -> Batch -> WarehouseHandoff`` toàn hệ
+    thống (BUG-16, 2026-07-29, xem CLAUDE.md).
     """
     if not reason:
         raise ValidationError('Bắt buộc nhập lý do từ chối.')
     if destination not in WarehouseHandoff.RejectDestination.values:
         raise ValidationError('Lựa chọn xử lý khi từ chối không hợp lệ.')
 
+    if destination == WarehouseHandoff.RejectDestination.TO_SCRAP:
+        ref = Batch.objects.select_related('product', 'location__warehouse').get(pk=handoff.batch_id)
+        lock_inventories(ref.product, [ref.location.warehouse, get_scrap_warehouse()])
+
+    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
     handoff = WarehouseHandoff.objects.select_for_update().get(pk=handoff.pk)
     if handoff.status != WarehouseHandoff.Status.PENDING:
         raise ValidationError(f'Phiếu bàn giao này đã được xử lý ({handoff.get_status_display()}).')
-    batch = Batch.objects.select_for_update().get(pk=handoff.batch_id)
     if batch.status != Batch.Status.PENDING_RECEIPT:
         raise ValidationError(f'Batch "{batch.batch_code}" không ở trạng thái chờ xác nhận.')
 

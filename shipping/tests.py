@@ -7,6 +7,7 @@ FifoSuggestionServiceTest`` (Task 1) — ở đây test tích hợp qua
 và view/permission, không lặp lại test thuật toán FIFO thuần.
 """
 import datetime
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -537,6 +538,28 @@ class GinIssueServiceTest(TestCase):
         gin.refresh_from_db()
         inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
         self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(inv.qty_on_hand, 100)
+
+    def test_TC_GIN_ISSUE_011B_rejects_expired_batch_using_vietnam_local_date_not_utc(self):
+        """BUG-12: TIME_ZONE='Asia/Ho_Chi_Minh' (UTC+7) — 00:00-06:59 giờ VN vẫn
+        là ngày hôm trước theo UTC. Mock ``timezone.now()`` = 2026-07-28 20:00
+        UTC (= 2026-07-29 03:00 giờ VN): batch hết hạn 2026-07-28 phải bị chặn
+        (đã hết hạn theo ngày VN 07-29) — dùng ``timezone.now().date()`` (UTC
+        07-28) sẽ không phát hiện ra và cho xuất kho lô đã hết hạn."""
+        batch = self._batch('LOT-0001', 30, exp_date=datetime.date(2026, 7, 28))
+        gin, item = self._gin_picking(qty_requested=30)
+        GinBatchAllocation.objects.create(gin_item=item, batch=batch, qty_allocated=30)
+        fixed_utc_now = datetime.datetime(2026, 7, 28, 20, 0, tzinfo=datetime.timezone.utc)
+
+        with mock.patch('shipping.services.timezone.now', return_value=fixed_utc_now):
+            with self.assertRaises(ValidationError):
+                issue_gin(gin, actor=self.manager)
+
+        gin.refresh_from_db()
+        batch.refresh_from_db()
+        inv = Inventory.objects.get(product=self.product, warehouse=self.warehouse)
+        self.assertEqual(gin.status, Gin.Status.PICKING)
+        self.assertEqual(batch.qty_used, 0)
         self.assertEqual(inv.qty_on_hand, 100)
 
     def test_TC_GIN_ISSUE_012_rejects_when_batch_moved_to_other_warehouse_after_picking(self):

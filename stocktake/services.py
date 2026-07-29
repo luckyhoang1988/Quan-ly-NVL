@@ -37,7 +37,7 @@ from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
-from inventory.models import Batch, Inventory, StockMovement
+from inventory.models import Batch, Inventory, StockMovement, WarehouseHandoff
 from inventory.services import record_movement
 from warehouse.services import get_default_location
 
@@ -196,13 +196,37 @@ def apply_adjustment(session, actor=None, ip_address=None):
     ghi đè bằng ``qty_actual``, vì Inventory có thể đã biến động qua GRN/GIN
     khác kể từ lúc snapshot ``qty_system`` — xem ``stocktake.models``
     docstring) rồi ghi ``StockMovement.ADJUSTMENT``.
+
+    ``select_for_update(of=('self',))`` khi kết hợp ``select_related('product')``
+    (BUG-16, 2026-07-29, xem CLAUDE.md) — Postgres ``FOR UPDATE`` không kèm
+    ``OF <table>`` sẽ khoá LUÔN mọi bảng JOIN trong câu query, nên
+    ``select_related('product').select_for_update()`` (không giới hạn ``of``)
+    vô tình khoá cứng cả dòng ``Product`` dù hàm này không hề ghi vào
+    ``Product`` — chỉ join để tránh N+1 khi đọc ``item.product``. Dòng
+    ``Product`` bị khoá "oan" đó có thể tạo deadlock thật với bất kỳ hàm nào
+    khác cần khoá ``Inventory``/``Batch`` rồi mới cần đọc/ghi ``Product`` (vd
+    ``move_batch_qty`` tạo Batch mới có FK tới ``Product``, cần lock
+    FOR KEY SHARE lên ``Product`` ngay sau khi đã khoá Inventory) — 2 chiều khoá
+    ngược nhau (Product->Inventory ở đây, Inventory->Product ở kia) dù bản
+    thân Inventory/Batch/WarehouseHandoff đã đúng thứ tự chuẩn. Giới hạn
+    ``of=('self',)`` để chỉ khoá ``StocktakeItem``, không lan sang ``Product``.
+
+    Duyệt item theo ``product_id`` tăng dần, ghi đè ``Meta.ordering`` mặc định
+    của ``StocktakeItem`` (``product__product_code`` — thứ tự chữ cái, không
+    phải thứ tự chèn hay thứ tự ``product_id``) — BUG-17, 2026-07-29, xem
+    CLAUDE.md. 1 phiếu kiểm kê nhiều SKU khoá Inventory từng dòng tuần tự;
+    nếu thứ tự duyệt không khớp chuẩn toàn hệ thống thì phiếu này và 1 giao
+    dịch nhiều-SKU khác (vd ``issue_gin``) có thể khoá 2 SKU theo chiều
+    ngược nhau và deadlock thật, dù mỗi hàm riêng lẻ đã khoá đúng thứ tự
+    Inventory->Batch.
     """
     session = StocktakeSession.objects.select_for_update().get(pk=session.pk)
     if session.status != StocktakeSession.Status.RECONCILIATION:
         raise ValidationError(f'Không thể điều chỉnh khi phiếu đang ở trạng thái {session.status}.')
 
     adjusted = 0
-    for item in session.items.select_related('product').select_for_update():
+    for item in session.items.select_related('product').select_for_update(
+        of=('self',)).order_by('product_id', 'pk'):
         variance = item.variance
         if not variance:
             continue
@@ -223,7 +247,7 @@ def apply_adjustment(session, actor=None, ip_address=None):
         if variance > 0:
             _create_surplus_batch(session=session, item=item, qty=variance)
         else:
-            _consume_shortage_batches(session=session, item=item, qty=-variance)
+            _consume_shortage_batches(session=session, item=item, qty=-variance, actor=actor)
         adjusted += 1
 
     session.status = StocktakeSession.Status.ADJUSTMENT
@@ -274,7 +298,7 @@ def _infer_supplier(product):
     return last_batch.supplier
 
 
-def _consume_shortage_batches(*, session, item, qty):
+def _consume_shortage_batches(*, session, item, qty, actor=None):
     """Chênh lệch âm (thiếu): trừ dần ``qty`` vào các batch hiện có, thứ tự
     FIFO (``exp_date`` rồi ``created_at`` — cùng convention
     ``inventory.services.suggest_fifo_batches``), giới hạn đúng vị trí nếu
@@ -292,6 +316,13 @@ def _consume_shortage_batches(*, session, item, qty):
     báo lỗi rõ ràng thay vì âm thầm để Inventory lệch khỏi tổng Batch — nếu
     không làm vậy, Inventory đã giảm nhưng batch vẫn báo đủ hàng để FIFO xuất
     tiếp.
+
+    Một batch ``PENDING_RECEIPT`` bị trừ hết (CLOSED) mà còn
+    ``WarehouseHandoff`` PENDING trỏ vào thì huỷ luôn handoff đó trong cùng
+    transaction (BUG-13, xem ``_cancel_pending_handoff_for_closed_batch``) —
+    batch không còn tồn vật lý thì không còn gì để kho Nhận/Từ chối, để
+    handoff PENDING trỏ vào batch CLOSED sẽ kẹt vĩnh viễn vì
+    accept_handoff()/reject_handoff() đều yêu cầu batch còn PENDING_RECEIPT.
     """
     batches = Batch.objects.select_for_update().filter(
         product=item.product, status__in=PHYSICAL_BATCH_STATUSES,
@@ -307,7 +338,8 @@ def _consume_shortage_batches(*, session, item, qty):
             continue
         take = min(available, remaining)
         batch.qty_used += take
-        if batch.qty_available <= 0:
+        fully_depleted = batch.qty_available <= 0
+        if fully_depleted:
             batch.status = Batch.Status.CLOSED
         elif batch.status == Batch.Status.ACTIVE:
             # Chỉ ACTIVE mới chuyển PARTIAL_USED (hành vi gốc). Batch đang
@@ -320,9 +352,41 @@ def _consume_shortage_batches(*, session, item, qty):
         batch.save(update_fields=['qty_used', 'status'])
         remaining -= take
 
+        if fully_depleted:
+            _cancel_pending_handoff_for_closed_batch(batch=batch, session=session, actor=actor)
+
     if remaining > 0:
         raise ValidationError(
             f'SKU {item.product.product_code}: không đủ lô hàng tại '
             f'{"vị trí " + str(session.location) if session.location_id else session.warehouse} '
             f'để trừ đúng phần thiếu {qty} (còn thiếu {remaining} không có lô nào che phủ).'
         )
+
+
+def _cancel_pending_handoff_for_closed_batch(*, batch, session, actor):
+    """BUG-13: batch vừa bị kiểm kê trừ hết (CLOSED) — nếu nó vốn
+    PENDING_RECEIPT và còn ``WarehouseHandoff`` PENDING, huỷ luôn (không dùng
+    cách chặn thao tác như ``inventory.services.transfer_stock`` cho điều
+    chuyển tay: điều chuyển tay có thể trì hoãn để xử lý handoff trước, còn
+    kiểm kê phản ánh thực tế vật lý đã xác nhận — hàng không còn thì phiếu
+    bàn giao không còn gì để Nhận/Từ chối nữa). Lock bằng
+    ``select_for_update()`` trong cùng transaction với việc đóng batch.
+    """
+    handoff = WarehouseHandoff.objects.select_for_update().filter(
+        batch=batch, status=WarehouseHandoff.Status.PENDING,
+    ).first()
+    if handoff is None:
+        return
+
+    handoff.status = WarehouseHandoff.Status.CANCELLED
+    handoff.decided_by = actor
+    handoff.decided_at = timezone.now()
+    handoff.save(update_fields=['status', 'decided_by', 'decided_at'])
+
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=handoff,
+        description=(
+            f'Phiếu bàn giao lô "{batch.batch_code}" bị huỷ do kiểm kê {session.so_no} '
+            f'xác nhận không còn tồn vật lý.'
+        ),
+    )

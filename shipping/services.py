@@ -248,15 +248,31 @@ def issue_gin(gin, actor=None, ip_address=None):
     convention "form/suggest filter, service phải tự re-validate lại" —
     issue_gin phải tự kiểm tra lại status/exp_date/product/warehouse ngay
     trước khi trừ, không tin allocation đã tạo từ lúc suggest là còn hợp lệ.
+
+    Khoá Inventory của từng dòng TRƯỚC các Batch của dòng đó (1 lần/item, mọi
+    allocation cùng item dùng chung 1 dòng Inventory product+warehouse) —
+    chuẩn hoá thứ tự ``Inventory -> Batch`` toàn hệ thống (BUG-16, 2026-07-29,
+    xem CLAUDE.md), tránh deadlock với ``stocktake.services.apply_adjustment``
+    (khoá Inventory rồi mới Batch) khi 2 nghiệp vụ chạm cùng SKU/batch đồng
+    thời.
+
+    Duyệt item theo ``product_id`` tăng dần (BUG-17, 2026-07-29, xem
+    CLAUDE.md), không theo thứ tự chèn (pk mặc định) — 1 GIN nhiều dòng SKU
+    khoá Inventory từng dòng tuần tự, nên nếu thứ tự duyệt khác chuẩn toàn hệ
+    thống thì GIN này và 1 giao dịch nhiều-SKU khác (vd
+    ``apply_adjustment``) có thể khoá 2 SKU theo chiều ngược nhau và deadlock
+    thật, dù mỗi hàm riêng lẻ đã khoá đúng thứ tự Inventory->Batch.
     """
     gin = Gin.objects.select_for_update().get(pk=gin.pk)
     if gin.status != Gin.Status.PICKING:
         raise ValidationError(f'Không thể xuất kho khi GIN đang ở trạng thái {gin.status}.')
 
-    for item in gin.items.select_for_update():
+    for item in gin.items.select_for_update().order_by('product_id', 'pk'):
         allocations = list(item.allocations.select_related('batch'))
         if not allocations:
             raise ValidationError(f'Dòng "{item.product}" chưa có batch nào được phân bổ.')
+
+        inv = Inventory.objects.select_for_update().get(product=item.product, warehouse=gin.warehouse)
 
         qty_issued = 0
         for alloc in allocations:
@@ -270,7 +286,7 @@ def issue_gin(gin, actor=None, ip_address=None):
                     f'Batch "{batch.batch_code}" không còn khả dụng để xuất '
                     f'({batch.get_status_display()}).'
                 )
-            if batch.exp_date and batch.exp_date < timezone.now().date():
+            if batch.exp_date and batch.exp_date < timezone.localdate():
                 raise ValidationError(f'Batch "{batch.batch_code}" đã hết hạn.')
             if batch.product_id != item.product_id:
                 raise ValidationError('Batch không thuộc sản phẩm của dòng GIN.')
@@ -285,7 +301,6 @@ def issue_gin(gin, actor=None, ip_address=None):
             batch.status = Batch.Status.CLOSED if batch.qty_available <= 0 else Batch.Status.PARTIAL_USED
             batch.save(update_fields=['qty_used', 'status'])
 
-            inv = Inventory.objects.select_for_update().get(product=item.product, warehouse=gin.warehouse)
             inv.qty_on_hand -= alloc.qty_allocated
             inv.save(update_fields=['qty_on_hand', 'updated_at'])
             record_movement(

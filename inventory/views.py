@@ -13,7 +13,7 @@ tồn kho thật (BUG-05, 2026-07-29).
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 
 from accounts.audit import client_ip
@@ -63,14 +63,31 @@ def inventory_list(request):
     # (hoặc ngược lại) sẽ báo sai (BUG-07, 2026-07-29). Cùng convention với
     # ``reports.services.dashboard_kpis()``. Truy vấn riêng, không phụ thuộc bộ
     # lọc kho/tìm kiếm của trang, để lọc theo 1 kho vẫn so đúng trên tổng SKU.
+    main_inventories = Inventory.objects.filter(warehouse__warehouse_type=Warehouse.WarehouseType.MAIN)
     main_totals = dict(
-        Inventory.objects.filter(warehouse__warehouse_type=Warehouse.WarehouseType.MAIN)
-        .values('product_id').annotate(total=Sum('qty_on_hand')).values_list('product_id', 'total')
+        main_inventories.values('product_id').annotate(total=Sum('qty_on_hand')).values_list('product_id', 'total')
+    )
+    # Số kho MAIN đang giữ SKU này (bug fix 2026-07-29, BUG-14): nếu > 1, không
+    # có quy tắc nào để tự chọn 1 trong số đó làm kho nhận PR — bỏ trống
+    # ``warehouse=`` querystring để buộc người dùng tự chọn trên form PR
+    # (``PurchaseRequestForm.warehouse`` vốn đã required). Chỉ prefill sẵn khi
+    # SKU thực sự chỉ có mặt ở đúng 1 kho MAIN (không còn gì để chọn).
+    main_warehouse_counts = dict(
+        main_inventories.values('product_id')
+        .annotate(n=Count('warehouse_id', distinct=True)).values_list('product_id', 'n')
     )
 
     rows = []
     below_min_products = set()
     above_max_products = set()
+    # SKU nào đã hiện nút "Tạo yêu cầu mua hàng" rồi (bug fix 2026-07-29,
+    # BUG-14): below_min/suggested_po_qty tính trên TỔNG tồn MAIN của cả SKU
+    # nên giống hệt nhau ở mọi dòng kho của SKU đó — trước fix mỗi dòng tự vẽ
+    # 1 nút, khiến 1 SKU dưới Min ở 2 kho MAIN hiện 2 nút trùng số lượng, mỗi
+    # nút trỏ ``warehouse=`` khác nhau (kho của dòng đó) một cách tuỳ tiện.
+    # Badge "Dưới Min" vẫn hiện trên mọi dòng liên quan (đúng bản chất tổng
+    # công ty), chỉ riêng nút hành động (tạo PR) mới giới hạn 1 lần/SKU.
+    pr_button_shown_products = set()
     for inv in inventories:
         # Cảnh báo Min/Max chỉ có ý nghĩa cho tồn khả dụng ở Kho thành phẩm —
         # tồn ở Kho chờ/Kho phế vẫn hiển thị trong danh sách nhưng không tính vào
@@ -86,15 +103,23 @@ def inventory_list(request):
         if above_max:
             above_max_products.add(inv.product_id)
         suggested_po_qty = None
+        show_pr_button = False
+        pr_warehouse_id = None
         if below_min:
             # FR-PO-02: gợi ý Qty đặt = đầy Max Level nếu có cấu hình, else về
             # lại Min Level, tính trên tổng tồn MAIN của cả SKU (không phải
             # riêng dòng kho này) để không gợi ý đặt dư khi SKU còn tồn ở kho khác.
             target_level = max_level if max_level is not None else min_level
             suggested_po_qty = target_level - total_main_qty
+            if inv.product_id not in pr_button_shown_products:
+                pr_button_shown_products.add(inv.product_id)
+                show_pr_button = True
+                if main_warehouse_counts.get(inv.product_id, 0) == 1:
+                    pr_warehouse_id = inv.warehouse_id
         rows.append({
             'inventory': inv, 'below_min': below_min, 'above_max': above_max,
             'suggested_po_qty': suggested_po_qty,
+            'show_pr_button': show_pr_button, 'pr_warehouse_id': pr_warehouse_id,
         })
 
     page_obj, page_size = paginate_queryset(request, rows)

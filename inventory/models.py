@@ -129,13 +129,18 @@ class WarehouseHandoff(models.Model):
     người đó; để trống thì báo ``destination_warehouse.staff`` (fallback toàn
     bộ ``department=WAREHOUSE`` nếu kho đích chưa gán ai — cùng convention với
     GRN/GIN handoff notify). Đừng tạo/sửa trực tiếp — dùng
-    ``inventory.services.create_handoff()``/``accept_handoff()``/``reject_handoff()``.
+    ``inventory.services.create_handoff()``/``accept_handoff()``/``reject_handoff()``,
+    hoặc để hệ thống tự chuyển ``CANCELLED`` khi
+    ``stocktake.services._consume_shortage_batches`` trừ hết một batch
+    PENDING_RECEIPT còn handoff PENDING (BUG-13, batch không còn tồn vật lý
+    thì phiếu bàn giao không còn gì để Nhận/Từ chối).
     """
 
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Chờ xác nhận'
         ACCEPTED = 'ACCEPTED', 'Đã nhận'
         REJECTED = 'REJECTED', 'Đã từ chối'
+        CANCELLED = 'CANCELLED', 'Đã huỷ (kiểm kê)'
 
     class RejectDestination(models.TextChoices):
         BACK_TO_QC = 'BACK_TO_QC', 'Trả về QC'

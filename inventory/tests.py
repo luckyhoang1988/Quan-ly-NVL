@@ -1,4 +1,5 @@
 import datetime
+from unittest import mock
 
 from django.contrib import admin
 from django.contrib.auth import get_user_model
@@ -245,6 +246,31 @@ class ExpiredBatchSyncServiceTest(TestCase):
             'LOT-P', self.today + datetime.timedelta(days=5), status=Batch.Status.PARTIAL_USED)
         result = list(expiring_soon_batches(days=30))
         self.assertIn(partial, result)
+
+    def test_TC_INV_EXP_011_uses_vietnam_local_date_not_utc_date(self):
+        """BUG-12: TIME_ZONE='Asia/Ho_Chi_Minh' (UTC+7) nghĩa là 00:00-06:59 giờ
+        VN vẫn là ngày hôm trước theo UTC. Mock ``timezone.now()`` trả về
+        2026-07-28 20:00 UTC = 2026-07-29 03:00 giờ VN: batch hết hạn
+        2026-07-28 phải bị coi là ĐÃ hết hạn (so với ngày VN 07-29), dùng
+        ``timezone.now().date()`` (UTC) sẽ so với 07-28 và bỏ sót."""
+        batch = self._batch('LOT-0001', datetime.date(2026, 7, 28))
+        fixed_utc_now = datetime.datetime(2026, 7, 28, 20, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch('inventory.services.timezone.now', return_value=fixed_utc_now):
+            count = sync_expired_batches()
+        batch.refresh_from_db()
+        self.assertEqual(count, 1)
+        self.assertEqual(batch.status, Batch.Status.EXPIRED)
+
+    def test_TC_INV_EXP_012_expiring_soon_threshold_uses_vietnam_local_date(self):
+        """BUG-12: cùng mốc thời gian UTC/VN lệch ngày như trên, ngưỡng 30
+        ngày của ``expiring_soon_batches`` phải tính từ ngày VN (07-29, ngưỡng
+        08-28), không phải ngày UTC (07-28, ngưỡng 08-27) — lô hết hạn 08-27
+        nằm ngoài ngưỡng UTC nhưng trong ngưỡng VN."""
+        batch = self._batch('LOT-EDGE', datetime.date(2026, 8, 27))
+        fixed_utc_now = datetime.datetime(2026, 7, 28, 20, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch('inventory.services.timezone.now', return_value=fixed_utc_now):
+            result = list(expiring_soon_batches(days=30))
+        self.assertIn(batch, result)
 
 
 class StaleQuarantineBatchesTest(TestCase):
@@ -529,6 +555,27 @@ class InventoryDashboardViewTest(TestCase):
         rows_by_warehouse = {row['inventory'].warehouse_id: row for row in response.context['rows']}
         self.assertTrue(rows_by_warehouse[self.warehouse.pk]['below_min'])
         self.assertEqual(response.context['below_min_count'], 1)
+
+    def test_TC_INV_DASH_014_below_min_two_main_warehouses_shows_single_pr_button(self):
+        """BUG-14: SKU dưới Min có mặt ở 2 kho MAIN — trước fix, mỗi dòng tự
+        tính below_min/suggested_po_qty riêng (giống hệt nhau vì cùng dựa trên
+        tổng MAIN) nên hiện 2 nút "Tạo yêu cầu mua hàng" trùng số lượng, mỗi
+        nút trỏ ``warehouse=`` tuỳ tiện khác nhau (kho của dòng đó). Phải chỉ
+        còn đúng 1 nút cho cả SKU, và không tự chọn kho khi có > 1 kho MAIN
+        giữ SKU này (không có quy tắc kho đích mặc định — để form PR bắt
+        người dùng tự chọn)."""
+        product = Product.objects.create(product_code='NVL-0013', name='Ngò gai', uom='kg', min_level=100)
+        Inventory.objects.create(product=product, warehouse=self.warehouse, qty_on_hand=30)
+        Inventory.objects.create(product=product, warehouse=self.other_warehouse, qty_on_hand=30)
+
+        response = self.client.get(reverse('inventory:inventory_list'))
+
+        self.assertEqual(response.context['below_min_count'], 1)
+        for row in response.context['rows']:
+            self.assertTrue(row['below_min'])
+            self.assertEqual(row['suggested_po_qty'], 100 - 60)
+        self.assertContains(response, 'Tạo yêu cầu mua hàng', count=1)
+        self.assertNotContains(response, '&warehouse=')
 
 
 class BatchViewTest(TestCase):
