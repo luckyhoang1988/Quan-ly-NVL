@@ -4,10 +4,13 @@ và workflow GRN_RETURN (mục 2c) PENDING -> APPROVED -> RETURNED -> CLOSED.
 Chuyển tiếp PENDING_QC -> QC_IN_PROGRESS (``start_qc``) và các nhánh QC PASS/
 FAIL/PARTIAL_PASS nằm ở ``quality.services`` vì gắn liền với ``QcInspection``
 (mục 2c) — module ``receiving`` chỉ giữ transition thuần GRN, chưa đụng QC.
-Ngoại lệ duy nhất: ``cancel_grn`` gọi sang ``quality.services.cancel_qc_inspection``
-khi hủy GRN lúc đang QC_IN_PROGRESS, để đảo batch/Inventory Kho chờ do
+Ngoại lệ: khi hủy GRN lúc đang QC_IN_PROGRESS, ``cancel_grn`` gọi sang
+``quality.services.cancel_qc_inspection`` để đảo batch/Inventory Kho chờ do
 ``start_qc`` tạo ra — không hủy được ở tầng receiving vì không có quyền truy
-cập trực tiếp Batch/Inventory Kho chờ (thuộc domain QC).
+cập trực tiếp Batch/Inventory Kho chờ (thuộc domain QC) — và gọi sang
+``purchasing.services.sync_po_status`` để PO hết bị kẹt ở PARTIAL_RECEIVED/
+RECEIVED do qty của GRN vừa hủy (qty này được ghi cùng lúc với ``start_qc``
+ở ``grn_receive_qty``, nên chỉ cần đồng bộ lại khi hủy từ QC_IN_PROGRESS).
 """
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -105,7 +108,8 @@ def cancel_grn(grn, actor=None, note='', ip_address=None):
     if grn.status in (Grn.Status.RECEIVED, Grn.Status.REJECTED, Grn.Status.CANCELLED, Grn.Status.CLOSED):
         raise ValidationError(f'Không thể hủy GRN khi đang ở trạng thái {grn.status}.')
 
-    if grn.status == Grn.Status.QC_IN_PROGRESS:
+    was_qc_in_progress = grn.status == Grn.Status.QC_IN_PROGRESS
+    if was_qc_in_progress:
         from quality.services import cancel_qc_inspection
         cancel_qc_inspection(grn, actor=actor, ip_address=ip_address)
 
@@ -119,6 +123,14 @@ def cancel_grn(grn, actor=None, note='', ip_address=None):
 
     grn.status = Grn.Status.CANCELLED
     grn.save(update_fields=['status'])
+
+    if was_qc_in_progress:
+        # sync_po_status loại trừ GRN CANCELLED qua query DB (grn__status=CANCELLED)
+        # nên phải gọi SAU khi grn.status đã lưu, không phải trước — gọi trước
+        # sẽ khiến qty của GRN vừa hủy vẫn bị tính vào tổng đã nhận của PO.
+        from purchasing.services import sync_po_status
+        sync_po_status(grn.po)
+
     log_action(
         actor, AuditLog.Action.CANCEL, target=grn,
         description=f'Hủy GRN {grn.grn_no}.', reason=note, ip_address=ip_address,

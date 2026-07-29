@@ -608,6 +608,55 @@ class GrnViewTest(TestCase):
         self.assertEqual(staging_inv.qty_on_hand, 0)
         self.assertEqual(inspection.status, QcInspection.Result.CANCELLED)
 
+    def test_TC_GRN_VIEW_007_006_cancel_during_qc_in_progress_resyncs_po_status(self):
+        """Bug fix: hủy GRN lúc QC_IN_PROGRESS phải đồng bộ lại PO.status —
+        trước fix, PO bị kẹt ở PARTIAL_RECEIVED/RECEIVED do qty của GRN đã hủy
+        vẫn được sync_po_status tính vào tổng đã nhận. Đi qua flow thật
+        (grn_receive_qty rồi grn_cancel), không set status tay."""
+        grn = self._create_grn(status=Grn.Status.PENDING_QC)
+        item = grn.items.first()
+        self.client.post(reverse('receiving:grn_receive_qty', args=[grn.pk]), {
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1',
+            'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': item.pk, 'items-0-qty_received': 9,
+            'inspector': self.qc_user.pk,
+        })
+        grn.refresh_from_db()
+        self.po.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertEqual(self.po.status, PurchaseOrder.Status.PARTIAL_RECEIVED)
+
+        qc_manager = User.objects.create_user(
+            username='qlqc4', password='qlqc-pass-123', role=User.Role.QC,
+            department=User.Department.QC, is_manager=True)
+        self.client.force_login(qc_manager)
+        response = self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.po.refresh_from_db()
+
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[grn.pk]))
+        self.assertEqual(grn.status, Grn.Status.CANCELLED)
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_GRN_VIEW_007_007_new_grn_can_reuse_quota_freed_by_cancelled_grn(self):
+        """Bug fix: hủy 1 GRN đã dùng hết quota (qty_ordered) của PO phải giải
+        phóng quota đó — tạo GRN mới cho cùng PO/sản phẩm với cùng qty phải
+        THÀNH CÔNG (trước fix, BaseGrnItemFormSet.clean vẫn tính dòng của GRN đã
+        hủy vào "đã nhận" và chặn nhầm)."""
+        grn = self._create_grn()  # DRAFT, item qty_ordered=10 == toàn bộ quota PO
+        self.client.force_login(self.manager)
+        self.client.post(reverse('receiving:grn_cancel', args=[grn.pk]))
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.CANCELLED)
+
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('receiving:grn_create'), self._create_payload())
+        self.assertEqual(
+            Grn.objects.filter(supplier=self.supplier).exclude(pk=grn.pk).count(), 1,
+            'GRN mới phải được tạo thành công sau khi quota được giải phóng.')
+        new_grn = Grn.objects.exclude(pk=grn.pk).get(supplier=self.supplier)
+        self.assertRedirects(response, reverse('receiving:grn_detail', args=[new_grn.pk]))
+
     def test_TC_GRN_VIEW_003_001_receive_qty_saves_qty_and_starts_qc(self):
         grn = self._create_grn(status=Grn.Status.PENDING_QC)
         item = grn.items.first()

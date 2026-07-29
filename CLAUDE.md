@@ -221,7 +221,17 @@ names, exact dates) live in `git log`, not here.
   `QC_IN_PROGRESS` has no completed decision yet, so reversing it is undoing an in-flight step, not
   rewriting history. A regression test for this class of bug must drive the object through the real service
   flow to reach the intermediate status — constructing it directly at that status won't have created the
-  side effect to check for.
+  side effect to check for. The side effect to reverse isn't only Batch/Inventory — it also includes any
+  aggregate state on a *parent* model updated in that same original transaction: `cancel_grn` must also
+  call `purchasing.services.sync_po_status(grn.po)` so `PurchaseOrder.status`/`received_at` (bumped by the
+  same `grn_receive_qty` transaction that ran `start_qc()`) un-sticks from `PARTIAL_RECEIVED`/`RECEIVED`
+  back down to `SENT` when the GRN carrying that qty is cancelled — and `sync_po_status`'s own aggregate
+  query, plus the sibling GRN-quota check in `BaseGrnItemFormSet.clean`, must exclude `CANCELLED` GRNs
+  entirely (not just QC-`REJECTED` items), or a cancelled GRN's qty permanently counts against both the
+  PO's fulfillment and its re-receive quota. **Ordering hazard, same shape as the PR two-stage-approval one
+  below**: a reversal that re-queries the DB for "is this GRN cancelled" must run *after* the owning
+  object's own status is mutated and saved, not before — calling `sync_po_status` before `grn.status =
+  CANCELLED` is persisted means its exclude-CANCELLED query still sees the old status and silently no-ops.
 - Any code that mutates `Inventory.qty_on_hand` directly must also keep `Batch` in sync (create a new
   `ACTIVE` batch for a surplus, consume existing `ACTIVE`/`PARTIAL_USED` batches FIFO-order for a shortage)
   — established for GRN/QC/GIN from the start, and retrofitted onto Stock Opname adjustments

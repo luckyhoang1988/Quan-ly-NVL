@@ -231,8 +231,9 @@ class SyncPoStatusTest(TestCase):
         PurchaseOrderItem.objects.create(
             purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
 
-    def _grn_with_item(self, qty_received, status=GrnItem.Status.PENDING):
-        grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.creator)
+    def _grn_with_item(self, qty_received, status=GrnItem.Status.PENDING, grn_status=Grn.Status.PENDING_QC):
+        grn = Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=self.creator, status=grn_status)
         GrnItem.objects.create(
             grn=grn, product=self.product, qty_ordered=qty_received or 1, qty_received=qty_received,
             unit_price=Decimal('15000.00'), status=status,
@@ -263,6 +264,58 @@ class SyncPoStatusTest(TestCase):
         sync_po_status(self.po)
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_SYNC_005_cancelled_grn_excluded_from_total(self):
+        """GRN CANCELLED coi như chưa từng nhận hàng, giống hệt item REJECTED —
+        bug fix: trước đây chỉ loại trừ item REJECTED, không loại trừ cả GRN đã
+        hủy hẳn."""
+        self._grn_with_item(10, grn_status=Grn.Status.CANCELLED)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_SYNC_006_downgrade_received_to_sent_when_grn_cancelled(self):
+        """Bug fix: PO đã RECEIVED do 1 GRN duy nhất, nếu GRN đó bị hủy sau đó,
+        PO phải hạ lại về SENT (không kẹt ở RECEIVED vĩnh viễn) và received_at
+        phải được xóa."""
+        grn = self._grn_with_item(10)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.RECEIVED)
+        self.assertIsNotNone(self.po.received_at)
+
+        grn.status = Grn.Status.CANCELLED
+        grn.save(update_fields=['status'])
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+        self.assertIsNone(self.po.received_at)
+
+    def test_TC_PUR_SYNC_007_downgrade_received_to_partial_received_when_one_grn_cancelled(self):
+        """2 GRN cùng đóng góp đủ Qty (RECEIVED); hủy 1 GRN thì PO hạ về
+        PARTIAL_RECEIVED (GRN còn lại vẫn còn đóng góp qty), không hạ hẳn về SENT."""
+        grn_a = self._grn_with_item(6)
+        self._grn_with_item(4)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.RECEIVED)
+
+        grn_a.status = Grn.Status.CANCELLED
+        grn_a.save(update_fields=['status'])
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.PARTIAL_RECEIVED)
+        self.assertIsNone(self.po.received_at)
+
+    def test_TC_PUR_SYNC_008_closed_po_not_reopened(self):
+        """Bug fix: PO đã CLOSED không bị sync_po_status đẩy ngược lại RECEIVED/
+        PARTIAL_RECEIVED dù 1 GRN dở dang sau đó mới ghi Qty thực nhận."""
+        self.po.status = PurchaseOrder.Status.CLOSED
+        self.po.save(update_fields=['status'])
+        self._grn_with_item(10)
+        sync_po_status(self.po)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
 
 
 class PurchaseOrderWorkflowTest(TestCase):

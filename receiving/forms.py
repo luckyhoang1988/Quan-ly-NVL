@@ -101,7 +101,8 @@ class BaseGrnItemFormSet(forms.BaseInlineFormSet):
                 raise forms.ValidationError(f'Sản phẩm "{product}" không có trong PO "{po.po_no}".')
 
             already = GrnItem.objects.filter(
-                grn__po=po, product=product).exclude(status=GrnItem.Status.REJECTED)
+                grn__po=po, product=product,
+            ).exclude(status=GrnItem.Status.REJECTED).exclude(grn__status=Grn.Status.CANCELLED)
             if self.instance.pk:
                 already = already.exclude(grn=self.instance)
             already_qty = already.aggregate(total=Sum('qty_ordered'))['total'] or 0

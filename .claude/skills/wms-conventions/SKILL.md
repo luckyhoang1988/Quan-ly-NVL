@@ -239,6 +239,17 @@ nhớ nhất: quản lý phòng gốc **vẫn xem được** (read-only) PR sau 
    `quality.services.cancel_qc_inspection()` (phát hiện + vá 2026-07-27, xem CLAUDE.md). Viết test cho case
    này phải đi qua flow thật tạo ra side-effect (vd gọi view `grn_receive_qty` để `start_qc` chạy thật) — test
    dựng `obj` thẳng ở state đó (`Model(status=X)`) sẽ không bao giờ bắt được lỗi thiếu-đảo-ngược này.
+   **Side-effect không chỉ giới hạn ở Batch/Inventory** — bug thứ 2 cùng dạng (phát hiện + vá 2026-07-29, xem
+   CLAUDE.md): `grn_receive_qty` cùng transaction còn gọi `sync_po_status(po)` đẩy `PurchaseOrder.status` lên
+   `PARTIAL_RECEIVED`/`RECEIVED`, nhưng `cancel_grn` bản vá lần 1 chỉ đảo Batch/Inventory, quên gọi lại
+   `sync_po_status` — PO kẹt vĩnh viễn ở status cũ dù GRN mang qty đó đã bị hủy. Tổng quát: khi rà 1 hàm hủy
+   theo mục 6 này, liệt kê HẾT mọi lệnh gọi trong transaction gốc đã đưa `obj` tới state trung gian đó (không
+   dừng lại ở lệnh đầu tiên tìm thấy), vì các lệnh gọi đó thường thuộc nhiều app khác nhau (ở đây: QC lo
+   Batch/Inventory, PUR lo `PurchaseOrder.status`) và dễ chỉ vá 1 trong số đó rồi coi là xong.
+   **Ordering hazard nếu hàm đảo tự re-query DB để loại trừ `obj`** (vd `sync_po_status` loại trừ GRN qua
+   `.exclude(grn__status=CANCELLED)`): phải gọi hàm đảo đó SAU khi `obj.status` đã `save()`, không phải
+   trước — gọi trước thì query loại trừ vẫn thấy status cũ, âm thầm no-op (không lỗi, chỉ sai kết quả, rất dễ
+   sót khi review).
 7. Nếu muốn thêm "báo riêng 1 người cụ thể" bên CẠNH việc bubble lên quản lý phòng ban (chứ không thay thế),
    thêm 1 field `assigned_to` (FK User, `null=True`, tuỳ chọn) ngay trên `obj`, KHÔNG phải trên `Approval` —
    `assigned_to` chỉ để `notify()` thêm người đó và hiển thị "ai sẽ xử lý", KHÔNG tự có quyền quyết định:

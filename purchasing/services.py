@@ -25,7 +25,7 @@ from accounts.audit import log_action
 from accounts.models import AuditLog, User
 from accounts.notifications import notify
 from partners.models import Supplier
-from receiving.models import GrnItem
+from receiving.models import Grn, GrnItem
 
 from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest
 
@@ -35,8 +35,16 @@ def sync_po_status(po):
 
     - Mọi dòng đã nhận đủ (>=) -> ``RECEIVED`` (set ``received_at`` lần đầu).
     - Có nhận nhưng chưa đủ -> ``PARTIAL_RECEIVED``.
-    - Chưa nhận gì -> giữ nguyên status hiện tại.
+    - Chưa nhận gì -> ``SENT`` (downgrade nếu trước đó đã lên PARTIAL_RECEIVED/
+      RECEIVED nhờ 1 GRN mà nay đã bị hủy — xem ``cancel_grn``).
+
+    Dòng thuộc GRN đã ``CANCELLED`` bị loại khỏi tổng, giống hệt dòng bị QC
+    REJECTED — GRN hủy coi như chưa từng nhận hàng. PO đã ``CLOSED`` không bị
+    hàm này đổi lại status (tránh 1 GRN dở dang vô tình "hồi sinh" PO đã đóng).
     """
+    if po.status == PurchaseOrder.Status.CLOSED:
+        return po
+
     po_items = list(PurchaseOrderItem.objects.filter(purchase_order=po))
     if not po_items:
         return po
@@ -44,6 +52,7 @@ def sync_po_status(po):
     received_by_product = dict(
         GrnItem.objects.filter(grn__po=po)
         .exclude(status=GrnItem.Status.REJECTED)
+        .exclude(grn__status=Grn.Status.CANCELLED)
         .values('product_id')
         .annotate(total=Sum('qty_received'))
         .values_list('product_id', 'total')
@@ -58,6 +67,8 @@ def sync_po_status(po):
         new_status = PurchaseOrder.Status.RECEIVED
     elif any_received:
         new_status = PurchaseOrder.Status.PARTIAL_RECEIVED
+    elif po.status in (PurchaseOrder.Status.PARTIAL_RECEIVED, PurchaseOrder.Status.RECEIVED):
+        new_status = PurchaseOrder.Status.SENT
     else:
         return po
 
@@ -66,6 +77,9 @@ def sync_po_status(po):
         po.status = new_status
         if new_status == PurchaseOrder.Status.RECEIVED and not po.received_at:
             po.received_at = timezone.localdate()
+            update_fields.append('received_at')
+        elif new_status != PurchaseOrder.Status.RECEIVED and po.received_at:
+            po.received_at = None
             update_fields.append('received_at')
         po.save(update_fields=update_fields)
     return po
