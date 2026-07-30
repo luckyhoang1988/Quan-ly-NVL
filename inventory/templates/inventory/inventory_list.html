@@ -60,7 +60,7 @@
           <tr class="{% if row.below_min %}table-danger{% elif row.above_max %}table-warning{% endif %}">
             <td>{{ row.inventory.product.product_code }}</td>
             <td>{{ row.inventory.product.name }}</td>
-            <td>{{ row.inventory.warehouse.code }}</td>
+            <td>{{ row.inventory.warehouse.code|default:"— (chưa nhập kho)" }}</td>
             <td>{{ row.inventory.qty_on_hand }}</td>
             <td>{{ row.inventory.qty_reserved }}</td>
             <td>{{ row.inventory.qty_available }}</td>

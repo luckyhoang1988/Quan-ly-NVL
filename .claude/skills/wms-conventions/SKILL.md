@@ -330,6 +330,27 @@ pattern nhẹ hơn — xem `inventory.models.WarehouseHandoff` + `inventory.serv
    Xem CLAUDE.md mục "Established patterns" (bullet lock order) để biết danh sách đầy đủ hàm đã sửa, 2 bẫy
    phụ (`select_related().select_for_update()` khoá luôn bảng join; lock acquired trước khi gọi vào helper
    dùng chung vẫn tính vào thứ tự khoá), và cách test bằng `TransactionTestCase` + thread thật.
+   **Chuỗi khoá nối dài thêm 1 tầng cho `Grn`/`QcInspection`** (BUG-18, 2026-07-30): `cancel_grn` khoá
+   `Grn` rồi `QcInspection` TRƯỚC `Inventory`/`Batch`, nhưng `qc_pass`/`qc_fail`/`qc_partial_pass` trước đây
+   chỉ đọc `inspection` trong bộ nhớ (không khoá — vừa là TOCTOU vừa ngược thứ tự), khoá
+   `Inventory`→`Batch` trước rồi mới chạm `Grn`/`QcInspection` qua `.save()` không khoá ở cuối — 2 giao dịch
+   chạm cùng GRN (huỷ GRN giữa lúc QC_IN_PROGRESS + quyết định QC) đồng thời có thể deadlock thật. Vá bằng
+   `quality.services._lock_pending_inspection()` — khoá + tải lại `Grn` rồi `QcInspection` (đúng thứ tự
+   `cancel_grn` dùng) NGAY ĐẦU cả 3 hàm quyết định QC, trước bất kỳ thao tác Inventory/Batch nào. Thứ tự
+   chuẩn đầy đủ giờ là `Grn → QcInspection → Inventory → Batch → WarehouseHandoff`.
+8. **Django Admin của model do service layer sở hữu phải khoá read-only, không chỉ `inventory`** (BUG-19,
+   2026-07-30): mẫu `ServiceManagedAdminMixin` (`has_add/change/delete_permission` đều `False`) đã áp dụng
+   cho `receiving.admin` (`Grn`/`GrnItem`/`GrnReturn`), `shipping.admin` (`Gin`/`GinItem`/
+   `GinBatchAllocation`), `quality.admin` (`QcInspection`/`QcInspectionItem` — không áp cho `QcCriteria`, đó
+   là master data thuần), `stocktake.admin` (`StocktakeSession`/`StocktakeItem`), `purchasing.admin`
+   (`PurchaseOrder`/`PurchaseOrderItem`/`PurchaseRequest`/`PurchaseRequestItem`). Mỗi app tự khai báo mixin
+   riêng (không import chung 1 module) — cùng convention với `_bootstrapify` lặp lại ở từng `forms.py`.
+   `warehouse.admin` (`Warehouse`/`Location`) CHƯA áp dụng — khác các model trên, field thường của
+   `Warehouse` (tên, capacity) không có "service tạo/sửa riêng" nào để bảo vệ, chỉ `is_active`/
+   `warehouse_type` mới có (`activate_warehouse`/`deactivate_warehouse`) — nếu cần khoá thì nên dùng
+   `readonly_fields` cho đúng 2 field đó thay vì khoá cả model. Áp dụng chung: model workflow mới thêm sau
+   này (status transitions qua service layer) phải đăng ký mixin này ngay khi tạo `admin.py`, đừng đợi đến
+   khi phát hiện qua review.
 
 ## 6. Gate link sidebar (`base.html`) bằng `user.can()` qua context processor, KHÔNG hardcode role
 

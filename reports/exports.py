@@ -13,12 +13,27 @@ from reportlab.lib.styles import getSampleStyleSheet
 import io
 
 
+_FORMULA_LEAD_CHARS = ('=', '+', '-', '@')
+
+
+def _excel_safe(value):
+    """Chặn CSV/Excel formula injection: cell bắt đầu bằng =/+/-/@ (vd tên SKU
+    do người dùng nhập) bị Excel/LibreOffice diễn giải thành công thức khi mở
+    file — thêm dấu nháy đơn để ép về kiểu text thuần (openpyxl lưu
+    ``data_type='f'`` cho chuỗi thô bắt đầu bằng các ký tự này).
+    """
+    text = str(value) if value is not None else ''
+    if text.startswith(_FORMULA_LEAD_CHARS):
+        return "'" + text
+    return text
+
+
 def build_excel_response(filename, headers, rows):
     wb = Workbook()
     ws = wb.active
     ws.append(headers)
     for row in rows:
-        ws.append([str(cell) if cell is not None else '' for cell in row])
+        ws.append([_excel_safe(cell) for cell in row])
 
     response = HttpResponse(
         content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

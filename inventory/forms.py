@@ -37,7 +37,8 @@ class StockTransferForm(forms.Form):
     )
     to_location = forms.ModelChoiceField(
         queryset=Location.objects.filter(
-            is_active=True, warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
+            is_active=True, warehouse__is_active=True,
+            warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
         ).select_related('warehouse'),
         label='Vị trí đích',
     )

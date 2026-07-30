@@ -10,6 +10,8 @@ không có cột 'inventory' riêng trong Permission Matrix CRUD nên không dù
 user đã bị thu hồi quyền menu Tồn kho) cũng POST thẳng được để điều chuyển
 tồn kho thật (BUG-05, 2026-07-29).
 """
+from types import SimpleNamespace
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -121,6 +123,36 @@ def inventory_list(request):
             'suggested_po_qty': suggested_po_qty,
             'show_pr_button': show_pr_button, 'pr_warehouse_id': pr_warehouse_id,
         })
+
+    # SKU active có cấu hình min_level nhưng CHƯA từng có dòng Inventory nào
+    # (chưa từng GRN/QC nhập kho) không có dòng nào ở trên để gắn cảnh báo —
+    # tồn thực tế = 0 vẫn phải hiện "Dưới Min" (bug fix 2026-07-30, xem
+    # CLAUDE.md), nếu không SKU mới tạo cần mua ngay từ đầu sẽ vô hình trên cả
+    # dashboard lẫn trang này. Chỉ tổng hợp khi xem "Tất cả kho" — lọc theo 1
+    # kho cụ thể thì hiện 1 SKU chưa từng tồn tại ở đúng kho đó không có ý nghĩa.
+    if not selected_warehouse:
+        products_with_inventory = set(Inventory.objects.values_list('product_id', flat=True))
+        missing_products = Product.objects.filter(
+            is_active=True, min_level__isnull=False,
+        ).exclude(pk__in=products_with_inventory)
+        if q:
+            missing_products = missing_products.filter(
+                Q(product_code__icontains=q) | Q(name__icontains=q))
+        for product in missing_products:
+            below_min_products.add(product.id)
+            show_pr_button = product.id not in pr_button_shown_products
+            if show_pr_button:
+                pr_button_shown_products.add(product.id)
+            target_level = product.max_level if product.max_level is not None else product.min_level
+            rows.append({
+                'inventory': SimpleNamespace(
+                    product=product, product_id=product.id, warehouse=None,
+                    qty_on_hand=0, qty_reserved=0, qty_available=0,
+                ),
+                'below_min': True, 'above_max': False,
+                'suggested_po_qty': target_level,
+                'show_pr_button': show_pr_button, 'pr_warehouse_id': None,
+            })
 
     page_obj, page_size = paginate_queryset(request, rows)
     return render(request, 'inventory/inventory_list.html', {

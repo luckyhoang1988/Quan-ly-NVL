@@ -428,6 +428,19 @@ rather than rediscovering the failure.
   "a warehouse needs ≥1 active location" needed a guard on deactivating a `Location` too, not just at
   creation. When adding a create-side guard, check whether the delete/deactivate/reactivate side needs the
   mirror check.
+- **Deactivating a parent doesn't cascade to its children — any code path that only checks the child's own
+  `is_active` still lets goods flow into a deactivated parent** (BUG-21, 2026-07-30): `deactivate_warehouse()`
+  only flips `Warehouse.is_active`, never touches its `Location` rows' own `is_active` — a `Location` under a
+  now-inactive `Warehouse` stays `is_active=True`. Both the `StockTransferForm.to_location`/
+  `QcResultForm.location` dropdowns and the service-layer destination checks in `move_batch_qty`/
+  `transfer_stock`/`qc_pass`/`qc_partial_pass` checked `to_location.is_active` but never
+  `to_location.warehouse.is_active`, so a transfer or QC-PASS could still create a real `Batch`+`Inventory`
+  in a warehouse someone had just deactivated. Fixed by adding `warehouse__is_active=True` to both form
+  querysets and `to_location.warehouse.is_active` checks in `move_batch_qty` (the single choke point all
+  three service functions delegate to) plus early fail-fast checks in `transfer_stock`/`qc_pass`/
+  `qc_partial_pass` mirroring their existing `warehouse_type != MAIN` checks. Apply generally: whenever a
+  parent has an `is_active` toggle and children reference it via FK, any validation of "is this child usable"
+  must check the parent's `is_active` too, not just the child's own flag.
 - **Soft-delete invariant**: `is_deleted=True ⇒ is_active=False` is enforced inside `User.save()` itself
   (appending `is_active` to `update_fields` if narrowed) and independently in
   `DirectPermissionsBackend.user_can_authenticate()` (defense in depth against `.update()`/admin bypassing
@@ -481,6 +494,14 @@ rather than rediscovering the failure.
   with a safe fallback — Django never validates raw querystring access, and `parse_date()` specifically can
   both return `None` (malformed shape) *and* raise `ValueError` (valid shape, invalid calendar date), so
   both failure modes need catching.
+- **Excel exports must neutralize formula-injection lead characters** (BUG-23, 2026-07-30): `openpyxl`
+  interprets any cell string starting with `=`/`+`/`-`/`@` as a formula (confirmed: `'=1+1'` is stored with
+  `data_type='f'`), so a user-controlled string that ends up in a report export (e.g. a product/supplier
+  name) can plant a formula that executes when someone opens the file in Excel/LibreOffice.
+  `reports.exports.build_excel_response` now runs every cell through `_excel_safe()` first (prefixes a
+  leading `'` to force plain-text if the string starts with one of those four characters). Apply generally:
+  any future export path that writes arbitrary user-entered strings into a spreadsheet needs the same
+  guard — CSV exports are equally vulnerable if one is ever added.
 - **Per-SKU thresholds/KPIs must aggregate across every row in scope before comparing**, not row-by-row —
   e.g. `low_stock_count` must sum a SKU's qty across all MAIN warehouses before comparing to `min_level`,
   or a split-stock SKU gets miscounted. A KPI naming a business concept that maps to a multi-value status
@@ -495,6 +516,19 @@ rather than rediscovering the failure.
   the user to choose — never auto-pick one of several equally-valid warehouses. Apply generally: once a
   KPI count is deduped to one-per-aggregate-key, check whether any per-row UI action tied to that KPI needs
   the identical dedup, and whether any field it prefills is actually unambiguous before defaulting it.
+  **A KPI driven by iterating an existing table misses rows that were never created at all** (BUG-22,
+  2026-07-30): `dashboard_kpis`'s `low_stock_count` and `inventory_list`'s below-Min badge both iterated
+  `Inventory.objects...` only — an active `Product` with `min_level` set but zero `Inventory` rows anywhere
+  (never received by GRN/QC) was invisible to both, even though its real stock is 0. Fixed by driving the
+  loop from `Product.objects.filter(is_active=True, min_level__isnull=False)` instead, defaulting missing
+  qty to 0 — but **only** for products with literally zero `Inventory` rows in *any* warehouse; a product
+  with stock sitting only in STAGING/SCRAP (goods physically received, just not yet in MAIN) keeps the
+  pre-existing exclusion from this KPI (see `TC-RPT-01-007`), since that's "awaiting QC," not "need to
+  reorder." `inventory_list` renders these as synthetic rows (`types.SimpleNamespace` standing in for the
+  `Inventory` object, `warehouse=None`) only when no warehouse filter/search excludes them. Apply generally:
+  a KPI/list meant to represent "every SKU that should be monitored" must be driven from the master table
+  (`Product`) when the monitored condition can legitimately be "zero of the child row," not from the child
+  table (`Inventory`) whose absence is exactly the case being missed.
 - **`timezone.now().date()` is a UTC date, not the business date, even with `TIME_ZONE='Asia/Ho_Chi_Minh'`**:
   `USE_TZ=True` only affects how datetimes are *stored/displayed*, not what `.date()` returns on
   `timezone.now()` — that's always sliced in UTC, so during Vietnam's 00:00–06:59 window (UTC+7) it
@@ -507,6 +541,12 @@ rather than rediscovering the failure.
   `timezone.now()` (patch the call site's own module namespace, e.g. `inventory.services.timezone.now`,
   not `django.utils.timezone.now`) to a fixed UTC datetime that falls on the previous calendar day in
   Vietnam time, and assert the comparison uses the VN-local date.
+  **The same bug also shows up as bare `.date()` on any other aware UTC datetime, not just `timezone.now()`
+  literally** (BUG-20, 2026-07-30): `reports.services.slow_moving_items` called `.date()` directly on
+  `last_issue`/`product.created_at` (both aware UTC datetimes from the DB) to compute `days_idle` — grepping
+  only for the literal string `timezone.now().date()` would have missed this. Fixed with
+  `timezone.localtime(dt).date()`. Apply generally: the search must be for bare `.date()` on *any* aware
+  datetime used in a business-date comparison, not just the `timezone.now()` spelling.
 - **A ground-truth event that terminates a resource must also terminate any pending workflow record that
   depends on that resource still being "live"**: a stocktake shortage adjustment can deduct a
   `PENDING_RECEIPT` batch down to zero (closing it to `CLOSED`), but `accept_handoff()`/`reject_handoff()`
@@ -556,6 +596,15 @@ rather than rediscovering the failure.
   `MultiSkuLockOrderDeadlockTests` as the pattern to copy for any new lock-order regression test: two
   threads + a `threading.Barrier`, asserting no `OperationalError`, no thread hangs, and no resource ends up
   over-consumed or orphaned regardless of which side wins the race.
+  **The chain extends one level up again for `Grn`/`QcInspection`** (BUG-18, 2026-07-30): `cancel_grn` locks
+  `Grn` then (via `cancel_qc_inspection`) `QcInspection` *before* `Inventory`/`Batch`, but `qc_pass`/
+  `qc_fail`/`qc_partial_pass` used to only read the caller's in-memory `inspection` (no lock, a TOCTOU on top
+  of the ordering problem), lock `Inventory`→`Batch` first, and only touch `Grn`/`QcInspection` via an
+  unlocked `.save()` at the very end — the reverse order, a real deadlock between "cancel GRN mid-QC" and
+  "decide QC" running concurrently on the same GRN. Fixed with `quality.services._lock_pending_inspection`:
+  locks and reloads `Grn` then `QcInspection` (same order as `cancel_grn`) *before* any `Inventory`/`Batch`
+  work, closing both the deadlock and the stale-read. Standing rule: **`Grn` → `QcInspection` → `Inventory` →
+  `Batch` → `WarehouseHandoff`** is now the full chain for any function that touches 2+ of these.
 - **A numeric field/derived value with a sibling that has a bound** (a percentage field capped elsewhere, a
   sample-size floor on one sampling method but not another) should get the same bound by default — the
   asymmetry itself is usually evidence the bound was simply never added.
@@ -568,7 +617,17 @@ rather than rediscovering the failure.
   `False`, view-only) applied to all four `ModelAdmin`s, plus DB-level `CheckConstraint`s
   (`batch_qty_used_lte_received`, `inventory_reserved_lte_on_hand`) as defense in depth against any other
   write path that skips service-layer validation. Apply the mixin to any future model whose docstring says
-  "don't create directly."
+  "don't create directly." **Extended to every other workflow app** (BUG-19, 2026-07-30, same shape/mixin
+  per app, not a shared cross-app import — mirrors this repo's existing per-app duplication of small
+  reusable idioms, e.g. `_bootstrapify` in each app's `forms.py`): `receiving.admin` (`Grn`/`GrnItem`/
+  `GrnReturn`), `shipping.admin` (`Gin`/`GinItem`/`GinBatchAllocation`), `quality.admin` (`QcInspection`/
+  `QcInspectionItem` only — **not** `QcCriteria`, which is plain master data with no service invariant to
+  protect), `stocktake.admin` (`StocktakeSession`/`StocktakeItem`), `purchasing.admin` (`PurchaseOrder`/
+  `PurchaseOrderItem`/`PurchaseRequest`/`PurchaseRequestItem`). `warehouse.admin` (`Warehouse`/`Location`)
+  was deliberately left untouched — unlike the others, `Warehouse` has no service-layer "don't create
+  directly" for ordinary fields (name/capacity), only `is_active`/`warehouse_type` are guarded
+  (`activate_warehouse`/`deactivate_warehouse`), which is a narrower problem than a full workflow state
+  machine; revisit with a field-level `readonly_fields` guard on just those two if it becomes a real issue.
 - **A bulk `QuerySet.update()` on a model that needs an audit trail silently skips it** — `.update()` never
   calls `save()`, so any `log_action()` a service normally makes on that transition just doesn't run.
   `sync_expired_batches()` flipped batches to EXPIRED with a single `.update()` — fast, but left zero

@@ -224,6 +224,8 @@ def move_batch_qty(*, source_batch, qty, to_location, new_batch_code, new_status
         )
     if not to_location.is_active:
         raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
+    if not to_location.warehouse.is_active:
+        raise ValidationError(f'Kho "{to_location.warehouse}" đã ngừng hoạt động.')
 
     from_location = source_batch.location
 
@@ -312,6 +314,8 @@ def transfer_stock(*, batch, to_location, qty, note='', actor=None, ip_address=N
             f'Không thể điều chuyển thủ công vào kho "{to_location.warehouse}" — '
             'Kho chờ/Kho phế chỉ được nạp hàng qua luồng QC.'
         )
+    if not to_location.warehouse.is_active:
+        raise ValidationError(f'Kho "{to_location.warehouse}" đã ngừng hoạt động.')
     if batch.status == Batch.Status.PENDING_RECEIPT:
         handoff = getattr(batch, 'handoff', None)
         if handoff is not None and handoff.status == WarehouseHandoff.Status.PENDING:

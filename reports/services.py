@@ -37,7 +37,6 @@ def dashboard_kpis():
 
     total_inventory_value = Decimal('0')
     qty_by_product = {}
-    products_by_id = {}
     for inv in Inventory.objects.select_related('product').filter(
         warehouse__warehouse_type=Warehouse.WarehouseType.MAIN,
     ):
@@ -45,17 +44,30 @@ def dashboard_kpis():
         if price is not None:
             total_inventory_value += inv.qty_on_hand * price
         qty_by_product[inv.product_id] = qty_by_product.get(inv.product_id, 0) + inv.qty_on_hand
-        products_by_id[inv.product_id] = inv.product
 
     # Gộp qty theo SKU trên tất cả kho MAIN trước khi so min_level — 1 SKU nằm ở
     # nhiều kho chỉ được đếm low-stock 1 lần, dựa trên tổng tồn thực tế của SKU đó
     # (bug fix 2026-07-27, xem CLAUDE.md), thay vì so min_level với từng dòng
     # Inventory riêng lẻ (double-count / thiếu chính xác khi 1 SKU trải nhiều kho).
-    low_stock_count = sum(
-        1 for product_id, total_qty in qty_by_product.items()
-        if products_by_id[product_id].min_level is not None
-        and total_qty < products_by_id[product_id].min_level
-    )
+    # Duyệt trực tiếp Product (không phải Inventory) để SKU active có cấu hình
+    # min_level nhưng CHƯA TỪNG có dòng Inventory ở BẤT KỲ kho nào (chưa từng
+    # GRN nhập kho) vẫn bị tính dưới Min — tồn thực tế = 0 (bug fix 2026-07-30,
+    # xem CLAUDE.md); trước fix chỉ duyệt ``Inventory.objects`` (lọc MAIN) nên
+    # SKU này vô hình khỏi cảnh báo. SKU đã có tồn ở Kho chờ/Kho phế nhưng chưa
+    # có ở MAIN (hàng đã về, đang chờ QC) KHÔNG rơi vào nhánh "chưa từng nhập
+    # kho" này — giữ nguyên hành vi loại khỏi KPI đã có từ trước (M6,
+    # TC-RPT-01-007), vì hàng đó không phải "thiếu hàng cần mua".
+    product_ids_ever_received = set(Inventory.objects.values_list('product_id', flat=True))
+    low_stock_count = 0
+    for product in Product.objects.filter(is_active=True, min_level__isnull=False):
+        if product.id in qty_by_product:
+            total_qty = qty_by_product[product.id]
+        elif product.id in product_ids_ever_received:
+            continue
+        else:
+            total_qty = 0
+        if total_qty < product.min_level:
+            low_stock_count += 1
 
     return {
         'total_inventory_value': total_inventory_value,
@@ -156,7 +168,14 @@ def slow_moving_items(days=180):
             continue
         product = products[product_id]
         last_issue = last_issue_by_product.get(product_id)
-        reference_date = last_issue.date() if last_issue else product.created_at.date()
+        # timezone.localtime(...).date() chứ không phải .date() trực tiếp trên
+        # datetime aware UTC — .date() cắt theo giờ UTC, sai lệch 1 ngày trong
+        # khung 00:00-06:59 giờ VN (UTC+7) (xem CLAUDE.md "timezone.now().date()
+        # là ngày UTC").
+        reference_date = (
+            timezone.localtime(last_issue).date() if last_issue
+            else timezone.localtime(product.created_at).date()
+        )
         days_idle = (today - reference_date).days
         if days_idle <= days:
             continue
@@ -166,7 +185,7 @@ def slow_moving_items(days=180):
             'total_qty': total_qty,
             'value': total_qty * unit_price if unit_price is not None else None,
             'days_idle': days_idle,
-            'last_issue_date': last_issue.date() if last_issue else None,
+            'last_issue_date': timezone.localtime(last_issue).date() if last_issue else None,
             'recommendation': 'Thanh lý (Scrap)' if days_idle > 365 else 'Giảm giá / Markdown',
         })
 

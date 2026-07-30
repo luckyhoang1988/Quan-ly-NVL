@@ -92,11 +92,36 @@ def _credit_inventory(product, warehouse, qty, batch=None, reference='', actor=N
     return inv
 
 
-def _require_pending_inspection(inspection):
+def _lock_pending_inspection(inspection):
+    """Khoá + tải lại ``Grn`` rồi ``QcInspection`` mới nhất (theo đúng thứ tự
+    ``Grn -> QcInspection`` mà ``receiving.services.cancel_grn`` /
+    ``cancel_qc_inspection`` dùng) TRƯỚC KHI khoá bất kỳ ``Inventory``/``Batch``
+    nào trong ``qc_pass``/``qc_fail``/``qc_partial_pass`` (BUG-18, 2026-07-30,
+    xem CLAUDE.md).
+
+    Trước fix này, 3 hàm trên chỉ gọi ``_require_pending_inspection`` — kiểm
+    tra ``inspection``/``inspection.grn`` ĐANG CÓ TRONG BỘ NHỚ (không
+    ``select_for_update``, có thể đã stale), rồi khoá Inventory/Batch trước,
+    chỉ thật sự chạm ``Grn``/``QcInspection`` qua ``.save()`` KHÔNG khoá trước
+    ở CUỐI transaction. Đó là thứ tự khoá NGƯỢC với ``cancel_grn`` (khoá
+    Grn/QcInspection trước, rồi mới Inventory/Batch) — 2 giao dịch chạm cùng
+    GRN đồng thời (huỷ GRN khi đang QC_IN_PROGRESS + quyết định QC) có thể tạo
+    vòng chờ chéo thật (deadlock Postgres), và bản thân "đang có trong bộ nhớ"
+    cũng là một TOCTOU: request khác có thể đã đổi trạng thái giữa lúc view
+    load ``inspection`` và lúc service này chạy.
+
+    Khoá SỚM, trước Inventory/Batch, để 2 đường luôn tranh chấp đúng 1 tài
+    nguyên đầu tiên theo cùng thứ tự — bên thua chỉ phải chờ, không bao giờ
+    deadlock — đồng thời tự khép luôn TOCTOU vì trạng thái được đọc lại ngay
+    dưới khoá.
+    """
+    grn = Grn.objects.select_for_update().get(pk=inspection.grn_id)
+    inspection = QcInspection.objects.select_for_update().get(pk=inspection.pk)
     if inspection.status != QcInspection.Result.PENDING_QC:
         raise ValidationError('QC inspection này đã có kết quả, không thể ghi lại.')
-    if inspection.grn.status != Grn.Status.QC_IN_PROGRESS:
+    if grn.status != Grn.Status.QC_IN_PROGRESS:
         raise ValidationError('GRN không ở trạng thái QC_IN_PROGRESS.')
+    return grn, inspection
 
 
 def _get_staging_batch(grn_item):
@@ -238,6 +263,12 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
     RECEIVED, tạo ``WarehouseHandoff``/item chờ NV kho xác nhận nhận hàng
     (Phase D — ``assigned_to`` tuỳ chọn, để trống thì báo cả kho đích).
 
+    Khoá ``Grn`` rồi ``QcInspection`` (``_lock_pending_inspection``) TRƯỚC CẢ
+    Inventory/Batch — chuẩn hoá thứ tự ``Grn -> QcInspection -> Inventory ->
+    Batch -> WarehouseHandoff`` toàn hệ thống (BUG-18, 2026-07-30, xem
+    CLAUDE.md), khớp thứ tự ``cancel_grn``/``cancel_qc_inspection`` đã dùng —
+    tránh deadlock khi huỷ GRN và quyết định QC chạy đồng thời trên cùng GRN.
+
     Khoá Inventory (Kho chờ + kho đích) TRƯỚC batch Kho chờ (``_get_staging_batch``
     khoá Batch) — chuẩn hoá thứ tự ``Inventory -> Batch -> WarehouseHandoff``
     toàn hệ thống (BUG-16, 2026-07-29, xem CLAUDE.md), tránh deadlock với
@@ -249,10 +280,11 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
     1 GRN nhiều SKU khoá Inventory từng dòng tuần tự, duyệt sai thứ tự chuẩn
     toàn hệ thống có thể khoá ngược chiều với giao dịch nhiều-SKU khác.
     """
-    _require_pending_inspection(inspection)
     if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
-    grn = inspection.grn
+    if not location.warehouse.is_active:
+        raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
+    grn, inspection = _lock_pending_inspection(inspection)
     staging_warehouse = get_staging_warehouse()
 
     for item in grn.items.select_for_update().order_by('product_id', 'pk'):
@@ -293,13 +325,16 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
     """QC FAIL: tiêu thụ batch Kho chờ, tách toàn bộ qty_received sang Batch
     QUARANTINE tại Kho phế, GRN -> REJECTED, vẫn tạo ``GrnReturn``.
 
+    Khoá ``Grn`` rồi ``QcInspection`` (``_lock_pending_inspection``) TRƯỚC CẢ
+    Inventory/Batch — cùng lý do/thứ tự đã áp dụng ở ``qc_pass`` (BUG-18,
+    2026-07-30, xem CLAUDE.md).
+
     Khoá Inventory (Kho chờ + Kho phế) TRƯỚC batch Kho chờ — cùng lý do/thứ
     tự đã áp dụng ở ``qc_pass`` (BUG-16). Duyệt item theo ``product_id`` tăng
     dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17, 2026-07-29,
     xem CLAUDE.md).
     """
-    _require_pending_inspection(inspection)
-    grn = inspection.grn
+    grn, inspection = _lock_pending_inspection(inspection)
     staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
@@ -344,16 +379,21 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
     ``item_results``: ``{grn_item_id: qty_pass}`` — bắt buộc có đủ mọi item
     của GRN, ``0 <= qty_pass <= qty_received``.
 
+    Khoá ``Grn`` rồi ``QcInspection`` (``_lock_pending_inspection``) TRƯỚC CẢ
+    Inventory/Batch — cùng lý do/thứ tự đã áp dụng ở ``qc_pass``/``qc_fail``
+    (BUG-18, 2026-07-30, xem CLAUDE.md).
+
     Khoá Inventory (Kho chờ + đích thực sự dùng đến — MAIN nếu ``qty_pass>0``,
     Kho phế nếu ``qty_fail>0``) TRƯỚC batch Kho chờ — cùng lý do/thứ tự đã áp
     dụng ở ``qc_pass``/``qc_fail`` (BUG-16). Duyệt item theo ``product_id``
     tăng dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17,
     2026-07-29, xem CLAUDE.md).
     """
-    _require_pending_inspection(inspection)
     if location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
-    grn = inspection.grn
+    if not location.warehouse.is_active:
+        raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
+    grn, inspection = _lock_pending_inspection(inspection)
     items = list(grn.items.select_for_update().order_by('product_id', 'pk'))
 
     missing = {item.pk for item in items} - set(item_results)
