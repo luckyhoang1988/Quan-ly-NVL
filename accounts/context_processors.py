@@ -37,11 +37,14 @@ def sidebar_permissions(request):
     ``can_view_menu_audit_log`` gộp thêm ``can_view_audit_log(user)`` (chỉ Admin/
     superuser) ngay tại đây trong Python — KHÔNG viết ``{% if a or b and c %}`` phức
     hợp trong template, ``and`` bind chặt hơn ``or`` nên dễ để lọt role-check bypass
-    menu-check (xem CLAUDE.md mục "Menu-access permission axis").
+    menu-check (xem CLAUDE.md mục "Menu-access permission axis"). ``can_view_menu_handoff``
+    áp dụng cùng nguyên tắc: gộp thêm điều kiện "thuộc phòng Kho hoặc Admin/superuser"
+    (trước đây viết cứng lồng ngoài flag này thẳng trong ``base.html``).
     """
     if not request.user.is_authenticated:
         return {}
     user = request.user
+    is_admin_or_superuser = user.is_superuser or user.role == 'ADMIN'
     return {
         'can_read_qc': user.can('read', 'qc'),
         'can_read_opname': user.can('read', 'opname'),
@@ -54,7 +57,8 @@ def sidebar_permissions(request):
         'can_view_menu_catalog': user.can_view_menu('catalog'),
         'can_view_menu_partners': user.can_view_menu('partners'),
         'can_view_menu_inventory': user.can_view_menu('inventory'),
-        'can_view_menu_handoff': user.can_view_menu('handoff'),
+        'can_view_menu_handoff': user.can_view_menu('handoff') and (
+            is_admin_or_superuser or user.department == 'WAREHOUSE'),
         'can_view_menu_user_mgmt': user.can_view_menu('user_mgmt'),
         'can_view_menu_audit_log': user.can_view_menu('audit_log') and can_view_audit_log(user),
     }

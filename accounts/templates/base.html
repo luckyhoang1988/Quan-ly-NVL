@@ -25,46 +25,30 @@
         </a>
       </div>
       <ul class="nav nav-pills flex-column mb-auto gap-1">
-        <li class="sidebar-section-title">Danh mục</li>
-        {% if can_view_menu_warehouse %}
+        <li class="sidebar-section-title">Tổng quan</li>
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'warehouse' %}active{% endif %}" href="{% url 'warehouse:warehouse_list' %}">
-            <i class="bi bi-building"></i> Kho hàng
+          <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' and request.resolver_match.app_name == 'reports' %}active{% endif %}" href="{% url 'reports:dashboard' %}">
+            <i class="bi bi-speedometer2"></i> Trang chủ
           </a>
         </li>
-        {% endif %}
-        {% if can_view_menu_catalog %}
-        <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'catalog' %}active{% endif %}" href="{% url 'catalog:product_list' %}">
-            <i class="bi bi-box-seam"></i> Sản phẩm
-          </a>
-        </li>
-        {% endif %}
-        {% if can_view_menu_partners %}
-        <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'partners' %}active{% endif %}" href="{% url 'partners:supplier_list' %}">
-            <i class="bi bi-truck"></i> Nhà cung cấp
-          </a>
-        </li>
-        {% endif %}
 
         <li class="sidebar-section-title">Mua hàng</li>
-        {% if can_read_po %}
-        <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' and request.resolver_match.url_name != 'pr_list' and request.resolver_match.url_name != 'pr_create' and request.resolver_match.url_name != 'pr_detail' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
-            <i class="bi bi-cart-check"></i> Đơn mua hàng
-          </a>
-        </li>
-        {% endif %}
         {% if can_read_pr %}
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.url_name == 'pr_list' %}active{% endif %}" href="{% url 'purchasing:pr_list' %}">
+          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' and request.resolver_match.url_name|slice:':3' == 'pr_' %}active{% endif %}" href="{% url 'purchasing:pr_list' %}">
             <i class="bi bi-file-earmark-text"></i> Yêu cầu mua hàng
           </a>
         </li>
         {% endif %}
+        {% if can_read_po %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'purchasing' and request.resolver_match.url_name|slice:':3' != 'pr_' %}active{% endif %}" href="{% url 'purchasing:po_list' %}">
+            <i class="bi bi-cart-check"></i> Đơn mua hàng
+          </a>
+        </li>
+        {% endif %}
 
-        <li class="sidebar-section-title">Nhập kho &amp; QC</li>
+        <li class="sidebar-section-title">Nhập hàng &amp; Chất lượng</li>
         {% if can_read_grn %}
         <li class="nav-item">
           <a class="nav-link {% if request.resolver_match.app_name == 'receiving' %}active{% endif %}" href="{% url 'receiving:grn_list' %}">
@@ -72,30 +56,31 @@
           </a>
         </li>
         {% endif %}
-        {% if can_read_qc %}
+        {% if can_view_menu_handoff %}
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'quality' %}active{% endif %}" href="{% url 'quality:qc_criteria_list' %}">
-            <i class="bi bi-patch-check"></i> Tiêu chuẩn QC
+          <a class="nav-link {% if request.resolver_match.url_name == 'handoff_list' %}active{% endif %}" href="{% url 'inventory:handoff_list' %}">
+            <i class="bi bi-truck-flatbed"></i> Phiếu chờ nhận hàng
           </a>
         </li>
         {% endif %}
 
-        <li class="sidebar-section-title">Kho vận</li>
+        <li class="sidebar-section-title">Kho &amp; Tồn kho</li>
         {% if can_view_menu_inventory %}
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'inventory' %}active{% endif %}" href="{% url 'inventory:inventory_list' %}">
+          <a class="nav-link {% if request.resolver_match.url_name == 'inventory_list' or request.resolver_match.url_name == 'product_eoq' %}active{% endif %}" href="{% url 'inventory:inventory_list' %}">
             <i class="bi bi-bar-chart-line"></i> Tồn kho
           </a>
         </li>
-        {% endif %}
-        {% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
-          {% if can_view_menu_handoff %}
-          <li class="nav-item">
-            <a class="nav-link {% if request.resolver_match.url_name == 'handoff_list' %}active{% endif %}" href="{% url 'inventory:handoff_list' %}">
-              <i class="bi bi-truck-flatbed"></i> Phiếu chờ nhận hàng
-            </a>
-          </li>
-          {% endif %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'batch_list' or request.resolver_match.url_name == 'batch_detail' %}active{% endif %}" href="{% url 'inventory:batch_list' %}">
+            <i class="bi bi-boxes"></i> Lô hàng
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'transfer_list' or request.resolver_match.url_name == 'transfer_create' %}active{% endif %}" href="{% url 'inventory:transfer_list' %}">
+            <i class="bi bi-arrow-left-right"></i> Điều chuyển kho
+          </a>
+        </li>
         {% endif %}
         {% if can_read_gin %}
         <li class="nav-item">
@@ -112,11 +97,51 @@
         </li>
         {% endif %}
 
+        <li class="sidebar-section-title">Danh mục</li>
+        {% if can_view_menu_catalog %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'catalog' %}active{% endif %}" href="{% url 'catalog:product_list' %}">
+            <i class="bi bi-box-seam"></i> Nguyên vật liệu
+          </a>
+        </li>
+        {% endif %}
+        {% if can_view_menu_partners %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'partners' %}active{% endif %}" href="{% url 'partners:supplier_list' %}">
+            <i class="bi bi-truck"></i> Nhà cung cấp
+          </a>
+        </li>
+        {% endif %}
+        {% if can_view_menu_warehouse %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'warehouse' %}active{% endif %}" href="{% url 'warehouse:warehouse_list' %}">
+            <i class="bi bi-building"></i> Kho &amp; vị trí
+          </a>
+        </li>
+        {% endif %}
+        {% if can_read_qc %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.app_name == 'quality' and request.resolver_match.url_name|slice:':12' == 'qc_criteria_' %}active{% endif %}" href="{% url 'quality:qc_criteria_list' %}">
+            <i class="bi bi-patch-check"></i> Tiêu chuẩn kiểm tra QC
+          </a>
+        </li>
+        {% endif %}
+
         <li class="sidebar-section-title">Báo cáo</li>
         {% if can_read_reports %}
         <li class="nav-item">
-          <a class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}" href="{% url 'reports:dashboard' %}">
-            <i class="bi bi-graph-up"></i> Báo cáo
+          <a class="nav-link {% if request.resolver_match.url_name == 'abc_analysis' %}active{% endif %}" href="{% url 'reports:abc_analysis' %}">
+            <i class="bi bi-bar-chart"></i> Phân tích ABC
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'slow_moving' %}active{% endif %}" href="{% url 'reports:slow_moving' %}">
+            <i class="bi bi-hourglass-split"></i> Tồn chậm luân chuyển
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'supplier_performance' %}active{% endif %}" href="{% url 'reports:supplier_performance' %}">
+            <i class="bi bi-graph-up"></i> Hiệu suất nhà cung cấp
           </a>
         </li>
         {% endif %}

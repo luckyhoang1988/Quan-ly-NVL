@@ -33,10 +33,23 @@ def reports_permission_required(action):
     return decorator
 
 
-@reports_permission_required('read')
+@login_required
 def dashboard(request):
-    """FR-RPT-01: Dashboard KPI."""
-    return render(request, 'reports/dashboard.html', {'kpis': dashboard_kpis()})
+    """FR-RPT-01: Dashboard KPI — cũng là trang chủ chung (LOGIN_REDIRECT_URL) của
+    toàn hệ thống kể từ khi hợp nhất với ``accounts:dashboard``.
+
+    Chỉ yêu cầu đăng nhập, KHÔNG gate bằng ``reports_permission_required('read')``
+    như các báo cáo con khác trong app này: vì đây là đích bắt buộc sau login, một
+    user bị Admin thu hồi riêng quyền ``can_read_reports`` (qua "Phân quyền chi
+    tiết") sẽ bị khoá khỏi trang chủ nếu vẫn gate cứng ở đây. Nội dung KPI tự ẩn
+    trong template qua flag ``can_read_reports`` (context processor) khi thiếu quyền.
+
+    ``dashboard_kpis()`` chỉ được gọi khi user thực sự có quyền — hàm này duyệt
+    toàn bộ ``Inventory``/``Product``, tính vô ích (và tốn) nếu kết quả sẽ bị
+    template ẩn đi ngay sau đó.
+    """
+    kpis = dashboard_kpis() if request.user.can('read', 'reports') else None
+    return render(request, 'reports/dashboard.html', {'kpis': kpis})
 
 
 @reports_permission_required('read')

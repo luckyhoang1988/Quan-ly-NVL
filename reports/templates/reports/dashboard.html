@@ -5,9 +5,10 @@
 {% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="panel-title">Dashboard KPI</h1>
+  <h1 class="panel-title">{% if can_read_reports %}Dashboard KPI{% else %}Trang chủ{% endif %}</h1>
 </div>
 
+{% if can_read_reports %}
 <div class="row g-3 mb-4">
   <div class="col-md-4 col-lg-2">
     <div class="card h-100">
@@ -91,4 +92,7 @@
     </a>
   </div>
 </div>
+{% else %}
+<p class="text-muted">Xin chào, {{ user.username }}. Vai trò: {{ user.get_role_display|default:"chưa gán role" }}.</p>
+{% endif %}
 {% endblock %}

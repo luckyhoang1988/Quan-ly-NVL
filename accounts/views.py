@@ -41,12 +41,10 @@ TRACKED_FIELDS = ['role', 'department', 'is_manager', 'is_active', 'email', 'fir
 
 @login_required
 def dashboard(request):
-    """Trang chủ sau đăng nhập (LOGIN_REDIRECT_URL).
-
-    Tối thiểu ở Phase 1: xác nhận đã đăng nhập + hiển thị vai trò. Nội dung dashboard
-    thật (cảnh báo tồn kho...) sẽ bổ sung khi làm warehouse ở mục 1b.
-    """
-    return render(request, 'dashboard.html')
+    """URL trung gian giữ chỗ (``password_change`` và các next-url nội bộ khác vẫn
+    trỏ về đây) — trang chủ thật đã hợp nhất về ``reports:dashboard`` (KPI), tránh
+    2 khái niệm "trang chủ" tách biệt như trước."""
+    return redirect('reports:dashboard')
 
 
 @login_required

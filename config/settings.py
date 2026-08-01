@@ -84,7 +84,7 @@ AUTHENTICATION_BACKENDS = ['accounts.backends.DirectPermissionsBackend']
 
 # Điều hướng đăng nhập/đăng xuất (FR-USER-03).
 LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'dashboard'
+LOGIN_REDIRECT_URL = 'reports:dashboard'
 LOGOUT_REDIRECT_URL = 'login'
 
 # Email (FR-USER-01: gửi mật khẩu tạm khi tạo user).

@@ -1287,6 +1287,28 @@ class PurchaseRequestCrudTest(TestCase):
         response = self.client.get(reverse('purchasing:pr_detail', args=[pr.pk]))
         self.assertNotContains(response, 'Xoá yêu cầu này')
 
+    def test_TC_PR_001_026_sidebar_pr_link_active_on_all_pr_pages_not_po(self):
+        """Sidebar "Yêu cầu mua hàng" phải active trên MỌI trang pr_* (không chỉ
+        pr_list), và "Đơn mua hàng" (PO) không được active nhầm trên các trang đó."""
+        pr_href = reverse('purchasing:pr_list')
+        po_href = reverse('purchasing:po_list')
+        response = self.client.post(reverse('purchasing:pr_create'), self._payload())
+        pr = PurchaseRequest.objects.get()
+
+        for url in [
+            reverse('purchasing:pr_detail', args=[pr.pk]),
+            reverse('purchasing:pr_update', args=[pr.pk]),
+        ]:
+            response = self.client.get(url)
+            self.assertContains(response, f'class="nav-link active" href="{pr_href}"')
+            self.assertContains(response, f'class="nav-link " href="{po_href}"')
+
+    def test_TC_PR_001_027_sidebar_po_link_active_on_po_list(self):
+        """Regression: "Đơn mua hàng" vẫn phải active trên chính trang po_list."""
+        po_href = reverse('purchasing:po_list')
+        response = self.client.get(reverse('purchasing:po_list'))
+        self.assertContains(response, f'class="nav-link active" href="{po_href}"')
+
 
 class PurchaseRequestVisibilityTest(TestCase):
     """Phạm vi xem PR: nhân viên phòng khác chỉ thấy PR do chính mình tạo; nhân

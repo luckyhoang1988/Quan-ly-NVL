@@ -20,6 +20,7 @@ from django.urls import reverse
 
 from accounts.approvals import create_approval
 from accounts.audit import client_ip, log_action
+from accounts.context_processors import sidebar_permissions
 from accounts.models import Approval, AuditLog, Notification
 from accounts.pagination import DEFAULT_PAGE_SIZE, paginate_queryset
 from accounts.permissions import ACTIONS, MODULES, all_permission_codenames
@@ -214,7 +215,7 @@ class LoginAuthTest(TestCase):
             reverse('login'), {'username': user.username, 'password': self.PASSWORD})
 
         self.assertEqual(resp.status_code, 302)            # đăng nhập -> redirect
-        self.assertEqual(resp.url, reverse('dashboard'))
+        self.assertEqual(resp.url, reverse('reports:dashboard'))
         entry = AuditLog.objects.filter(action='LOGIN', actor=user).first()
         self.assertIsNotNone(entry)                        # WHO/WHAT/WHEN được ghi
         self.assertEqual(entry.ip_address, '127.0.0.1')    # IP từ test client
@@ -280,6 +281,17 @@ class LoginAuthTest(TestCase):
 
         self.assertEqual(resp.status_code, 302)             # @login_required chặn
         self.assertIn(reverse('login'), resp.url)
+
+    def test_TC_USER_03_006b_dashboard_redirects_to_reports_dashboard(self):
+        """accounts:dashboard (stub cũ) không còn tự render — chỉ còn là URL trung
+        gian giữ chỗ cho các next-url nội bộ (đổi mật khẩu...), redirect thẳng sang
+        reports:dashboard — trang chủ thật (KPI) đã được hợp nhất về đó."""
+        user = self.make(username='u_dash_redirect')
+        self.client.force_login(user)
+
+        resp = self.client.get(reverse('dashboard'))
+
+        self.assertRedirects(resp, reverse('reports:dashboard'))
 
     def test_TC_USER_03_007_login_blocked_after_max_failed_attempts(self):
         self.make()
@@ -793,7 +805,9 @@ class PasswordChangeTest(TestCase):
         # Vẫn đang đăng nhập (update_session_auth_hash chống session bị invalidate
         # do đổi password hash — session_key có thể đổi/cycle, nhưng KHÔNG bị đăng xuất).
         self.assertIn('_auth_user_id', self.client.session)
-        dash_resp = self.client.get(reverse('dashboard'))
+        # dashboard giờ chỉ redirect sang reports:dashboard (trang chủ thật) — follow=True
+        # để xác nhận đích cuối cùng vẫn 200, không bị đá về login.
+        dash_resp = self.client.get(reverse('dashboard'), follow=True)
         self.assertEqual(dash_resp.status_code, 200)  # vẫn còn phiên hợp lệ, không bị đá về login
 
         entry = AuditLog.objects.filter(action='UPDATE', target_id=str(self.staff.pk)).first()
@@ -1311,3 +1325,42 @@ class NotificationMarkReadTest(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(
             Notification.objects.filter(recipient=self.user, is_read=False).exists())
+
+
+class SidebarPermissionsHandoffGateTest(TestCase):
+    """`can_view_menu_handoff` phải tự gộp luôn điều kiện role/department (trước đây
+    viết cứng riêng trong `base.html`, lồng ngoài flag này) — mục "Phiếu chờ nhận
+    hàng" chỉ dành cho Kho/Admin/superuser dù menu permission thô có bật hay không."""
+
+    def request_for(self, user):
+        req = RequestFactory().get('/')
+        req.user = user
+        return req
+
+    def test_warehouse_department_staff_sees_handoff_menu(self):
+        user = User.objects.create_user(
+            username='u_wh', password='x', role='STAFF', department='WAREHOUSE')
+
+        flags = sidebar_permissions(self.request_for(user))
+
+        self.assertTrue(flags['can_view_menu_handoff'])
+
+    def test_non_warehouse_department_staff_does_not_see_handoff_menu(self):
+        """Có quyền menu thô (`can_view_menu('handoff')`, mặc định mọi role đều có)
+        nhưng department khác WAREHOUSE -> vẫn phải bị ẩn, như hành vi hiện tại của
+        template (chỉ khác chỗ giờ tính ở Python thay vì `{% if %}` lồng nhau)."""
+        user = User.objects.create_user(
+            username='u_qc', password='x', role='QC', department='QC')
+        self.assertTrue(user.can_view_menu('handoff'))  # quyền thô vẫn bật
+
+        flags = sidebar_permissions(self.request_for(user))
+
+        self.assertFalse(flags['can_view_menu_handoff'])
+
+    def test_admin_sees_handoff_menu_regardless_of_department(self):
+        user = User.objects.create_user(
+            username='u_admin', password='x', role='ADMIN', department='')
+
+        flags = sidebar_permissions(self.request_for(user))
+
+        self.assertTrue(flags['can_view_menu_handoff'])

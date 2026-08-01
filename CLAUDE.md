@@ -157,6 +157,22 @@ from position #9 to Phase 1 because every audit trail and RBAC check needs the `
   the top of `<main>` (`base.html`), collapsed behind a `bi-gear` icon button (`.user-menu-toggle`) to keep
   the sidebar to nav links only. See §7 of `.claude/skills/wms-conventions/SKILL.md` before adding another
   user-facing action (add it to the dropdown, don't recreate a sidebar user block).
+- **Sidebar has 7 groups ordered by business flow, and there is exactly one Dashboard** (2026-08-01): groups
+  are Tổng quan (Trang chủ) → Mua hàng (PR before PO, matching the real approval sequence) → Nhập hàng &
+  Chất lượng (GRN, Phiếu chờ nhận hàng) → Kho & Tồn kho (Tồn kho, Lô hàng, Điều chuyển kho, GIN, Kiểm kê) →
+  Danh mục (SKU/Supplier/Warehouse/QC Criteria — master data grouped together, pushed below the operational
+  groups) → Báo cáo (3 direct report links) → Quản trị. `reports:dashboard` absorbed `accounts:dashboard`
+  (`LOGIN_REDIRECT_URL` now points at `reports:dashboard`; `accounts.views.dashboard` is a thin
+  `redirect('reports:dashboard')` kept only because `password_change`/`notification_mark_all_read` still use
+  its URL name as an internal next-url) — ~55 templates already breadcrumbed "Trang chủ" straight to
+  `reports:dashboard`, so that was the lower-disruption merge direction. `reports.views.dashboard` gates on
+  `@login_required` only (not `reports_permission_required('read')`), since it's now a mandatory post-login
+  landing page — KPI content hides itself in the template via the existing `can_read_reports` context flag
+  instead of blocking the whole page for a user whose `reports:read` was individually revoked. Full rationale
+  and the `can_view_menu_handoff`-in-Python pattern (replaces the old nested-`{% if %}` role/department gate)
+  are in §6 and §10 of `.claude/skills/wms-conventions/SKILL.md`. Still open, deliberately out of scope: a QC
+  work-queue screen, a `GrnReturn` list screen, and role-based default menu filtering (`MENU_ITEMS` currently
+  grants every non-CRUD menu item to all roles by default) — each needs its own brainstorm→plan cycle.
 
 ## Non-obvious cross-cutting design decisions
 

@@ -597,6 +597,14 @@ class QcResultViewTest(QcServiceTestBase):
         self.grn.refresh_from_db()
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
 
+    def test_TC_QC_VIEW_001_007_sidebar_qc_criteria_link_not_active(self):
+        """qc_result là hành động vận hành (kiểm QC cho 1 GRN cụ thể), không phải
+        trang danh mục "Tiêu chuẩn kiểm tra QC" — sidebar không được active nhầm
+        mục danh mục khi đang ở đây."""
+        criteria_href = reverse('quality:qc_criteria_list')
+        response = self.client.get(self._url())
+        self.assertContains(response, f'class="nav-link " href="{criteria_href}"')
+
 
 class QcOverrideViewTest(QcServiceTestBase):
     """QC approval override (BACKLOG mục 2b) — ``TC-QC-OVERRIDE-<seq>``.
@@ -641,6 +649,11 @@ class QcOverrideViewTest(QcServiceTestBase):
         self.client.force_login(self.purchasing_user)
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_OVERRIDE_004_sidebar_qc_criteria_link_not_active(self):
+        criteria_href = reverse('quality:qc_criteria_list')
+        response = self.client.get(self._url())
+        self.assertContains(response, f'class="nav-link " href="{criteria_href}"')
 
     def test_TC_QC_OVERRIDE_004_empty_note_rejected(self):
         response = self.client.post(self._url(), {'override_note': ''})
@@ -873,6 +886,12 @@ class QcCriteriaCrudTest(TestCase):
         self.client.force_login(self.manager)
         response = self.client.get(reverse('quality:qc_criteria_list'))
         self.assertEqual(response.status_code, 200)
+
+    def test_TC_QC_CRIT_004b_sidebar_qc_criteria_link_active_on_list(self):
+        """Regression: link vẫn phải active trên chính trang danh mục QC criteria."""
+        criteria_href = reverse('quality:qc_criteria_list')
+        response = self.client.get(criteria_href)
+        self.assertContains(response, f'class="nav-link active" href="{criteria_href}"')
 
     def test_TC_QC_CRIT_005_staff_forbidden_even_read(self):
         self.client.force_login(self.staff)

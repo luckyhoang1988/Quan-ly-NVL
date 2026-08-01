@@ -370,9 +370,12 @@ cần gate theo quyền:
    Permission Matrix không có cột riêng CRUD) — dùng `accounts.permissions.MENU_ITEMS` +
    `user.can_view_menu(key)` (2026-07-28, xem bên dưới), KHÔNG còn để link hiện vô điều kiện như trước.
 3. Nếu module đó dùng model bàn giao nhẹ kiểu `WarehouseHandoff` (mục 5 ở trên) hoặc là trang quản trị
-   (`user_mgmt`/`audit_log`) — link vẫn giữ điều kiện role/department/`is_superuser` hiện có LÀM ĐIỀU KIỆN
-   OVERSIGHT, cộng thêm (AND) `can_view_menu_<key>` tương ứng — xem điểm "Kết hợp 2 điều kiện" bên dưới, đừng
-   xoá điều kiện role/department cũ, chỉ thêm điều kiện menu vào.
+   (`user_mgmt`/`audit_log`) — cần điều kiện role/department/`is_superuser` LÀM ĐIỀU KIỆN OVERSIGHT, cộng
+   thêm (AND) `can_view_menu_<key>` tương ứng. **Từ 2026-08-01**: tính gộp cả 2 điều kiện ngay trong Python ở
+   `sidebar_permissions()` (1 flag `can_view_menu_<key>` duy nhất đã bao gồm sẵn phần role/department), KHÔNG
+   còn lồng `{% if %}` 2 lớp trong template như trước — xem điểm "Kết hợp 2 điều kiện" bên dưới. `user_mgmt`/
+   `audit_log` (nhóm "Quản trị") vẫn giữ nguyên cách cũ (role check bọc NGOÀI cả tiêu đề nhóm trong template,
+   không đi qua context processor) vì nó gate cả 1 nhóm, không phải 1 link đơn lẻ như `handoff`.
 4. `sidebar_permissions()` phải tự `return {}` khi `not request.user.is_authenticated` (cùng rule
    `notifications()` đã áp dụng) — context processor chạy trên mọi request kể cả trang login.
 
@@ -434,19 +437,30 @@ trùng lặp và dễ lệch nhau.
    render trong khối `<div class="card mt-3">` "Ứng dụng được phép truy cập" (`user_permission_form.html`) —
    checkbox độc lập, KHÔNG nằm trong bảng CRUD.
 
-**Kết hợp điều kiện role/department cũ với `can_view_menu` mới trong `base.html` — LUÔN dùng `{% if %}` LỒNG
-NHAU, KHÔNG viết `or`/`and` chung 1 dòng**: Django template `and` bind chặt hơn `or` (giống Python), nên
+**Kết hợp điều kiện role/department với `can_view_menu` — KHÔNG BAO GIỜ viết `or`/`and` chung 1 dòng
+`{% if %}` trong template**: Django template `and` bind chặt hơn `or` (giống Python), nên
 `{% if A or B and C %}` được parse là `A or (B and C)`, không phải `(A or B) and C` như trực giác thường nghĩ
 — viết sai dạng này từng khiến điều kiện role (`user.role == 'ADMIN'`) bỏ qua hẳn điều kiện `can_view_menu`
-phía sau nó (bug thật, tự phát hiện lúc code review 2026-07-28, sửa trước khi merge). Luôn viết:
+phía sau nó (bug thật, tự phát hiện lúc code review 2026-07-28, sửa trước khi merge bằng cách lồng `{% if %}`
+2 lớp).
+
+**Cách chuẩn hiện tại (2026-08-01, thay cho lồng `{% if %}` 2 lớp)**: tính gộp AND ngay trong
+`sidebar_permissions()` — an toàn hơn cả lồng `{% if %}` vì loại bỏ hoàn toàn nguy cơ lỗi precedence ở phía
+template, chỉ còn 1 flag boolean duy nhất để gate link:
+```python
+# accounts/context_processors.py::sidebar_permissions()
+is_admin_or_superuser = user.is_superuser or user.role == 'ADMIN'
+...
+'can_view_menu_handoff': user.can_view_menu('handoff') and (
+    is_admin_or_superuser or user.department == 'WAREHOUSE'),
+```
 ```html
-{% if user.is_superuser or user.role == 'ADMIN' or user.department == 'WAREHOUSE' %}
-  {% if can_view_menu_handoff %}
-  <li class="nav-item">...</li>
-  {% endif %}
+{% if can_view_menu_handoff %}
+<li class="nav-item">...</li>
 {% endif %}
 ```
-không viết gộp `{% if (role check) and can_view_menu_x %}` trên 1 dòng.
+Áp dụng mẫu này cho bất kỳ link sidebar mới nào cần AND role/department với 1 permission flag — đừng quay lại
+lồng `{% if %}` trong template trừ khi giá trị role/department chỉ dùng đúng 1 chỗ và không đáng tách hàm.
 
 **Retrofit vào bảng đã có user thật**: thêm 1 permission mới vào `User.Meta.permissions` cần migration
 `RunPython` backfill — với MỌI user đã tồn tại, `user.user_permissions.add(*perms)` (dùng `.add()`, KHÔNG
@@ -521,3 +535,59 @@ prefill khi thực sự chỉ có đúng 1 lựa chọn (đếm bằng `Count('w
 để trống và để form đích (vd `PurchaseRequestForm.warehouse`, vốn đã required) bắt người dùng tự chọn. Áp dụng
 chung: bất kỳ lúc nào thêm 1 nút hành động gắn theo 1 KPI đã tổng hợp theo khoá nào đó, tự hỏi "nút này có nên
 hiện N lần hay chỉ 1 lần cho khoá đó" VÀ "field nào đang bị điền tự động có thực sự chỉ có 1 lựa chọn không".
+
+## 10. Cấu trúc sidebar 7-nhóm theo luồng nghiệp vụ + 1 Dashboard duy nhất (2026-08-01)
+
+Sidebar (`accounts/templates/base.html`) tổ chức theo đúng thứ tự luồng nghiệp vụ PR→PO→GRN→QC→Kho→GIN, thay
+cho cấu trúc cũ lẫn dữ liệu nền (Danh mục) lên đầu và tách rời PO/PR ngược quy trình:
+
+```
+Tổng quan          → Trang chủ (reports:dashboard)
+Mua hàng           → Yêu cầu mua hàng (PR) trước, Đơn mua hàng (PO) sau
+Nhập hàng & Chất lượng → GRN, Phiếu chờ nhận hàng
+Kho & Tồn kho      → Tồn kho, Lô hàng, Điều chuyển kho, GIN, Kiểm kê
+Danh mục           → Nguyên vật liệu, Nhà cung cấp, Kho & vị trí, Tiêu chuẩn kiểm tra QC
+Báo cáo            → Phân tích ABC, Tồn chậm luân chuyển, Hiệu suất nhà cung cấp
+Quản trị           → Quản lý user, Nhật ký hành động (không đổi)
+```
+
+**Chỉ 1 Dashboard, không phải 2**: trước đây `accounts:dashboard` (LOGIN_REDIRECT_URL, gần như rỗng, không có
+link sidebar) và `reports:dashboard` (KPI thật, chỉ vào được qua menu "Báo cáo") là 2 khái niệm "trang chủ"
+tách biệt gây nhầm lẫn. Phát hiện quan trọng khi gộp: ~55 template trong repo đã có breadcrumb "Trang chủ" trỏ
+sẵn tới `reports:dashboard` (KHÔNG phải `accounts:dashboard`) — tức `reports:dashboard` trên thực tế đã là
+trang chủ ngầm định. Vì vậy hướng gộp ít rủi ro nhất: giữ `reports:dashboard` làm nơi chứa nội dung thật, đổi
+`LOGIN_REDIRECT_URL = 'reports:dashboard'`, biến `accounts.views.dashboard` thành `redirect('reports:dashboard')`
+(giữ nguyên URL name `dashboard` vì `password_change`/`notification_mark_all_read` vẫn dùng làm next-url nội
+bộ) — không phải sửa 55 breadcrumb kia.
+
+**`reports.views.dashboard` đổi gate từ `reports_permission_required('read')` sang `@login_required`**: vì đây
+giờ là đích bắt buộc sau login, một user bị Admin thu hồi riêng quyền `can_read_reports` (qua "Phân quyền chi
+tiết") sẽ bị khoá khỏi trang chủ nếu vẫn gate cứng theo quyền đó. Nội dung KPI tự ẩn trong
+`reports/templates/reports/dashboard.html` qua `{% if can_read_reports %}` (flag có sẵn từ
+`sidebar_permissions()`), không phải qua gate ở view. Áp dụng nguyên tắc này cho bất kỳ view nào sau này trở
+thành đích bắt buộc chung (landing page, next-url mặc định...): KHÔNG gate cứng theo 1 permission cụ thể, ẩn
+nội dung có điều kiện trong template thay vì chặn cả trang.
+
+**"Tiêu chuẩn kiểm tra QC" (`quality:qc_criteria_list`) đã chuyển từ nhóm "Nhập hàng & Chất lượng" sang
+"Danh mục"** — đây là master data (giống Kho/Sản phẩm/NCC), không phải hàng đợi công việc; gate quyền
+(`can_read_qc`) giữ nguyên, chỉ đổi vị trí nhóm.
+
+**Chưa làm trong đợt này (xem `CLAUDE.md` mục tương ứng nếu cần)**: màn hình "Chờ kiểm tra chất lượng" (work
+queue GRN đang PENDING_QC/QC_IN_PROGRESS) và "Trả hàng nhà cung cấp" (list `GrnReturn`, hiện chưa có view danh
+sách nào) đều là tính năng mới cần vòng brainstorm→plan riêng, không gộp vào việc sắp xếp lại menu. Lọc sidebar
+mặc định theo vai trò (7 mục `MENU_ITEMS` hiện mở cho MỌI role theo mặc định) cũng vậy — đổi mặc định RBAC là
+quyết định lớn hơn phạm vi 1 lần dọn UI. Header nhóm (`<li class="sidebar-section-title">`) luôn render dù mọi
+item con trong nhóm bị ẩn (per-user "Phân quyền chi tiết" thu hồi hết quyền) — hành vi này đã tồn tại y hệt từ
+trước lần dọn menu này (nhóm "Báo cáo" cũ cũng chỉ có 1 link, gate 100% bởi `can_read_reports`), không phải lỗi
+mới; để lại cùng đợt với việc lọc mặc định theo vai trò ở trên thay vì vá riêng lẻ từng nhóm.
+
+**Active-state theo nhóm route (PR/PO), không phải theo view đơn lẻ** (review 2026-08-01): khi 1 nhóm sidebar
+gộp nhiều view cùng thuộc 1 khái niệm nghiệp vụ (PR có 9 url_name: `pr_list`/`pr_create`/`pr_detail`/`pr_update`/...),
+đừng liệt kê từng `url_name != '...'` loại trừ thủ công — cách này chắc chắn thiếu khi thêm view mới (PO link ban
+đầu chỉ loại trừ 3/9 tên `pr_*`, để lọt `pr_update` làm PO sáng nhầm). Dùng tiền tố ổn định qua
+`request.resolver_match.url_name|slice:':3' == 'pr_'` (PR) / `!= 'pr_'` (PO, mọi thứ còn lại trong app
+`purchasing`) — tự động đúng với view mới miễn giữ đúng quy ước đặt tên `pr_*`/`po_*`. Áp dụng tương tự nếu một
+nhóm sidebar khác sau này gộp nhiều view theo tiền tố tên. Cùng đợt: mục "Tiêu chuẩn kiểm tra QC" trước đó active
+theo cả `app_name == 'quality'` nên các trang hành động vận hành (`qc_result`, `qc_override` — không có link
+sidebar riêng) làm sáng nhầm mục danh mục; thu hẹp còn `url_name|slice:':12' == 'qc_criteria_'` để chỉ active
+đúng 4 view thuộc chính danh mục QC criteria.

@@ -1,7 +1,9 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -353,6 +355,50 @@ class ReportsPermissionAndExportTest(TestCase):
         self.client.force_login(self.staff)
         response = self.client.get(reverse('reports:dashboard'))
         self.assertEqual(response.status_code, 200)
+
+    def test_TC_RPT_05_002b_dashboard_accessible_without_reports_read_permission(self):
+        """reports:dashboard giờ là LOGIN_REDIRECT_URL (trang chủ chung) — chỉ cần
+        đăng nhập là vào được, kể cả khi Admin đã thu hồi riêng quyền `can_read_reports`
+        của user đó qua "Phân quyền chi tiết" (nếu không, user này sẽ bị khoá khỏi trang
+        chủ ngay sau khi đăng nhập). Nội dung KPI phải ẩn đi trong trường hợp này."""
+        perm = Permission.objects.get(
+            codename='can_read_reports', content_type__app_label='accounts')
+        self.staff.user_permissions.remove(perm)
+        self.client.force_login(self.staff)
+
+        response = self.client.get(reverse('reports:dashboard'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Tổng giá trị tồn')
+        self.assertContains(response, 'Xin chào')
+
+    def test_TC_RPT_05_002c_dashboard_skips_kpi_computation_without_permission(self):
+        """dashboard_kpis() lặp toàn bộ Inventory/Product — không có ích gì khi
+        nội dung KPI bị ẩn, nên không được gọi khi user thiếu `can_read_reports`."""
+        perm = Permission.objects.get(
+            codename='can_read_reports', content_type__app_label='accounts')
+        self.staff.user_permissions.remove(perm)
+        self.client.force_login(self.staff)
+
+        with patch('reports.views.dashboard_kpis') as mocked:
+            response = self.client.get(reverse('reports:dashboard'))
+
+        self.assertEqual(response.status_code, 200)
+        mocked.assert_not_called()
+
+    def test_TC_RPT_05_002d_dashboard_computes_kpi_with_permission(self):
+        """Ngược lại: user có quyền vẫn phải thấy KPI thật (không bị bỏ tính nhầm)."""
+        self.client.force_login(self.staff)
+
+        with patch('reports.views.dashboard_kpis') as mocked:
+            mocked.return_value = {
+                'total_inventory_value': 0, 'sku_count': 0, 'low_stock_count': 0,
+                'near_expiry_count': 0, 'pending_po_count': 0, 'pending_grn_count': 0,
+            }
+            response = self.client.get(reverse('reports:dashboard'))
+
+        self.assertEqual(response.status_code, 200)
+        mocked.assert_called_once()
 
     def test_TC_RPT_05_003_abc_analysis_html_by_default(self):
         self.client.force_login(self.staff)
