@@ -1,6 +1,7 @@
 # PUR Expansion — 01. FSD Stage 1: Foundation (Epic A, PUR-FND-01..07)
 
 > Trạng thái: **Approved — v6, sửa theo review lần 4 (bổ sung) ngày 02/08/2026**
+> Trạng thái triển khai: **Implemented** — merge vào `main` 03/08/2026 (xem mục 12).
 > Người duyệt: luckyhoang1988 (Trường Hoàng) | Ngày duyệt: 02/08/2026
 > Phụ thuộc: không phụ thuộc `00_business_decisions.md` (Foundation là sửa lỗi kỹ thuật/bổ sung
 > hạ tầng timestamp, không đụng RFQ/Budget/Approval Rule nên không cần chốt 14 quyết định nghiệp
@@ -639,8 +640,14 @@ chồng nhau). **T8 phụ thuộc T3** (dùng lại `_send_po_email()`/5 giá tr
 ra) — bắt đầu sau khi T3 xong, độc lập với T1/T7 (không đụng `PurchaseOrderItem`). T5/T6 làm cuối
 cùng, sau khi T1-T4+T7+T8 xong.
 
-Đây vẫn là mô tả backlog — **chưa viết code**. Ticket T1-T4, T7-T8 sẽ là các bước TDD (test FAIL
-trước) trong phiên triển khai kế tiếp, nay FSD đã Approved (xem header).
+**Trạng thái triển khai: Implemented** (03/08/2026). Toàn bộ ticket T1-T8 đã code theo TDD (test
+FAIL trước), review qua `xin-nhan-review-code` (1 Important + 1 Minor phát hiện và đã sửa), merge
+vào `main` qua PR #1 (`feature/pur-fnd-foundation` → `main`, squash commit `116eb53`). Migration:
+`purchasing/migrations/0015_purchaseorderitem_unique_po_product.py`,
+`0016_purchaseorder_email_status_purchaseorder_sent_at.py`. Kết quả test: 208/208 pass
+(`python manage.py test purchasing reports --keepdb`, xác minh 03/08/2026). Bằng chứng UAT/Product
+Owner chấp nhận theo Definition of Done (`PUR_EXPANSION_MASTER_PLAN.md` mục 17) **chưa ghi nhận** —
+xem việc còn lại trước Stage 2 ở `00_business_decisions.md`.
 
 ## 13. Lịch sử review
 
@@ -652,3 +659,4 @@ trước) trong phiên triển khai kế tiếp, nay FSD đã Approved (xem head
 | v4 | 02/08/2026 | Sửa theo review lần 3, 3 điểm bắt buộc + 5 lỗi tài liệu nhỏ: (1) **Bắt buộc** — migration guard `PUR-FND-06` viết lại độc lập với model/service hiện tại: dùng historical model qua `apps.get_model()` thay vì `import`/gọi lại `purchasing.services.find_duplicate_po_products()`, dùng `RuntimeError` thay vì `migrations.exceptions...` (không tồn tại), bỏ hẳn nhánh "0 vi phạm thì không cần `RunPython` guard" — guard luôn có mặt trước `AddConstraint` (mục 9). (2) **Bắt buộc** — thêm rule `PUR-FND-07`: action `retry_po_email()` cho PO `status=SENT` với `email_status in (FAILED, SKIPPED_NO_EMAIL)`, dùng lại `_send_po_email()` của T3, không chạy lại transition, `log_action` riêng (mục 1, 3, 4, 5, 7, 8, 10, 11, 12 — ticket T8). (3) **Bắt buộc** — ghi rõ giới hạn chấp nhận được của email side-effect chạy trong `@transaction.atomic` (email đã gửi nhưng save/log_action sau đó lỗi thì không thu hồi được) — chấp nhận rủi ro thay vì thêm hạ tầng `transaction.on_commit()` (mục 3). (4) FSD chuyển **Approved**, người duyệt Trương Hoàng, ngày 02/08/2026 (header). (5, không chặn) sửa "4 điểm" → "5 điểm" (mục 0, khớp 5 dòng bảng `PUR-FND-01/02/03/05/06`); (6, không chặn) sửa "Nguồn: PUR-FND-01..05" → "01..07" (header); (7, không chặn) thêm `max_length=20` cho `email_status` (mục 2); (8, không chặn) thêm `logger.exception()` khi `send_mail` raise, không lưu traceback vào `AuditLog` (mục 4). 5 quyết định nghiệp vụ Stage 2-4 review lần 3 nêu ra (ngưỡng RFQ theo đơn vị nào, 3 báo giá theo RFQ hay từng dòng, budget tolerance, tỷ giá thiếu, pilot coverage) **hoãn lại có chủ đích**, không thuộc phạm vi file này — chốt riêng ở `00_business_decisions.md` trước khi brainstorm Stage 2. Tổng số test case: 24 → 30. |
 | v5 | 02/08/2026 | Sửa theo review lần 4, 2 điểm bắt buộc + 1 điểm câu chữ: (1) **Bắt buộc** — "Người duyệt" đổi từ tên hiển thị `Trương Hoàng` (sai chính tả, không ổn định cho đối chiếu Git/audit) sang username `luckyhoang1988` (kèm tên `Trường Hoàng` trong ngoặc, header). (2) **Bắt buộc** — `retry_po_email()` (`PUR-FND-07`) thêm điều kiện bắt buộc thứ 2: `po.supplier.contact_email` phải khác rỗng tại thời điểm gọi, chặn bằng `ValidationError` (không gọi `send_mail`, không tạo `AuditLog`) nếu không — trước đó (v4) cho phép gọi khi `email_status=SKIPPED_NO_EMAIL` dù NCC vẫn chưa có email, tạo nút bấm vô nghĩa và `AuditLog` rác; nay đây là con đường hợp lệ duy nhất để thoát `SKIPPED_NO_EMAIL` sau khi NCC được bổ sung email (mục 3, 4, 5, 8, 10). Sửa `TC-PUR-FND-07-002` (đổi kỳ vọng sang `ValidationError`) + thêm `TC-PUR-FND-07-007` (ca retry thành công sau khi bổ sung email) (mục 11). (3, không chặn) sửa câu chữ mô tả `retry_po_email()` — không còn mô tả là "đường khắc phục" cho tình huống email-gửi-nhưng-transaction-rollback (sai vì lúc đó `po.status` đã về `APPROVED`, `retry_po_email()` chỉ chạy được với `status=SENT`, không gọi được) — đổi thành ghi nhận đây là giới hạn đã biết, người xử lý phải tự xác nhận với NCC trước khi gửi lại thủ công, Foundation chưa bảo đảm exactly-once delivery (mục 3). Tổng số test case: 30 → 31. |
 | v6 | 02/08/2026 | Sửa theo review lần 4 (bổ sung), 1 điểm câu chữ, không chặn: đính chính số ký tự của `SKIPPED_NO_EMAIL` — v3 ghi nhầm 17 ký tự, đếm lại đúng là **16 ký tự** (mục 2); `max_length=20` không đổi vì vẫn đủ dư. Không có thay đổi test case. |
+| v7 | 03/08/2026 | Doc-sync sau merge: cập nhật trạng thái triển khai từ "chưa viết code" sang **Implemented** (header + mục 12) — PR #1 đã merge vào `main` (squash commit `116eb53`), 208/208 test pass. Không đổi nội dung đặc tả/quyết định kỹ thuật nào. |

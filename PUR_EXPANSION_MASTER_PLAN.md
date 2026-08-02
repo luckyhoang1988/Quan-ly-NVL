@@ -537,6 +537,10 @@ Exit criteria: không còn Severity 1/2 defect; Business Owner, PUR Manager và 
 2. Tổ chức workshop Discovery 3 phiên: Process, Finance/Budget, Sourcing/Approval.
 3. ~~Chốt 14 open decisions~~ **Đã chốt 2026-08-02** — xem `docs/pur/00_business_decisions.md`.
    KPI baseline (mục 12: SLA từng bước) vẫn cần đo thực tế trước Stage 2, chưa có số liệu.
+   ~~5 quyết định bổ sung DEFERRED (ngưỡng RFQ theo PR/line, 3 báo giá theo RFQ/line, budget
+   tolerance, `ExchangeRate` thiếu, scenario pilot bắt buộc)~~ **đã chốt 2026-08-03** — xem mục
+   15-19, `docs/pur/00_business_decisions.md`. Không còn open decision nào chặn viết
+   `docs/pur/02_stage2_fsd.md`.
 4. Chuyển requirement Release 1 thành backlog có traceability `Business Objective → Requirement →
    Acceptance Criteria → Test Case`.
 5. Chỉ sau khi Stage 0 được ký mới chốt estimate sprint và bắt đầu thay đổi schema/code.

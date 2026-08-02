@@ -1,12 +1,14 @@
 # PUR Expansion — 00. Quyết định nghiệp vụ (Discovery / Stage 0)
 
-> Trạng thái file: **Confirmed — đã chốt toàn bộ 14 mục qua AskUserQuestion ngày 2026-08-02, cập
-> nhật lại mục 4/5/6/8/14 theo review 02/08/2026 (xem phụ lục trong từng mục và bảng tổng hợp cuối
-> file)**
+> Trạng thái file: **Confirmed — đã chốt toàn bộ 19 mục** (14 mục gốc qua AskUserQuestion ngày
+> 2026-08-02, cập nhật lại mục 4/5/6/8/14 theo review 02/08/2026; **+ 5 mục bổ sung DEFERRED —
+> mục 15-19 — chốt qua AskUserQuestion ngày 03/08/2026**, xem phần "Quyết định bổ sung" cuối file).
 > Nguồn: mục 16 `PUR_EXPANSION_MASTER_PLAN.md` (14 open decision), đối chiếu với nội dung đã có
-> sẵn ở các mục 2/5/6/7/10 của cùng tài liệu.
+> sẵn ở các mục 2/5/6/7/10 của cùng tài liệu; mục 15-19 phát hiện qua review lần 4 (02/08/2026)
+> trên `01_foundation_fsd.md`.
 > File này **không chặn** `01_foundation_fsd.md` — Stage Foundation không phụ thuộc bất kỳ mục nào
-> dưới đây. Các mục dưới đây là điều kiện bắt buộc trước khi bắt đầu Stage 2 (PR Allocation) trở đi.
+> dưới đây. **Không còn mục nào chặn Stage 2 Discovery/FSD** — toàn bộ 19 mục đã chốt, có thể bắt
+> đầu viết `docs/pur/02_stage2_fsd.md`.
 > **Mục 8 (ngoại tệ) cần đọc lại phụ lục trước khi brainstorm Stage 2** — vị trí Stage của
 > `ExchangeRate`/currency đã đổi so với bản chốt đầu (Critical #2, xem phụ lục trong mục 8).
 
@@ -273,10 +275,15 @@ lệch ngân sách/tồn kho) trong quá trình pilot.
 | 12 | SLA từng bước + lịch làm việc | ✅ Chốt — đo baseline thật trước, dashboard chỉ hiện aging |
 | 13 | Volume/retention attachment/audit | ✅ Chốt — 10MB/file, lưu 5 năm; attachment tự thân build ở Stage 4 (không phải Stage 1) |
 | 14 | Pilot phòng ban + tiêu chí rollout | ✅ Chốt — WAREHOUSE, **[sửa 02/08]** 10 PR trôi trọn quy trình, không lỗi Severity 1/2 |
+| 15 | Ngưỡng RFQ: line/PR/cộng dồn | ✅ Chốt — theo PR (subtotal cả PR), không cộng dồn nhiều PR ở Release 1 |
+| 16 | 3 báo giá: theo RFQ hay theo line | ✅ Chốt — theo toàn bộ RFQ, `INSUFFICIENT_RESPONSES` áp dụng riêng theo line thiếu |
+| 17 | Budget tolerance % + xử lý khi vượt | ✅ Chốt — 10%, vượt route thêm Finance duyệt (không chặn cứng, không chỉ cảnh báo) |
+| 18 | `ExchangeRate` thiếu cho ngày snapshot | ✅ Chốt — dùng tỷ giá gần nhất ≤5 ngày + cảnh báo; quá 5 ngày thì chặn |
+| 19 | Scenario bắt buộc trong pilot 10 PR | ✅ Chốt — chỉ định trước checklist, không để pilot tự phát sinh ngẫu nhiên |
 
-**14/14 mục đã chốt, mục 4/5/6/8/14 có phụ lục làm rõ thêm sau review 02/08/2026** (xem chi tiết
-trong từng mục ở trên — không đổi kết luận gốc, chỉ làm rõ ranh giới áp dụng hoặc sửa vị trí
-Stage). Mục 8 (ngoại tệ) là thay đổi phạm vi thật hai lần: lần đầu (2026-08-02) đổi từ "không
+**19/19 mục đã chốt** — 14 mục gốc (mục 4/5/6/8/14 có phụ lục làm rõ thêm sau review 02/08/2026,
+không đổi kết luận gốc, chỉ làm rõ ranh giới áp dụng hoặc sửa vị trí Stage) + 5 mục bổ sung DEFERRED
+(mục 15-19, chốt 03/08/2026, không còn điểm nào chặn Stage 2 Discovery/FSD). Mục 8 (ngoại tệ) là thay đổi phạm vi thật hai lần: lần đầu (2026-08-02) đổi từ "không
 ngoại tệ" sang "có ngoại tệ Release 1"; lần hai (review 02/08/2026, Critical #2) sửa vị trí Stage
 từ "gộp hết Stage 5" sang "hạ tầng tối thiểu ở Stage 2-4, phần snapshot đầy đủ còn lại Stage 5" —
 cả hai lần đã đồng bộ ngược `PUR_EXPANSION_MASTER_PLAN.md` (mục 5.1/5.3/Stage 2-5). Attachment
@@ -292,20 +299,90 @@ xem file đó.
 
 Phát hiện qua review lần 4 (02/08/2026) trên `01_foundation_fsd.md`: 14 mục ở trên là quyết định
 Release 1 nói chung, còn 5 câu hỏi dưới đây là chi tiết kỹ thuật riêng của RFQ/Budget (Stage 2-4)
-chưa từng được liệt kê thành mục riêng ở đâu. Ghi nhận tại đây để không lạc mất trước khi
-brainstorm Stage 2.
+chưa từng được liệt kê thành mục riêng ở đâu. Chốt qua AskUserQuestion ngày 03/08/2026 (đề xuất
+kèm lý lẽ kỹ thuật cho từng mục, người dùng chọn phương án — không phải suy đoán một chiều).
 
-1. Ngưỡng RFQ (≥10 triệu VND, quyết định #5 ở trên) tính theo line, theo PR, hay theo nhu cầu
-   cộng dồn của cùng một product/period?
-2. Yêu cầu tối thiểu 3 báo giá áp dụng cho toàn bộ RFQ hay cho từng RFQ line riêng lẻ (khi một RFQ
-   gồm nhiều line có thể có tập NCC mời khác nhau)?
-3. Budget tolerance (nếu có) bằng bao nhiêu phần trăm, và vượt tolerance thì xử lý theo hướng nào
-   trong Approval Rule (chặn cứng, cảnh báo, hay route thêm Finance)?
-4. Khi không có `ExchangeRate` hợp lệ cho ngày cần snapshot (ví dụ Admin quên nhập tỷ giá ngày đó),
-   hệ thống chặn transition hay dùng tỷ giá gần nhất trước đó kèm cảnh báo?
-5. Bộ scenario bắt buộc phải có mặt trong 10 PR pilot (quyết định #14) — pilot có tự phát sinh đủ
-   case (ngoại tệ, direct buy, RFQ đủ/thiếu báo giá, vượt budget...) hay cần chỉ định trước từng
-   case để không lọt case quan trọng?
+---
 
-**Trạng thái: DEFERRED — bắt buộc chốt trước khi viết FSD Stage 2** (không chặn Stage 1 Foundation,
-vì Stage 1 không chạm RFQ/Budget/ExchangeRate).
+## 15. Ngưỡng RFQ (quyết định #5) tính theo line, theo PR, hay cộng dồn theo product/period?
+
+**Câu hỏi gốc**: ngưỡng ≥10 triệu VND tính theo line, theo PR, hay theo nhu cầu cộng dồn của cùng
+một product/period?
+
+**Quyết định cuối**: **Theo PR** — tổng giá trị (subtotal trước thuế/freight, xem quyết định #5)
+của cả PR ≥10 triệu VND thì bắt buộc RFQ cho toàn bộ PR, dù từng line riêng lẻ dưới ngưỡng. Chặn
+được kiểu lách bằng cách chia nhỏ line trong cùng một PR. Cộng dồn nhiều PR khác nhau của cùng
+product/period **không** xây cơ chế tự động ở Release 1 — nếu phát hiện lách bằng nhiều PR nhỏ
+liên tiếp trong thực tế vận hành, xử lý bằng kiểm soát thủ công (PUR Manager rà soát), để dành cơ
+chế cộng dồn tự động cho Release 2 nếu cần thật.
+
+---
+
+## 16. Yêu cầu tối thiểu 3 báo giá (quyết định #5) áp dụng theo RFQ hay theo line?
+
+**Câu hỏi gốc**: một RFQ có thể gồm nhiều line với tập NCC mời khác nhau — yêu cầu ≥3 báo giá áp
+dụng cho toàn bộ RFQ hay cho từng line riêng lẻ?
+
+**Quyết định cuối**: **Theo toàn bộ RFQ** — cần ≥3 NCC gửi báo giá cho RFQ nói chung (không bắt
+buộc mỗi NCC báo đủ mọi line). Khi so sánh/award từng line, chỉ so sánh trong tập báo giá đã nhận
+cho line đó — nếu một line cụ thể cuối cùng có dưới 3 báo giá dù RFQ tổng thể đủ 3 NCC phản hồi, áp
+dụng exception `INSUFFICIENT_RESPONSES` (quyết định #5, phụ lục) riêng cho line đó.
+
+---
+
+## 17. Budget tolerance bằng bao nhiêu %, xử lý thế nào khi PO vượt tolerance so với PR đã commit?
+
+**Câu hỏi gốc**: quyết định #4 (phụ lục, điểm 4) đã nêu PO không được vượt approved/committed
+amount "ngoài dung sai (tolerance) đã cấu hình" nhưng chưa chốt con số % và hướng xử lý khi vượt.
+
+**Quyết định cuối**: **Tolerance 10%.** PO có giá trị vượt quá 10% so với commitment gốc từ PR
+(chênh lệch giá award thật so với ước tính PR) phải **route thêm một bước duyệt Finance** trước
+khi PO được gửi đi — không tự động chặn cứng, cũng không chỉ dừng ở cảnh báo. Trong tolerance
+(≤10%): xử lý như quyết định #4 điểm 4 đã chốt (ghi nhận qua `BudgetTransaction` điều chỉnh, không
+chặn, không cần thêm duyệt).
+
+> **Lưu ý phạm vi — không mâu thuẫn với quyết định #4**: quyết định #4 chốt "chặn cứng, không có
+> luồng Finance-override" cho **kiểm tra ngân sách còn lại tại thời điểm PR submit/final
+> approval** (quyết định có được tạo/duyệt PR hay không — luồng Finance-override cho bước này vẫn
+> để dành Release 2 như đã chốt). Quyết định #17 này là một cơ chế **khác, hẹp hơn và ở giai đoạn
+> sau** — chỉ áp dụng cho phần chênh lệch giữa giá PO thật (sau RFQ/award) và số tiền đã commit từ
+> PR, đúng như điểm 4 của quyết định #4 đã dự trù sẵn khái niệm tolerance nhưng chưa có con số.
+
+---
+
+## 18. Khi không có `ExchangeRate` hợp lệ cho ngày cần snapshot, hệ thống xử lý sao?
+
+**Câu hỏi gốc**: Admin có thể quên nhập tỷ giá cho một ngày cụ thể — hệ thống chặn transition hay
+dùng tỷ giá gần nhất trước đó kèm cảnh báo?
+
+**Quyết định cuối**: **Dùng `ExchangeRate` có `rate_date` gần nhất trước ngày cần snapshot**, kèm
+cảnh báo rõ ràng trên UI và ghi audit log — **nhưng chỉ chấp nhận nếu tỷ giá đó không cũ quá 5
+ngày lịch** (tính cả cuối tuần) so với ngày cần snapshot. Nếu không có `ExchangeRate` nào trong
+vòng 5 ngày gần nhất, **chặn transition**, bắt buộc Admin nhập tỷ giá mới trước khi tiếp tục. Đây
+là quyết định trực tiếp mở khóa Stage 2 — trong 5 mục DEFERRED, đây là mục duy nhất từng được xác
+định là điểm chặn cứng cho phạm vi Stage 2 (PR Allocation).
+
+---
+
+## 19. Bộ scenario bắt buộc trong 10 PR pilot (quyết định #14) — chỉ định trước hay tự phát sinh?
+
+**Câu hỏi gốc**: pilot 10 PR (quyết định #14) có tự phát sinh đủ case (ngoại tệ, direct buy, RFQ
+đủ/thiếu báo giá, vượt budget...) hay cần chỉ định trước từng case để không lọt case quan trọng?
+
+**Quyết định cuối**: **Chỉ định trước checklist case bắt buộc**, không để pilot tự phát sinh ngẫu
+nhiên. Checklist tối thiểu phải xuất hiện trong 10 PR pilot (chốt danh sách chi tiết cuối cùng khi
+viết kế hoạch UAT/`02_stage2_fsd.md`, khung tối thiểu ở đây):
+
+- Ít nhất 1 PR có `currency` khác VND (quyết định #8).
+- Ít nhất 1 PR direct buy cho mỗi reason code trong 4 loại (quyết định #6).
+- Ít nhất 1 RFQ đủ ≥3 báo giá, và ít nhất 1 RFQ dùng exception `INSUFFICIENT_RESPONSES` (quyết
+  định #5/#16).
+- Ít nhất 1 PO vượt budget tolerance 10% (quyết định #17) để xác nhận route Finance hoạt động
+  đúng.
+- Ít nhất 1 lần hệ thống rơi vào trường hợp thiếu `ExchangeRate` (quyết định #18) để xác nhận
+  cảnh báo/chặn đúng theo ngưỡng 5 ngày.
+
+---
+
+**Trạng thái: Confirmed — đã chốt cả 5 mục (15-19) qua AskUserQuestion ngày 03/08/2026.** Không
+còn điểm nào chặn Stage 2 Discovery/FSD trong file này.
