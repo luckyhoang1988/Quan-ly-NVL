@@ -13,7 +13,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import F, Q, Sum
+from django.db.models import F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
@@ -23,7 +23,6 @@ from accounts.models import Approval, AuditLog, User
 from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from partners.models import Supplier
-from receiving.models import GrnItem
 
 from .forms import (
     PurchaseOrderCloseForm,
@@ -41,7 +40,9 @@ from .services import (
     decide_purchase_request,
     delete_purchase_request,
     forward_purchase_request,
+    received_qty_by_product,
     reopen_purchase_request,
+    retry_po_email,
     send_po,
     submit_purchase_request,
     supplier_lead_time_stats,
@@ -303,13 +304,7 @@ def po_detail(request, pk):
     po = get_object_or_404(
         PurchaseOrder.objects.select_related('supplier', 'created_by').prefetch_related('items__product'), pk=pk)
 
-    received_by_product = dict(
-        GrnItem.objects.filter(grn__po=po)
-        .exclude(status=GrnItem.Status.REJECTED)
-        .values('product_id')
-        .annotate(total=Sum('qty_received'))
-        .values_list('product_id', 'total')
-    )
+    received_by_product = received_qty_by_product(po)
     item_rows = []
     for item in po.items.all():
         qty_received = received_by_product.get(item.product_id, 0)
@@ -324,6 +319,9 @@ def po_detail(request, pk):
     closeable_statuses = (
         PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED, PurchaseOrder.Status.RECEIVED)
     can_close = can_approve and po.status in closeable_statuses
+    can_retry_email = (
+        can_update and po.status == PurchaseOrder.Status.SENT
+        and po.email_status in (PurchaseOrder.EmailStatus.FAILED, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL))
     return render(request, 'purchasing/po_detail.html', {
         'po': po,
         'item_rows': item_rows,
@@ -332,6 +330,7 @@ def po_detail(request, pk):
         'can_approve': can_approve,
         'can_edit': can_update and po.status == PurchaseOrder.Status.DRAFT,
         'can_close': can_close,
+        'can_retry_email': can_retry_email,
         'close_reason_required': po.status != PurchaseOrder.Status.RECEIVED,
         'close_form': PurchaseOrderCloseForm(po=po) if can_close else None,
     })
@@ -486,18 +485,44 @@ def po_approve(request, pk):
 
 @po_permission_required('update')
 def po_send(request, pk):
-    """APPROVED -> SENT (POST-only)."""
+    """APPROVED -> SENT (POST-only). Flash message theo đúng 3 nhánh runtime
+    của ``email_status`` (PUR-FND-02, mục 5 FSD) — không còn suy luận nhị phân.
+    """
     obj = get_object_or_404(PurchaseOrder, pk=pk)
     if request.method == 'POST':
         try:
             obj = send_po(obj, actor=request.user, ip_address=client_ip(request))
-            if obj._email_sent:
+            if obj.email_status == PurchaseOrder.EmailStatus.SENT:
                 messages.success(request, f'Đã gửi PO "{obj.po_no}" và email thông báo tới NCC.')
+            elif obj.email_status == PurchaseOrder.EmailStatus.FAILED:
+                messages.error(
+                    request,
+                    f'Đã chuyển PO "{obj.po_no}" sang trạng thái Gửi NCC, nhưng gửi email thông báo cho NCC '
+                    f'thất bại — vui lòng tự thông báo cho NCC qua kênh khác.')
             else:
                 messages.warning(
                     request,
                     f'Đã chuyển PO "{obj.po_no}" sang trạng thái Gửi NCC, nhưng NCC chưa có email liên hệ '
                     f'— vui lòng tự thông báo cho NCC qua kênh khác.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:po_detail', pk=obj.pk)
+
+
+@po_permission_required('update')
+def po_retry_email(request, pk):
+    """PUR-FND-07 — gửi lại email PO khi lần gửi trong ``po_send`` thất bại
+    hoặc NCC lúc đó chưa có email (POST-only). Không chạy lại transition, chỉ
+    cập nhật ``email_status`` — quyền giữ nguyên ``update``, giống ``po_send``.
+    """
+    obj = get_object_or_404(PurchaseOrder, pk=pk)
+    if request.method == 'POST':
+        try:
+            obj = retry_po_email(obj, actor=request.user, ip_address=client_ip(request))
+            if obj.email_status == PurchaseOrder.EmailStatus.SENT:
+                messages.success(request, f'Đã gửi lại email PO "{obj.po_no}" tới NCC.')
+            else:
+                messages.error(request, f'Gửi lại email PO "{obj.po_no}" vẫn thất bại — vui lòng thử lại sau.')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:po_detail', pk=obj.pk)
