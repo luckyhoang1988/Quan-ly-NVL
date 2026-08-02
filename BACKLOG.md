@@ -7,6 +7,10 @@
 **Timeline mục tiêu:** 24 tuần (5-6 tháng) — solo dev, xem nhịp làm việc ở Phụ lục D.
 **Tech stack đã chốt (solo):** Django Template + Bootstrap 5 + HTMX (monolith) · PostgreSQL · Celery/Redis **hoãn** đến khi thật cần · Docker hóa cuối Phase 1.
 
+> **Phạm vi:** bộ đếm 60 FR ở trên chỉ tính các FR gốc từ BRD/SRS/FSD. **PUR Expansion** (nâng cấp module
+> Purchasing, mã `PUR-FND-##`/`PUR-S2-##`/...) là sáng kiến ngoài phạm vi này — roadmap và tiến độ riêng
+> nằm ở `PUR_EXPANSION_MASTER_PLAN.md` và `docs/pur/`, không cộng vào 60 FR ở đây.
+
 ---
 
 ## 🔍 Ghi Chú Từ BA Review (đọc trước khi code)

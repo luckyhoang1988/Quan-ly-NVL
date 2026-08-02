@@ -42,6 +42,13 @@ documents are in Vietnamese; code and identifiers should be English as usual.
 FSD section for the module currently being implemented — dumping all three documents dilutes context and
 leads to unfocused code.
 
+**PUR Expansion** (an initiative outside the original 60-FR checklist — see `BACKLOG.md` scope note):
+`PUR_EXPANSION_MASTER_PLAN.md` (repo root) is the consolidated roadmap/BRD (`plan_pur.md`/`PUR_2.md` are
+the two source docs it merged, kept only for reference — not source of truth). `docs/pur/0X_*.md` holds the
+per-stage FSD + technical backlog derived from that roadmap (`00_business_decisions.md`,
+`01_foundation_fsd.md`, ...), written one stage at a time as each is reached — don't write ahead of the
+stage currently being planned.
+
 ## Working with BACKLOG.md
 
 - Only lines with a bold `FR-XX-##` code count toward the 60-FR progress total (tracked at the top of the
@@ -637,6 +644,23 @@ rather than rediscovering the failure.
   callers expect, just no longer bulk. Apply generally: before reaching for `.update()`/`.bulk_update()`/
   `.bulk_create()` on a model whose transitions are normally logged, check whether the perf win is actually
   needed at current row counts — the bulk path needs the identical per-row loop, not a shortcut around it.
+- **Adding a `UniqueConstraint` to a table that may already have real rows violating it needs a migration
+  guard, not just `AddConstraint`** (PUR-FND-06, `purchasing` 0015): a `RunPython` step immediately before
+  the `AddConstraint`, checking for violations and raising a plain `RuntimeError` with a clear message if
+  any are found (`migrations.exceptions...` does not exist — any exception halts `migrate`). Write the
+  check independently of current model/service code — use the historical model via `apps.get_model()`
+  inside the `RunPython` function, never `import` the app's real `models.py`/`services.py` — so the
+  migration still runs correctly years later even if that code has since changed shape or been deleted.
+  The guard must always run, with no "skip if a prior manual check found 0 violations" branch — new
+  violations can appear in the gap between that check and the actual `migrate`. Pair this with a separate,
+  ordinary (non-migration) reporting function for the manual pre-check itself, and keep the two independent.
+- **First use of Python's `logging` module in this repo** (PUR-FND-02, `purchasing.services`): module-level
+  `logger = logging.getLogger(__name__)` + `logger.exception(...)` inside an `except Exception:` block around
+  an external-service call (`send_mail`), to keep the full traceback available for diagnosis without writing
+  it into `AuditLog` — `AuditLog` stays a user-facing "what happened" record (e.g. "gửi thất bại"), not a
+  technical error log. Apply this split generally to any future integration with an external service
+  (SMTP, future webhook/API calls): catch, `logger.exception()`, and log only a short human-readable outcome
+  to `AuditLog`.
 - **Performance**: prefer fixing a missing index or reducing per-request query count over reaching for
   caching. Reserve caching for values that are both expensive to compute *and* tolerate staleness (e.g. the
   audit-log filter dropdowns are cached 300s via Django's default `LocMemCache` — the first use of the cache

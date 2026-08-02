@@ -256,6 +256,8 @@ _RETRY_PO_EMAIL_LOG_DESCRIPTIONS = {
         'Gửi lại email PO: {po_no} (SENT) — đã gửi email tới NCC ({email}).',
     PurchaseOrder.EmailStatus.FAILED:
         'Gửi lại email PO: {po_no} (SENT) — gửi email tới NCC ({email}) thất bại.',
+    PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL:
+        'Gửi lại email PO: {po_no} (SENT) — NCC chưa có email, chỉ cập nhật trạng thái.',
 }
 
 
