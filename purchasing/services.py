@@ -14,6 +14,8 @@ Không có nhánh auto-approve theo ngưỡng tiền — mọi PO đều cần M
 duyệt thủ công (quyết định nghiệp vụ, xem PHÂN quyền ở view: ``approve_po``
 chỉ gọi được bởi actor có quyền ``approve`` trên module 'po').
 """
+import logging
+
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import transaction
@@ -24,10 +26,71 @@ from accounts.approvals import create_approval, decide_approval
 from accounts.audit import log_action
 from accounts.models import AuditLog, User
 from accounts.notifications import notify
+from catalog.models import Product
 from partners.models import Supplier
 from receiving.models import Grn, GrnItem
 
 from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest
+
+logger = logging.getLogger(__name__)
+
+
+def received_qty_by_product(po):
+    """Qty đã nhận lũy kế theo Product cho 1 PO — nguồn tính DÙNG CHUNG cho
+    ``sync_po_status`` và ``po_detail`` (PUR-FND-01). Trước đây ``po_detail`` tự
+    viết 1 bản sao query riêng thiếu ``.exclude(grn__status=CANCELLED)``, khiến
+    trang chi tiết và quy trình đồng bộ trạng thái báo Qty khác nhau cho cùng 1
+    PO — rút thành 1 hàm để lớp bug "sửa 1 chỗ quên chỗ kia" không tái diễn.
+
+    Loại trừ dòng GRN đã ``REJECTED`` (QC trả hàng) và toàn bộ GRN đã
+    ``CANCELLED`` (huỷ coi như chưa từng nhận hàng) — giống hệt điều kiện gốc
+    của ``sync_po_status``.
+
+    Chỉ đúng khi mỗi Product xuất hiện tối đa 1 dòng trong PO
+    (``UniqueConstraint('purchase_order', 'product')``, PUR-FND-06) — nếu không,
+    việc so `received_by_product[product] >= qty_ordered` theo từng dòng riêng
+    lẻ (thay vì tổng `qty_ordered` của mọi dòng cùng Product) sẽ sai.
+    """
+    return dict(
+        GrnItem.objects.filter(grn__po=po)
+        .exclude(status=GrnItem.Status.REJECTED)
+        .exclude(grn__status=Grn.Status.CANCELLED)
+        .values('product_id')
+        .annotate(total=Sum('qty_received'))
+        .values_list('product_id', 'total')
+    )
+
+
+def find_duplicate_po_products():
+    """PUR-FND-06 Bước 1 — báo cáo read-only các PO đang có ≥2 dòng cùng Product,
+    chạy thủ công (``manage.py shell``/management command tạm) TRƯỚC KHI migrate
+    ``UniqueConstraint(['purchase_order', 'product'])`` để biết trước quy mô dữ
+    liệu cần dọn. Trả về list các tuple ``(po, product, [item_ids])``.
+
+    Chỉ dùng ở tầng ứng dụng — migration guard (``ensure_no_duplicate_po_products``
+    trong migration thêm constraint) KHÔNG được gọi lại hàm này, viết độc lập
+    bằng historical model để không phụ thuộc model/service hiện tại (xem mục 9
+    FSD Foundation).
+    """
+    groups = (
+        PurchaseOrderItem.objects
+        .values('purchase_order_id', 'product_id')
+        .annotate(item_count=Count('id'))
+        .filter(item_count__gt=1)
+    )
+    results = []
+    for group in groups:
+        item_ids = list(
+            PurchaseOrderItem.objects.filter(
+                purchase_order_id=group['purchase_order_id'], product_id=group['product_id'],
+            ).values_list('id', flat=True)
+        )
+        results.append((
+            PurchaseOrder.objects.get(pk=group['purchase_order_id']),
+            Product.objects.get(pk=group['product_id']),
+            item_ids,
+        ))
+    return results
 
 
 def sync_po_status(po):
@@ -49,14 +112,7 @@ def sync_po_status(po):
     if not po_items:
         return po
 
-    received_by_product = dict(
-        GrnItem.objects.filter(grn__po=po)
-        .exclude(status=GrnItem.Status.REJECTED)
-        .exclude(grn__status=Grn.Status.CANCELLED)
-        .values('product_id')
-        .annotate(total=Sum('qty_received'))
-        .values_list('product_id', 'total')
-    )
+    received_by_product = received_qty_by_product(po)
 
     all_fulfilled = all(
         received_by_product.get(item.product_id, 0) >= item.qty_ordered for item in po_items)
@@ -104,43 +160,74 @@ def approve_po(po, actor=None, ip_address=None):
     return po
 
 
+_SEND_PO_EMAIL_LOG_DESCRIPTIONS = {
+    PurchaseOrder.EmailStatus.SENT:
+        'Gửi PO: {po_no} APPROVED -> SENT. Đã gửi email tới NCC ({email}).',
+    PurchaseOrder.EmailStatus.FAILED:
+        'Gửi PO: {po_no} APPROVED -> SENT. Gửi email tới NCC ({email}) thất bại.',
+    PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL:
+        'Gửi PO: {po_no} APPROVED -> SENT. NCC chưa có email, chỉ cập nhật trạng thái.',
+}
+
+
 @transaction.atomic
 def send_po(po, actor=None, ip_address=None):
     """APPROVED -> SENT (gửi PO tới NCC, khoá sửa).
 
+    ``sent_at`` (PUR-FND-03) set VÔ ĐIỀU KIỆN ngay khi transition xảy ra —
+    thời điểm hệ thống phát hành/thử gửi PO, không phải lúc NCC xác nhận đã
+    nhận. Không phụ thuộc kết quả email — kể cả ``email_status`` sau đó là
+    ``FAILED``/``SKIPPED_NO_EMAIL``, ``sent_at`` vẫn có giá trị, vì bản thân
+    transition PO vẫn xảy ra, chỉ email là kênh thông báo phụ. Dùng làm mốc
+    lead-time thực tế NCC (``supplier_lead_time_stats()``) thay cho
+    ``created_at`` (thời điểm tạo nháp, không phải lúc gửi thật).
+
     Best-effort: nếu NCC có ``contact_email`` thì gửi kèm 1 email thông báo
     (mirror style ``accounts.views._send_account_created_email`` — tiếng Việt,
-    ``fail_silently=True``, ``from_email=None`` dùng ``DEFAULT_FROM_EMAIL``).
-    Không có email thì bỏ qua, không chặn transition — việc gửi PO cho NCC vẫn
-    có thể thực hiện qua kênh khác (điện thoại, fax...), hệ thống chỉ hỗ trợ
-    thêm chứ không bắt buộc.
+    ``from_email=None`` dùng ``DEFAULT_FROM_EMAIL``). Không có email thì bỏ
+    qua, không chặn transition — việc gửi PO cho NCC vẫn có thể thực hiện qua
+    kênh khác (điện thoại, fax...), hệ thống chỉ hỗ trợ thêm chứ không bắt
+    buộc. Email thất bại (exception hoặc ``send_mail()`` trả về 0) cũng không
+    rollback transition — ``_send_po_email()`` tự bắt exception bên trong nó
+    (PUR-FND-02), nên lỗi SMTP không bao giờ khiến transaction này rollback.
+
+    ``email_status`` PHẢI được ``save(update_fields=['email_status'])`` riêng
+    sau khi gọi ``_send_po_email()`` — set trên instance không đủ, chưa lưu
+    xuống DB thì mất vĩnh viễn kết quả gửi (PUR-FND-02, mục 3 "Transaction/save
+    behavior").
     """
     po = PurchaseOrder.objects.select_for_update().get(pk=po.pk)
     if po.status != PurchaseOrder.Status.APPROVED:
         raise ValidationError(f'Không thể gửi PO khi đang ở trạng thái {po.status}.')
 
     po.status = PurchaseOrder.Status.SENT
-    po.save(update_fields=['status'])
+    po.sent_at = timezone.now()
+    po.save(update_fields=['status', 'sent_at'])
 
-    email_sent = _send_po_email(po)
+    email_status = _send_po_email(po)
+    po.email_status = email_status
+    po.save(update_fields=['email_status'])
 
     log_action(
         actor, AuditLog.Action.UPDATE, target=po,
-        description=(
-            f'Gửi PO: {po.po_no} APPROVED -> SENT. Đã gửi email tới NCC ({po.supplier.contact_email}).'
-            if email_sent else
-            f'Gửi PO: {po.po_no} APPROVED -> SENT. NCC chưa có email, chỉ cập nhật trạng thái.'
-        ),
+        description=_SEND_PO_EMAIL_LOG_DESCRIPTIONS[email_status].format(
+            po_no=po.po_no, email=po.supplier.contact_email),
         ip_address=ip_address,
     )
-    po._email_sent = email_sent
     return po
 
 
 def _send_po_email(po):
-    """Gửi email PO cho NCC nếu có ``contact_email``. Trả về True/False đã gửi hay chưa."""
+    """Gửi email PO cho NCC (PUR-FND-02). Trả về đúng 1 trong 3 giá trị
+    ``PurchaseOrder.EmailStatus`` khả dĩ tại runtime (``SENT``/``FAILED``/
+    ``SKIPPED_NO_EMAIL`` — ``NOT_ATTEMPTED``/``UNKNOWN_LEGACY`` không bao giờ
+    do hàm này trả về). ``SENT`` chỉ khi ``send_mail()`` không raise VÀ trả về
+    > 0 (số email gửi thành công) — không chỉ dựa vào "không có exception",
+    vì ``send_mail()`` có thể trả về ``0`` mà không raise (backend chấp nhận
+    nhưng không gửi được).
+    """
     if not po.supplier.contact_email:
-        return False
+        return PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL
     lines = [
         f'Kính gửi {po.supplier.name},\n',
         f'NVL/WMS gửi đơn mua hàng {po.po_no} với nội dung như sau:\n',
@@ -150,14 +237,70 @@ def _send_po_email(po):
     lines.append('')
     lines.append(f'Ngày giao dự kiến: {po.expected_delivery_date or "chưa xác định"}.')
     lines.append('\nVui lòng xác nhận và giao hàng đúng hẹn. Xin cảm ơn.')
-    send_mail(
-        subject=f'[NVL/WMS] Đơn mua hàng {po.po_no}',
-        message='\n'.join(lines),
-        from_email=None,  # dùng DEFAULT_FROM_EMAIL
-        recipient_list=[po.supplier.contact_email],
-        fail_silently=True,
+    try:
+        sent_count = send_mail(
+            subject=f'[NVL/WMS] Đơn mua hàng {po.po_no}',
+            message='\n'.join(lines),
+            from_email=None,  # dùng DEFAULT_FROM_EMAIL
+            recipient_list=[po.supplier.contact_email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception('Gửi email PO %s cho NCC %s thất bại.', po.po_no, po.supplier.contact_email)
+        return PurchaseOrder.EmailStatus.FAILED
+    return PurchaseOrder.EmailStatus.SENT if sent_count > 0 else PurchaseOrder.EmailStatus.FAILED
+
+
+_RETRY_PO_EMAIL_LOG_DESCRIPTIONS = {
+    PurchaseOrder.EmailStatus.SENT:
+        'Gửi lại email PO: {po_no} (SENT) — đã gửi email tới NCC ({email}).',
+    PurchaseOrder.EmailStatus.FAILED:
+        'Gửi lại email PO: {po_no} (SENT) — gửi email tới NCC ({email}) thất bại.',
+}
+
+
+@transaction.atomic
+def retry_po_email(po, actor=None, ip_address=None):
+    """PUR-FND-07 — gửi lại email PO khi lần gửi trong ``send_po()`` thất bại
+    hoặc NCC lúc đó chưa có email. KHÔNG chạy lại transition
+    ``APPROVED -> SENT`` (``status``/``sent_at`` giữ nguyên), chỉ gửi lại email
+    và cập nhật ``email_status``. Dùng lại nguyên ``_send_po_email()`` của
+    PUR-FND-02 để 2 đường gửi (lần đầu qua ``send_po()``, gửi lại qua đây)
+    không bao giờ lệch điều kiện SENT/FAILED với nhau.
+
+    2 điều kiện độc lập, CẢ HAI đều bắt buộc — thiếu 1 trong 2 đều
+    ``ValidationError`` (không gọi ``send_mail``, không tạo ``AuditLog`` mới):
+    1. ``po.status == SENT`` và ``po.email_status in (FAILED, SKIPPED_NO_EMAIL)``.
+    2. ``po.supplier.contact_email`` (đọc lại từ DB tại thời điểm gọi — ``po``
+       vừa được ``select_for_update()`` lại nên không dùng instance/quan hệ đã
+       cache của caller) phải khác rỗng. Đây là con đường hợp lệ DUY NHẤT để
+       thoát khỏi ``SKIPPED_NO_EMAIL``: bỏ qua check này sẽ cho phép gọi vô
+       nghĩa khi NCC vẫn chưa có email (chắc chắn lại trả ``SKIPPED_NO_EMAIL``,
+       sinh ``AuditLog`` rác mỗi lần bấm).
+
+    Giới hạn đã biết (không phải bug): không có cơ chế tự động phát hiện/ngăn
+    gửi trùng — nếu email đã gửi thành công nhưng lưu DB ngay sau đó tự lỗi
+    khiến transaction rollback, người xử lý phải tự xác nhận với NCC trước khi
+    gửi lại thủ công (mục 3 FSD Foundation).
+    """
+    po = PurchaseOrder.objects.select_for_update().get(pk=po.pk)
+    if po.status != PurchaseOrder.Status.SENT or po.email_status not in (
+            PurchaseOrder.EmailStatus.FAILED, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL):
+        raise ValidationError('PO chưa ở trạng thái có thể gửi lại email.')
+    if not po.supplier.contact_email:
+        raise ValidationError('Nhà cung cấp chưa có email, vui lòng bổ sung trước khi gửi lại.')
+
+    email_status = _send_po_email(po)
+    po.email_status = email_status
+    po.save(update_fields=['email_status'])
+
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=po,
+        description=_RETRY_PO_EMAIL_LOG_DESCRIPTIONS[email_status].format(
+            po_no=po.po_no, email=po.supplier.contact_email),
+        ip_address=ip_address,
     )
-    return True
+    return po
 
 
 @transaction.atomic
@@ -222,16 +365,27 @@ def supplier_price_history(product):
 
 
 def supplier_lead_time_stats():
-    """FR-PO-05/FR-PO-06: với mỗi NCC active, so sánh ``lead_time_days`` cấu
-    hình với lead-time thực tế (``received_at - created_at`` của các PO đã
-    RECEIVED), đếm số PO đúng hạn/trễ hạn so với ``expected_delivery_date``.
-    Tính on-the-fly khi load trang (⏸️ không cron/Celery, theo CLAUDE.md).
+    """FR-PO-05/FR-PO-06/PUR-FND-03: với mỗi NCC active, so sánh
+    ``lead_time_days`` cấu hình với lead-time thực tế (``received_at -
+    sent_at``, không phải ``created_at`` — ``created_at`` là lúc tạo bản nháp,
+    không phải lúc PO thật sự gửi NCC), đếm số PO đúng hạn/trễ hạn so với
+    ``expected_delivery_date``. Chỉ tính PO có CẢ HAI ``sent_at``/``received_at``
+    — PO cũ trước khi có ``sent_at`` (PUR-FND-02) bị loại khỏi thống kê thay vì
+    tính sai bằng ``created_at``. Tính on-the-fly khi load trang (⏸️ không
+    cron/Celery, theo CLAUDE.md).
+
+    ``received_at`` là ``DateField`` còn ``sent_at`` là ``DateTimeField`` — 2
+    kiểu này không trừ trực tiếp được (``date.__sub__(datetime)`` raise
+    ``TypeError``), bắt buộc ép ``sent_at`` về ``date`` theo giờ Việt Nam
+    trước (``timezone.localtime()``, không phải ``.date()`` trần trên
+    datetime UTC — quy ước so sánh ngày theo giờ VN, xem CLAUDE.md).
     """
     results = []
     for supplier in Supplier.objects.filter(status=Supplier.Status.ACTIVE):
-        received_pos = PurchaseOrder.objects.filter(supplier=supplier, received_at__isnull=False)
+        received_pos = PurchaseOrder.objects.filter(
+            supplier=supplier, received_at__isnull=False, sent_at__isnull=False)
         lead_times = [
-            (po.received_at - timezone.localtime(po.created_at).date()).days for po in received_pos
+            (po.received_at - timezone.localtime(po.sent_at).date()).days for po in received_pos
         ]
         avg_actual_lead_time = sum(lead_times) / len(lead_times) if lead_times else None
 

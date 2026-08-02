@@ -1,10 +1,13 @@
 from datetime import timedelta
 from decimal import Decimal
+from importlib import import_module
 from unittest.mock import patch
 
+from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -21,8 +24,11 @@ from .services import (
     approve_po,
     close_po,
     decide_purchase_request,
+    find_duplicate_po_products,
     forward_purchase_request,
+    received_qty_by_product,
     reopen_purchase_request,
+    retry_po_email,
     send_po,
     submit_purchase_request,
     supplier_lead_time_stats,
@@ -356,6 +362,150 @@ class SyncPoStatusTest(TestCase):
         self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
 
 
+class ReceivedQtyByProductTest(TestCase):
+    """PUR-FND-01: ``received_qty_by_product(po)`` là nguồn tính Qty đã nhận DÙNG
+    CHUNG cho ``sync_po_status`` và ``po_detail`` — trước đây ``po_detail`` có 1
+    bản sao query riêng thiếu ``.exclude(grn__status=CANCELLED)``, khiến 1 GRN đã
+    hủy vẫn được tính là "đã nhận" trên trang chi tiết dù ``sync_po_status`` đã
+    loại trừ đúng. ``TC-PUR-FND-01-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua-fnd01', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0101', name='NCC FND01')
+        self.product = Product.objects.create(product_code='NVL-0101', name='Gạo', uom='kg')
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0101', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
+        PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
+
+    def test_TC_PUR_FND_01_001_po_detail_excludes_cancelled_grn(self):
+        """Regression trực tiếp ở tầng view (khác TC_PUR_SYNC_005 vốn chỉ kiểm
+        ``sync_po_status`` ở tầng service) — PO có 1 GRN CANCELLED đã nhận qty
+        > 0 trước khi hủy: ``po_detail`` phải hiển thị Qty đã nhận = 0."""
+        grn = Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=self.purchasing_user, status=Grn.Status.CANCELLED)
+        GrnItem.objects.create(
+            grn=grn, product=self.product, qty_ordered=10, qty_received=10, unit_price=Decimal('15000.00'))
+
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[self.po.pk]))
+        item_rows = response.context['item_rows']
+        self.assertEqual(item_rows[0]['qty_received'], 0)
+        self.assertEqual(item_rows[0]['qty_remaining'], 10)
+
+    def test_received_qty_by_product_excludes_rejected_and_cancelled(self):
+        grn_ok = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        GrnItem.objects.create(
+            grn=grn_ok, product=self.product, qty_ordered=4, qty_received=4, unit_price=Decimal('15000.00'))
+        grn_cancelled = Grn.objects.create(
+            po=self.po, supplier=self.supplier, created_by=self.purchasing_user, status=Grn.Status.CANCELLED)
+        GrnItem.objects.create(
+            grn=grn_cancelled, product=self.product, qty_ordered=10, qty_received=10, unit_price=Decimal('15000.00'))
+        grn_rejected_item = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        GrnItem.objects.create(
+            grn=grn_rejected_item, product=self.product, qty_ordered=6, qty_received=6,
+            unit_price=Decimal('15000.00'), status=GrnItem.Status.REJECTED)
+
+        result = received_qty_by_product(self.po)
+        self.assertEqual(result, {self.product.pk: 4})
+
+    def test_received_qty_by_product_no_grn_returns_empty_dict(self):
+        self.assertEqual(received_qty_by_product(self.po), {})
+
+
+class DuplicatePoProductTest(TestCase):
+    """PUR-FND-06: mỗi Product chỉ được xuất hiện tối đa 1 dòng trong 1 PO —
+    ``UniqueConstraint(['purchase_order', 'product'])`` chặn ở formset và DB;
+    ``find_duplicate_po_products()`` là báo cáo read-only tầng ứng dụng;
+    migration guard (``ensure_no_duplicate_po_products``) chặn migrate khi còn
+    dữ liệu vi phạm. ``TC-PUR-FND-06-<seq>``.
+    """
+
+    MIGRATION_MODULE = 'purchasing.migrations.0015_purchaseorderitem_unique_po_product'
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua-fnd06', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0102', name='NCC FND06')
+        self.product = Product.objects.create(product_code='NVL-0102', name='Muối', uom='kg')
+        self.product2 = Product.objects.create(product_code='NVL-0103', name='Tiêu', uom='kg')
+        self.client.force_login(self.purchasing_user)
+
+    def _payload(self, **overrides):
+        payload = {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '2',
+            'items-INITIAL_FORMS': '0',
+            'items-MIN_NUM_FORMS': '1',
+            'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk,
+            'items-0-qty_ordered': 10,
+            'items-0-unit_price': '1000.00',
+            'items-1-product': self.product.pk,
+            'items-1-qty_ordered': 5,
+            'items-1-unit_price': '1000.00',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_TC_PUR_FND_06_001_create_rejects_duplicate_product_lines(self):
+        response = self.client.post(reverse('purchasing:po_create'), self._payload())
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PurchaseOrder.objects.exists())
+
+    def test_TC_PUR_FND_06_002_update_rejects_adding_duplicate_product_line(self):
+        po = PurchaseOrder.objects.create(po_no='PO-0102', supplier=self.supplier)
+        item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        response = self.client.post(
+            reverse('purchasing:po_update', args=[po.pk]),
+            self._payload(**{
+                'items-INITIAL_FORMS': '1',
+                'items-0-id': item.pk,
+            }),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(po.items.count(), 1)
+
+    def _drop_unique_po_product_constraint(self):
+        table = PurchaseOrderItem._meta.db_table
+        with connection.cursor() as cursor:
+            cursor.execute(f'ALTER TABLE "{table}" DROP CONSTRAINT "unique_po_product"')
+
+    def test_TC_PUR_FND_06_003_migration_guard_raises_on_existing_duplicates(self):
+        """Mô phỏng dữ liệu cũ trước constraint: tự gỡ constraint trong transaction
+        test (rollback khi test kết thúc) để tạo được fixture vi phạm qua ORM, né
+        formset validation — vì DB test đã migrate hết nên constraint thật đã tồn
+        tại và sẽ chặn insert nếu không gỡ tạm."""
+        po = PurchaseOrder.objects.create(po_no='PO-0103', supplier=self.supplier)
+        self._drop_unique_po_product_constraint()
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=3, unit_price=Decimal('1000.00'))
+
+        migration_module = import_module(self.MIGRATION_MODULE)
+        with self.assertRaises(RuntimeError):
+            migration_module.ensure_no_duplicate_po_products(django_apps, None)
+
+    def test_TC_PUR_FND_06_004_clean_data_guard_passes_and_valid_pos_still_work(self):
+        po = PurchaseOrder.objects.create(po_no='PO-0104', supplier=self.supplier)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product2, qty_ordered=3, unit_price=Decimal('1000.00'))
+        other_po = PurchaseOrder.objects.create(po_no='PO-0105', supplier=self.supplier)
+        PurchaseOrderItem.objects.create(
+            purchase_order=other_po, product=self.product, qty_ordered=2, unit_price=Decimal('1000.00'))
+
+        self.assertEqual(find_duplicate_po_products(), [])
+
+        migration_module = import_module(self.MIGRATION_MODULE)
+        migration_module.ensure_no_duplicate_po_products(django_apps, None)  # không raise
+
+
 class PurchaseOrderWorkflowTest(TestCase):
     """DRAFT -> APPROVED -> SENT -> CLOSED (FR-PO-01). Không có nhánh
     auto-approve theo ngưỡng tiền — mọi PO đều cần Manager/Admin (quyền
@@ -410,6 +560,7 @@ class PurchaseOrderWorkflowTest(TestCase):
         send_po(self.po, actor=self.purchasing_user)
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+        self.assertIsNotNone(self.po.sent_at)
 
     def test_TC_PUR_WORKFLOW_007_view_send_allowed_for_purchasing(self):
         approve_po(self.po, actor=self.manager)
@@ -425,7 +576,7 @@ class PurchaseOrderWorkflowTest(TestCase):
         self.supplier.save(update_fields=['contact_email'])
         approve_po(self.po, actor=self.manager)
         po = send_po(self.po, actor=self.purchasing_user)
-        self.assertTrue(po._email_sent)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SENT)
         self.assertEqual(len(mail.outbox), 1)
         sent = mail.outbox[0]
         self.assertIn(self.po.po_no, sent.subject)
@@ -436,7 +587,7 @@ class PurchaseOrderWorkflowTest(TestCase):
         """NCC không có contact_email — vẫn chuyển SENT, chỉ không gửi email."""
         approve_po(self.po, actor=self.manager)
         po = send_po(self.po, actor=self.purchasing_user)
-        self.assertFalse(po._email_sent)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL)
         self.assertEqual(len(mail.outbox), 0)
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
@@ -543,6 +694,296 @@ class PurchaseOrderWorkflowTest(TestCase):
         self.assertRedirects(response, reverse('purchasing:po_detail', args=[self.po.pk]))
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.CLOSED)
+
+
+class SendPoEmailStatusTest(TestCase):
+    """PUR-FND-02: ``email_status`` phản ánh đúng 1 trong 3 giá trị runtime
+    (``SENT``/``FAILED``/``SKIPPED_NO_EMAIL``) sau ``send_po()`` — không còn
+    khẳng định "đã gửi" khi thực tế thất bại. ``TC-PUR-FND-02-<seq>``.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm-fnd02', password='wm-pass-123', role=User.Role.MANAGER)
+        self.purchasing_user = User.objects.create_user(
+            username='mua-fnd02', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.staff = User.objects.create_user(
+            username='staff-fnd02', password='staff-pass-123', role=User.Role.STAFF)
+        self.supplier = Supplier.objects.create(
+            supplier_code='NCC-0105', name='NCC FND02', contact_email='ncc-fnd02@example.com')
+        self.product = Product.objects.create(product_code='NVL-0106', name='Bắp', uom='kg')
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-0109', supplier=self.supplier, status=PurchaseOrder.Status.APPROVED)
+        PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
+
+    def test_TC_PUR_FND_02_001_send_mail_raises_sets_failed_but_still_sent(self):
+        with patch('purchasing.services.send_mail', side_effect=Exception('SMTP down')):
+            po = send_po(self.po, actor=self.purchasing_user)
+        self.assertEqual(po.status, PurchaseOrder.Status.SENT)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.FAILED)
+
+    def test_TC_PUR_FND_02_002_no_contact_email_sets_skipped(self):
+        self.supplier.contact_email = ''
+        self.supplier.save(update_fields=['contact_email'])
+        with patch('purchasing.services.send_mail') as mock_send_mail:
+            po = send_po(self.po, actor=self.purchasing_user)
+        mock_send_mail.assert_not_called()
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL)
+
+    def test_TC_PUR_FND_02_003_send_mail_returns_one_sets_sent(self):
+        with patch('purchasing.services.send_mail', return_value=1):
+            po = send_po(self.po, actor=self.purchasing_user)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SENT)
+
+    def test_TC_PUR_FND_02_004_send_mail_returns_zero_without_exception_sets_failed(self):
+        with patch('purchasing.services.send_mail', return_value=0):
+            po = send_po(self.po, actor=self.purchasing_user)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.FAILED)
+
+    def test_TC_PUR_FND_02_005_email_status_persisted_not_just_in_memory(self):
+        with patch('purchasing.services.send_mail', return_value=1):
+            send_po(self.po, actor=self.purchasing_user)
+        reloaded = PurchaseOrder.objects.get(pk=self.po.pk)
+        self.assertEqual(reloaded.email_status, PurchaseOrder.EmailStatus.SENT)
+
+    def test_TC_PUR_FND_02_006_readonly_role_forbidden_no_audit_log(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('purchasing:po_send', args=[self.po.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.APPROVED)
+        self.assertFalse(AuditLog.objects.filter(target_id=str(self.po.pk)).exists())
+
+    def test_TC_PUR_FND_02_007_update_role_allowed(self):
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:po_send', args=[self.po.pk]))
+        self.assertRedirects(response, reverse('purchasing:po_detail', args=[self.po.pk]))
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
+    def test_TC_PUR_FND_02_008_flash_message_matches_each_runtime_branch(self):
+        cases = [
+            (1, 'success', PurchaseOrder.Status.APPROVED),
+            (0, 'error', PurchaseOrder.Status.APPROVED),
+        ]
+        for return_value, expected_tag, starting_status in cases:
+            po = PurchaseOrder.objects.create(
+                po_no=f'PO-FND02-{return_value}', supplier=self.supplier, status=starting_status)
+            PurchaseOrderItem.objects.create(
+                purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+            self.client.force_login(self.purchasing_user)
+            with patch('purchasing.services.send_mail', return_value=return_value):
+                response = self.client.post(
+                    reverse('purchasing:po_send', args=[po.pk]), follow=True)
+            messages_list = list(response.context['messages'])
+            self.assertEqual(len(messages_list), 1)
+            self.assertEqual(messages_list[0].tags, expected_tag)
+
+        # NCC không có contact_email -> nhánh warning riêng, không lẫn với FAILED.
+        self.supplier.contact_email = ''
+        self.supplier.save(update_fields=['contact_email'])
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND02-skip', supplier=self.supplier, status=PurchaseOrder.Status.APPROVED)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        self.client.force_login(self.purchasing_user)
+        response = self.client.post(reverse('purchasing:po_send', args=[po.pk]), follow=True)
+        messages_list = list(response.context['messages'])
+        self.assertEqual(len(messages_list), 1)
+        self.assertEqual(messages_list[0].tags, 'warning')
+
+
+class RetryPoEmailTest(TestCase):
+    """PUR-FND-07: ``retry_po_email()`` — gửi lại email PO khi lần gửi trong
+    ``send_po()`` thất bại/NCC chưa có email, không chạy lại transition.
+    ``TC-PUR-FND-07-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua-fnd07', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.staff = User.objects.create_user(
+            username='staff-fnd07', password='staff-pass-123', role=User.Role.STAFF)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0108', name='NCC FND07')
+        self.product = Product.objects.create(product_code='NVL-0107', name='Vừng', uom='kg')
+
+    def _sent_po(self, email_status, contact_email=''):
+        self.supplier.contact_email = contact_email
+        self.supplier.save(update_fields=['contact_email'])
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND07-1', supplier=self.supplier, status=PurchaseOrder.Status.SENT,
+            sent_at=timezone.now(), email_status=email_status)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        return po
+
+    def test_TC_PUR_FND_07_001_retry_after_failed_with_email_succeeds(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.FAILED, contact_email='ncc-fnd07@example.com')
+        sent_at_before = po.sent_at
+        with patch('purchasing.services.send_mail', return_value=1):
+            po = retry_po_email(po, actor=self.purchasing_user)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SENT)
+        self.assertEqual(po.status, PurchaseOrder.Status.SENT)
+        self.assertEqual(po.sent_at, sent_at_before)
+
+    def test_TC_PUR_FND_07_002_skipped_no_email_still_no_email_blocked(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL, contact_email='')
+        with patch('purchasing.services.send_mail') as mock_send_mail:
+            with self.assertRaises(ValidationError):
+                retry_po_email(po, actor=self.purchasing_user)
+        mock_send_mail.assert_not_called()
+        self.assertFalse(AuditLog.objects.filter(target_id=str(po.pk)).exists())
+        po.refresh_from_db()
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL)
+
+    def test_TC_PUR_FND_07_003_already_sent_blocked(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.SENT, contact_email='ncc-fnd07@example.com')
+        with patch('purchasing.services.send_mail') as mock_send_mail:
+            with self.assertRaises(ValidationError):
+                retry_po_email(po, actor=self.purchasing_user)
+        mock_send_mail.assert_not_called()
+        self.assertFalse(AuditLog.objects.filter(target_id=str(po.pk)).exists())
+
+    def test_TC_PUR_FND_07_004_draft_status_blocked(self):
+        po = PurchaseOrder.objects.create(po_no='PO-FND07-2', supplier=self.supplier)
+        with self.assertRaises(ValidationError):
+            retry_po_email(po, actor=self.purchasing_user)
+
+    def test_TC_PUR_FND_07_005_send_then_retry_creates_two_distinct_audit_logs(self):
+        self.supplier.contact_email = 'ncc-fnd07@example.com'
+        self.supplier.save(update_fields=['contact_email'])
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND07-3', supplier=self.supplier, status=PurchaseOrder.Status.APPROVED)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+        with patch('purchasing.services.send_mail', return_value=0):
+            po = send_po(po, actor=self.purchasing_user)
+        with patch('purchasing.services.send_mail', return_value=1):
+            po = retry_po_email(po, actor=self.purchasing_user)
+
+        logs = list(AuditLog.objects.filter(target_id=str(po.pk)).order_by('created_at'))
+        self.assertEqual(len(logs), 2)
+        self.assertNotEqual(logs[0].description, logs[1].description)
+
+    def test_TC_PUR_FND_07_006_readonly_role_forbidden(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.FAILED, contact_email='ncc-fnd07@example.com')
+        self.client.force_login(self.staff)
+        response = self.client.post(reverse('purchasing:po_retry_email', args=[po.pk]))
+        self.assertEqual(response.status_code, 403)
+        po.refresh_from_db()
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.FAILED)
+
+    def test_TC_PUR_FND_07_007_retry_succeeds_after_supplier_email_added(self):
+        """Con đường hợp lệ duy nhất để thoát SKIPPED_NO_EMAIL: NCC được bổ
+        sung contact_email sau đó, rồi mới bấm Gửi lại email."""
+        po = self._sent_po(PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL, contact_email='')
+        self.supplier.contact_email = 'ncc-fnd07-moi@example.com'
+        self.supplier.save(update_fields=['contact_email'])
+        with patch('purchasing.services.send_mail', return_value=1):
+            po = retry_po_email(po, actor=self.purchasing_user)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SENT)
+        self.assertTrue(AuditLog.objects.filter(target_id=str(po.pk)).exists())
+
+    def test_po_detail_shows_enabled_retry_button_when_supplier_has_email(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.FAILED, contact_email='ncc-fnd07@example.com')
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[po.pk]))
+        self.assertContains(response, 'Gửi lại email')
+        self.assertNotContains(response, 'disabled')
+
+    def test_po_detail_shows_disabled_retry_button_when_supplier_has_no_email(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL, contact_email='')
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[po.pk]))
+        self.assertContains(response, 'Gửi lại email')
+        self.assertContains(response, 'disabled')
+
+    def test_po_detail_hides_retry_section_when_email_already_sent(self):
+        po = self._sent_po(PurchaseOrder.EmailStatus.SENT, contact_email='ncc-fnd07@example.com')
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[po.pk]))
+        self.assertNotContains(response, 'Gửi lại email PO')
+
+
+class LegacyEmailStatusMigrationTest(TestCase):
+    """PUR-FND-09 (mục 9 FSD) — data migration backfill ``email_status`` cho PO
+    đã tồn tại trước migration 0016, phân biệt đúng 2 nhóm theo ``status``.
+    ``TC-PUR-FND-09-001``.
+    """
+
+    MIGRATION_MODULE = 'purchasing.migrations.0016_purchaseorder_email_status_purchaseorder_sent_at'
+
+    def test_TC_PUR_FND_09_001_backfill_distinguishes_sent_group_from_unsent_group(self):
+        supplier = Supplier.objects.create(supplier_code='NCC-0106', name='NCC FND09')
+        sent_group_statuses = [
+            PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED,
+            PurchaseOrder.Status.RECEIVED, PurchaseOrder.Status.CLOSED,
+        ]
+        unsent_group_statuses = [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.APPROVED]
+        sent_group_ids = []
+        unsent_group_ids = []
+        for i, status in enumerate(sent_group_statuses):
+            po = PurchaseOrder.objects.create(po_no=f'PO-FND09-S{i}', supplier=supplier, status=status)
+            sent_group_ids.append(po.pk)
+        for i, status in enumerate(unsent_group_statuses):
+            po = PurchaseOrder.objects.create(po_no=f'PO-FND09-U{i}', supplier=supplier, status=status)
+            unsent_group_ids.append(po.pk)
+
+        migration_module = import_module(self.MIGRATION_MODULE)
+        migration_module.backfill_legacy_email_status(django_apps, None)
+
+        for pk in sent_group_ids:
+            po = PurchaseOrder.objects.get(pk=pk)
+            self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.UNKNOWN_LEGACY, po.status)
+        for pk in unsent_group_ids:
+            po = PurchaseOrder.objects.get(pk=pk)
+            self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.NOT_ATTEMPTED, po.status)
+
+
+class GrandTotalTest(TestCase):
+    """PUR-FND-05: ``PurchaseOrder.grand_total`` — property tính toán
+    (``Decimal``, không lưu DB), luôn = Σ(qty_ordered × unit_price) của các dòng
+    hiện tại. ``TC-PUR-FND-05-<seq>``.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua-fnd05', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0104', name='NCC FND05')
+        self.product = Product.objects.create(product_code='NVL-0104', name='Đậu', uom='kg')
+        self.product2 = Product.objects.create(product_code='NVL-0105', name='Ngô', uom='kg')
+
+    def test_TC_PUR_FND_05_001_grand_total_sums_lines_as_decimal(self):
+        po = PurchaseOrder.objects.create(po_no='PO-0106', supplier=self.supplier)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.50'))
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product2, qty_ordered=3, unit_price=Decimal('9999.99'))
+        self.assertIsInstance(po.grand_total, Decimal)
+        self.assertEqual(po.grand_total, Decimal('180004.97'))
+
+    def test_grand_total_no_items_returns_zero_decimal(self):
+        po = PurchaseOrder.objects.create(po_no='PO-0107', supplier=self.supplier)
+        self.assertIsInstance(po.grand_total, Decimal)
+        self.assertEqual(po.grand_total, Decimal('0.00'))
+
+    def test_po_detail_displays_grand_total(self):
+        po = PurchaseOrder.objects.create(po_no='PO-0108', supplier=self.supplier)
+        PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=10, unit_price=Decimal('15000.00'))
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[po.pk]))
+        self.assertContains(response, '150000')
+
+    def test_TC_PUR_FND_05_002_po_detail_shows_unknown_legacy_not_sent(self):
+        po = PurchaseOrder.objects.create(
+            po_no='PO-0109', supplier=self.supplier, status=PurchaseOrder.Status.SENT,
+            email_status=PurchaseOrder.EmailStatus.UNKNOWN_LEGACY)
+        self.client.force_login(self.purchasing_user)
+        response = self.client.get(reverse('purchasing:po_detail', args=[po.pk]))
+        self.assertContains(response, 'Không rõ (dữ liệu trước nâng cấp)')
+        self.assertNotContains(response, 'Đã gửi</span>')
 
 
 class PurchaseOrderVisibilityTest(TestCase):
@@ -727,17 +1168,65 @@ class SupplierPerformanceViewTest(TestCase):
         self.assertEqual(row['received_po_count'], 0)
 
     def test_TC_PUR_05_002_computes_avg_lead_time_and_on_time_count(self):
+        """PUR-FND-03: lead-time thực tế tính từ ``sent_at`` (lúc gửi NCC thật),
+        không phải ``created_at`` (lúc tạo nháp)."""
         po = PurchaseOrder.objects.create(
             po_no='PO-0001', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
             expected_delivery_date=timezone.localdate(), received_at=timezone.localdate(),
+            sent_at=timezone.now() - timedelta(days=5),
         )
-        PurchaseOrder.objects.filter(pk=po.pk).update(created_at=timezone.now() - timedelta(days=5))
         response = self.client.get(reverse('purchasing:po_supplier_performance'))
         row = next(r for r in response.context['rows'] if r['supplier'] == self.supplier)
         self.assertEqual(row['received_po_count'], 1)
         self.assertEqual(row['avg_actual_lead_time_days'], 5)
         self.assertEqual(row['on_time_count'], 1)
         self.assertEqual(row['delayed_count'], 0)
+
+
+class SupplierLeadTimeSentAtTest(TestCase):
+    """PUR-FND-03: ``supplier_lead_time_stats()`` dùng ``sent_at`` (lúc gửi NCC
+    thật) thay ``created_at`` (lúc tạo nháp), chỉ tính PO có cả 2 giá trị
+    ``sent_at``/``received_at``. ``TC-PUR-FND-03-<seq>``.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='mua-fnd03', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.supplier = Supplier.objects.create(
+            supplier_code='NCC-0107', name='NCC FND03', lead_time_days=7)
+
+    def test_TC_PUR_FND_03_001_avg_lead_time_uses_sent_at_not_created_at(self):
+        """created_at cách xa sent_at 100 ngày để chắc chắn công thức không lỡ
+        dùng nhầm created_at — nếu dùng nhầm, kết quả sẽ lệch hẳn khỏi N=5."""
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND03-1', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
+            received_at=timezone.localdate(), sent_at=timezone.now() - timedelta(days=5))
+        PurchaseOrder.objects.filter(pk=po.pk).update(created_at=timezone.now() - timedelta(days=100))
+        rows = supplier_lead_time_stats()
+        row = next(r for r in rows if r['supplier'] == self.supplier)
+        self.assertEqual(row['avg_actual_lead_time_days'], 5)
+        self.assertEqual(row['received_po_count'], 1)
+
+    def test_TC_PUR_FND_03_002_po_without_sent_at_excluded(self):
+        PurchaseOrder.objects.create(
+            po_no='PO-FND03-2', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
+            received_at=timezone.localdate(), sent_at=None)
+        rows = supplier_lead_time_stats()
+        row = next(r for r in rows if r['supplier'] == self.supplier)
+        self.assertEqual(row['received_po_count'], 0)
+        self.assertIsNone(row['avg_actual_lead_time_days'])
+
+    def test_TC_PUR_FND_03_003_real_sent_at_datetime_does_not_raise_type_error(self):
+        """Regression cho lỗi lệch kiểu DateField/DateTimeField — sent_at (thật,
+        không mock) phải trừ được với received_at mà không raise TypeError."""
+        sent_at = timezone.now() - timedelta(days=3)
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND03-3', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
+            received_at=timezone.localdate(), sent_at=sent_at)
+        rows = supplier_lead_time_stats()  # không raise TypeError
+        row = next(r for r in rows if r['supplier'] == self.supplier)
+        expected_days = (po.received_at - timezone.localtime(sent_at).date()).days
+        self.assertEqual(row['avg_actual_lead_time_days'], expected_days)
 
 
 class PoCreateNoLongerHonorsMinLevelShortcutTest(TestCase):
@@ -1791,3 +2280,98 @@ class PurchaseRequestTwoStageVisibilityTest(TestCase):
         detail_response = self.client.get(reverse('purchasing:pr_detail', args=[self.pr.pk]))
         self.assertEqual(detail_response.status_code, 200)
         self.assertTrue(detail_response.context['can_approve'])
+
+
+class AuditLogConfirmationTest(TestCase):
+    """PUR-FND-04 — xác nhận "mọi transition chính có actor, timestamp, note và
+    audit log" đã thoả mãn sẵn ở tầng code (``approve_po``/``send_po``/
+    ``close_po`` gọi ``log_action()`` trực tiếp; ``submit_purchase_request``/
+    ``decide_purchase_request`` uỷ quyền qua ``accounts.approvals`` — cả hai tự
+    ``log_action()`` nội bộ). Không sửa code, chỉ viết test xác nhận, bao phủ cả
+    2 nhánh approve/reject của ``decide_purchase_request``. ``TC-PUR-FND-04-<seq>``.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm-fnd04', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff = User.objects.create_user(
+            username='kho-nv-fnd04', password='kho-nv-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.purchasing_staff = User.objects.create_user(
+            username='mua-nv-fnd04', password='mua-nv-123', role=User.Role.PURCHASING,
+            department=User.Department.PURCHASING)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0109', name='NCC FND04')
+        self.product = Product.objects.create(product_code='NVL-0108', name='Đỗ', uom='kg')
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-FND04', name='Kho test FND04', warehouse_type=Warehouse.WarehouseType.MAIN)
+
+    def test_TC_PUR_FND_04_001_submit_purchase_request_creates_audit_log(self):
+        pr = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        PurchaseRequestItem.objects.create(purchase_request=pr, product=self.product, qty_requested=10)
+        count_before = AuditLog.objects.filter(target_id=str(pr.pk)).count()
+        submit_purchase_request(pr, actor=self.staff)
+        self.assertEqual(AuditLog.objects.filter(target_id=str(pr.pk)).count(), count_before + 1)
+
+    def test_TC_PUR_FND_04_002_approve_po_creates_audit_log(self):
+        po = PurchaseOrder.objects.create(po_no='PO-FND04-1', supplier=self.supplier)
+        approve_po(po, actor=self.manager)
+        log = AuditLog.objects.get(action=AuditLog.Action.APPROVE, target_id=str(po.pk))
+        self.assertEqual(log.actor, self.manager)
+        self.assertIn(po.po_no, log.description)
+
+    def test_TC_PUR_FND_04_003_close_po_early_creates_audit_log_with_reason(self):
+        po = PurchaseOrder.objects.create(
+            po_no='PO-FND04-2', supplier=self.supplier, status=PurchaseOrder.Status.SENT)
+        reason = 'NCC báo ngừng cung cấp, không giao nốt phần còn lại.'
+        close_po(po, actor=self.manager, reason=reason)
+        log = AuditLog.objects.filter(target_id=str(po.pk)).latest('created_at')
+        self.assertIn(reason, log.description)
+
+    def test_TC_PUR_FND_04_004_decide_purchase_request_both_branches_create_audit_log(self):
+        """Nhánh approve dùng requester thuộc phòng Mua hàng để nộp PR đi thẳng
+        PENDING_PUR (bỏ qua PENDING_DEPT) — duyệt ở đây là quyết định CUỐI CÙNG,
+        chỉ 1 lần gọi ``decide_approval()``. Nếu dùng requester phòng khác, PR sẽ
+        qua PENDING_DEPT trước và duyệt ở đó sẽ mở thêm 1 Approval cấp 2 (tự
+        ``log_action()`` riêng của chính nó) — 2 log là đúng thiết kế 2 cấp
+        nhưng không phải điều test này muốn cô lập (xem
+        ``PurchaseRequestTwoStageServiceTest`` cho hành vi 2 cấp)."""
+        pr_approve = PurchaseRequest.objects.create(requested_by=self.purchasing_staff, warehouse=self.warehouse)
+        PurchaseRequestItem.objects.create(
+            purchase_request=pr_approve, product=self.product, qty_requested=5)
+        submit_purchase_request(pr_approve, actor=self.purchasing_staff)
+        approval = Approval.objects.get(target_id=str(pr_approve.pk), status=Approval.Status.PENDING)
+        count_before = AuditLog.objects.filter(target_id=str(pr_approve.pk)).count()
+        decide_purchase_request(approval, True, actor=self.manager)
+        self.assertEqual(
+            AuditLog.objects.filter(target_id=str(pr_approve.pk)).count(), count_before + 1)
+
+        pr_reject = PurchaseRequest.objects.create(requested_by=self.staff, warehouse=self.warehouse)
+        PurchaseRequestItem.objects.create(
+            purchase_request=pr_reject, product=self.product, qty_requested=5)
+        submit_purchase_request(pr_reject, actor=self.staff)
+        approval2 = Approval.objects.get(target_id=str(pr_reject.pk), status=Approval.Status.PENDING)
+        count_before2 = AuditLog.objects.filter(target_id=str(pr_reject.pk)).count()
+        decide_purchase_request(approval2, False, actor=self.manager, note='Không đủ ngân sách.')
+        self.assertEqual(
+            AuditLog.objects.filter(target_id=str(pr_reject.pk)).count(), count_before2 + 1)
+
+    def test_TC_PUR_FND_04_005_send_po_creates_audit_log_matching_each_runtime_branch(self):
+        cases = [
+            (1, 'ncc-fnd04@example.com', 'Đã gửi email'),
+            (0, 'ncc-fnd04@example.com', 'thất bại'),
+            (None, '', 'NCC chưa có email'),
+        ]
+        for i, (return_value, contact_email, expected_keyword) in enumerate(cases):
+            self.supplier.contact_email = contact_email
+            self.supplier.save(update_fields=['contact_email'])
+            po = PurchaseOrder.objects.create(
+                po_no=f'PO-FND04-3-{i}', supplier=self.supplier, status=PurchaseOrder.Status.APPROVED)
+            PurchaseOrderItem.objects.create(
+                purchase_order=po, product=self.product, qty_ordered=5, unit_price=Decimal('1000.00'))
+            if return_value is None:
+                po = send_po(po, actor=self.manager)
+            else:
+                with patch('purchasing.services.send_mail', return_value=return_value):
+                    po = send_po(po, actor=self.manager)
+            log = AuditLog.objects.filter(target_id=str(po.pk)).latest('created_at')
+            self.assertIn(expected_keyword, log.description)

@@ -34,6 +34,8 @@ chỉ quản lý đúng phòng ban đang giữ cấp hiện tại (``can_decide_
 Manager/Admin mới thật sự DUYỆT/từ chối (xem
 ``purchasing.services.submit_purchase_request``/``decide_purchase_request``).
 """
+from decimal import Decimal
+
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
 from django.urls import reverse
@@ -52,6 +54,20 @@ class PurchaseOrder(models.Model):
     class Source(models.TextChoices):
         MANUAL = 'MANUAL', 'Tự tạo'
         FROM_PR = 'FROM_PR', 'Từ yêu cầu mua hàng'
+
+    class EmailStatus(models.TextChoices):
+        """PUR-FND-02: kết quả gửi email PO cho NCC — 5 giá trị phân biệt rõ
+        "chưa gửi" / "gửi nhưng NCC không có email" / "dữ liệu cũ không rõ kết
+        quả" thay vì suy luận nhị phân. ``_send_po_email()`` chỉ trả về đúng 1
+        trong 3 giá trị SENT/FAILED/SKIPPED_NO_EMAIL tại runtime —
+        NOT_ATTEMPTED là default trước khi ``send_po()`` chạy, UNKNOWN_LEGACY
+        chỉ set qua data migration cho PO đã SENT trở lên trước khi field này
+        tồn tại (xem migration 0016)."""
+        NOT_ATTEMPTED = 'NOT_ATTEMPTED', 'Chưa gửi'
+        SKIPPED_NO_EMAIL = 'SKIPPED_NO_EMAIL', 'NCC chưa có email'
+        SENT = 'SENT', 'Đã gửi'
+        FAILED = 'FAILED', 'Gửi thất bại'
+        UNKNOWN_LEGACY = 'UNKNOWN_LEGACY', 'Không rõ (dữ liệu trước nâng cấp)'
 
     po_no = models.CharField(
         max_length=30, unique=True, editable=False, verbose_name='Mã PO',
@@ -78,6 +94,15 @@ class PurchaseOrder(models.Model):
         blank=True, verbose_name='Lý do đóng sớm',
         help_text='Bắt buộc khi đóng PO từ SENT/PARTIAL_RECEIVED (NCC chưa giao đủ hàng); '
                    'không bắt buộc khi đóng từ RECEIVED (đã nhận đủ, chỉ archive).')
+    sent_at = models.DateTimeField(
+        null=True, blank=True, verbose_name='Thời điểm gửi NCC',
+        help_text='Set 1 lần trong send_po() khi APPROVED -> SENT, bất kể email gửi được hay '
+                   'không — là thời điểm hệ thống phát hành PO, không phải lúc NCC xác nhận đã '
+                   'nhận. PO tạo trước khi có field này để trống (không suy đoán bằng created_at).')
+    email_status = models.CharField(
+        max_length=20, choices=EmailStatus.choices, default=EmailStatus.NOT_ATTEMPTED,
+        verbose_name='Trạng thái gửi email',
+        help_text='Kết quả lần gửi email PO gần nhất cho NCC (send_po()/retry_po_email()).')
 
     class Meta:
         ordering = ['-created_at']
@@ -132,6 +157,24 @@ class PurchaseOrder(models.Model):
                     raise
                 self.po_no = ''
 
+    @property
+    def grand_total(self):
+        """PUR-FND-05: tổng tiền PO = Σ(qty_ordered × unit_price) các dòng hiện
+        tại — property tính toán, không lưu DB (không có cột nào để sửa trực
+        tiếp; tránh lệch nếu 1 dòng bị sửa mà quên đồng bộ lại tổng, cùng
+        invariant "derived, never stored" như ``qty_available``/``qty_on_hand``
+        ở các module khác — xem CLAUDE.md).
+
+        Chỉ dùng ở nơi đã ``prefetch_related('items')`` (trang chi tiết 1 PO,
+        N=1) — dùng ở trang liệt kê N PO sẽ gây N+1 query nếu chưa prefetch.
+        ``Decimal('0.00')`` làm giá trị khởi tạo ``sum()`` để PO không có dòng
+        nào (hiếm, formset ``min_num=1``) vẫn trả về ``Decimal`` thay vì ``int 0``.
+        """
+        return sum(
+            (item.qty_ordered * item.unit_price for item in self.items.all()),
+            Decimal('0.00'),
+        )
+
     def delivery_status(self):
         """FR-PO-06: phân loại giao hàng On time/Delayed/Partial, tính on-the-fly
         (không lưu cột riêng) từ ``status``/``expected_delivery_date``/``received_at``.
@@ -168,6 +211,9 @@ class PurchaseOrderItem(models.Model):
     class Meta:
         verbose_name = 'Dòng đơn mua hàng'
         verbose_name_plural = 'Dòng đơn mua hàng'
+        constraints = [
+            models.UniqueConstraint(fields=['purchase_order', 'product'], name='unique_po_product'),
+        ]
 
     def __str__(self):
         return f'{self.purchase_order.po_no} - {self.product.product_code} x{self.qty_ordered}'

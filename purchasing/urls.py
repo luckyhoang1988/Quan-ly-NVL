@@ -23,5 +23,6 @@ urlpatterns = [
     path('<int:pk>/edit/', views.po_update, name='po_update'),
     path('<int:pk>/approve/', views.po_approve, name='po_approve'),
     path('<int:pk>/send/', views.po_send, name='po_send'),
+    path('<int:pk>/retry-email/', views.po_retry_email, name='po_retry_email'),
     path('<int:pk>/close/', views.po_close, name='po_close'),
 ]

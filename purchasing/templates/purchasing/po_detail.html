@@ -74,6 +74,20 @@
             {% endwith %}
           </td>
         </tr>
+        {% if po.sent_at or po.email_status != 'NOT_ATTEMPTED' %}
+        <tr>
+          <th class="text-nowrap">Thời điểm gửi NCC</th>
+          <td>{{ po.sent_at|date:'d/m/Y H:i'|default:"—" }}</td>
+          <th class="text-nowrap">Trạng thái email</th>
+          <td>
+            <span class="badge
+              {% if po.email_status == 'SENT' %}bg-success
+              {% elif po.email_status == 'FAILED' %}bg-danger
+              {% elif po.email_status == 'SKIPPED_NO_EMAIL' %}bg-warning text-dark
+              {% else %}bg-secondary{% endif %}">{{ po.get_email_status_display }}</span>
+          </td>
+        </tr>
+        {% endif %}
         {% if po.close_reason %}
         <tr>
           <th class="text-nowrap">Lý do đóng sớm</th>
@@ -114,6 +128,12 @@
           <tr><td colspan="5" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
           {% endfor %}
         </tbody>
+        <tfoot>
+          <tr>
+            <th colspan="4" class="text-end">Tổng tiền</th>
+            <th>{{ po.grand_total }}</th>
+          </tr>
+        </tfoot>
       </table>
     </div>
   </div>
@@ -145,6 +165,29 @@
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+{% endif %}
+
+{% if can_retry_email %}
+<div class="card shadow-sm mt-3">
+  <div class="card-body d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div>
+      <strong>Gửi lại email PO</strong>
+      <div class="small text-muted">
+        Lần gửi trước ({{ po.get_email_status_display }}) chưa tới được NCC.
+        {% if not po.supplier.contact_email %}
+          Vui lòng bổ sung email nhà cung cấp trước khi gửi lại —
+          <a href="{% url 'partners:supplier_update' po.supplier.pk %}">sửa NCC »</a>
+        {% endif %}
+      </div>
+    </div>
+    <form method="post" action="{% url 'purchasing:po_retry_email' po.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary btn-sm" {% if not po.supplier.contact_email %}disabled{% endif %}>
+        <i class="bi bi-arrow-repeat"></i> Gửi lại email
+      </button>
+    </form>
   </div>
 </div>
 {% endif %}

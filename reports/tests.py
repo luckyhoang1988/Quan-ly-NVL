@@ -306,7 +306,7 @@ class SupplierPerformanceTest(TestCase):
         expected = timezone.localdate()
         self.po_on_time = PurchaseOrder.objects.create(
             po_no='PO-ON-TIME', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
-            expected_delivery_date=expected, received_at=expected,
+            expected_delivery_date=expected, received_at=expected, sent_at=timezone.now() - timedelta(days=5),
         )
         PurchaseOrderItem.objects.create(
             purchase_order=self.po_on_time, product=self.product, qty_ordered=10, unit_price=Decimal('100.00'))
@@ -314,6 +314,7 @@ class SupplierPerformanceTest(TestCase):
         self.po_delayed = PurchaseOrder.objects.create(
             po_no='PO-DELAYED', supplier=self.supplier, status=PurchaseOrder.Status.RECEIVED,
             expected_delivery_date=expected, received_at=expected + timedelta(days=5),
+            sent_at=timezone.now() - timedelta(days=10),
         )
         PurchaseOrderItem.objects.create(
             purchase_order=self.po_delayed, product=self.product, qty_ordered=10, unit_price=Decimal('200.00'))
