@@ -1,8 +1,9 @@
 # PUR Expansion — 03. Implementation Plan Stage 2 (Epic B, PUR-PR-01..07)
 
 > Nguồn: `docs/pur/02_stage2_fsd.md` (**Approved v6**, duyệt bởi luckyhoang1988 ngày 03/08/2026).
-> Trạng thái: **Draft — v2, đã xử lý review lần 1 (xem mục "Lịch sử review kế hoạch" cuối file)**.
-> Không code trước khi plan này được duyệt.
+> Trạng thái: **Approved — v3**.
+> Người duyệt: **luckyhoang1988** | Ngày duyệt: **03/08/2026**.
+> Được phép bắt đầu triển khai tuần tự theo TDD và các gate trong plan này.
 > Quy ước: mọi tham chiếu `mục X` trong file này là mục của `02_stage2_fsd.md`, trừ khi ghi rõ khác.
 
 **Mục tiêu**: hiện thực đầy đủ Stage 2 (PR 2.0 + Allocation) đúng theo FSD v6 — field PR mới,
@@ -406,8 +407,8 @@ class ProcurementAllocationAdmin(ServiceManagedAdminMixin, admin.ModelAdmin):
     `AlterField('product')` (thêm `null=True`), `AddField` cho 3 field `PurchaseRequest` + **9**
     field `PurchaseRequestItem` (đếm đúng: `non_catalog_name`, `non_catalog_uom`, `non_catalog_note`,
     `required_date`, `budget_category`, `currency`, `estimated_unit_price`, `qty_approved`,
-    `qty_cancelled`), `CreateModel` cho `ExchangeRate` (2 `CheckConstraint`: unique + `currency !=
-    VND`) và `ProcurementAllocation` (4 `CheckConstraint`). Không có `RunPython` nào trong migration
+    `qty_cancelled`), `CreateModel` cho `ExchangeRate` (1 `UniqueConstraint` unique_currency_rate_date + 1
+    `CheckConstraint` exchange_rate_currency_not_vnd) và `ProcurementAllocation` (4 `CheckConstraint`). Không có `RunPython` nào trong migration
     này (đúng mục 9 — toàn bộ nullable/có default, không `UniqueConstraint`/`NOT NULL` mới nào có
     thể bị dữ liệu cũ vi phạm).
   - Đổi tên file thành `0017_pr_stage2_fields_exchangerate_allocation.py` (mirror cách đặt tên
@@ -1192,7 +1193,65 @@ def build_po_from_allocations(supplier, allocation_requests, unit_price_by_produ
         self.assertFalse(PurchaseOrderItem.objects.filter(purchase_order=po_a).exists())
 ```
 - [ ] **Bước 6: Chạy test, xác nhận PASS**
-- [ ] **Bước 7: Commit**
+- [ ] **Bước 7: Viết test đang FAIL (Review lần 3, mục phụ #1 — TC-PUR-PR-05-028: chặn supplier
+  không ACTIVE)**. Form-level (`PurchaseOrderForm`, `purchasing/forms.py`) đã lọc queryset
+  `status=ACTIVE` cho luồng `po_create` thường, nhưng `build_po_from_allocations` nhận `supplier`
+  thẳng làm tham số — không đi qua form đó — nên phải tự re-validate độc lập, đúng convention
+  "form lọc, service phải tự kiểm tra lại" đã áp dụng cho các constraint khác trong file này.
+```python
+    def test_TC_PUR_PR_05_028_rejects_inactive_supplier(self):
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(
+                self.supplier, [(self.pr_item_a, 10)],
+                {self.product.pk: Decimal('1000')}, actor=self.admin_user)
+        self.assertFalse(PurchaseOrder.objects.filter(supplier=self.supplier).exists())
+```
+- [ ] **Bước 8: Chạy test, xác nhận FAIL** — supplier `INACTIVE` vẫn tạo PO bình thường vì hàm
+  chưa kiểm tra `status`.
+- [ ] **Bước 9: Sửa code tối thiểu để PASS** — thêm ngay sau check `allocation_requests` rỗng ở
+  Bước 3 (trước dòng `po = PurchaseOrder.objects.create(...)`):
+```python
+    if supplier.status != Supplier.Status.ACTIVE:
+        raise ValidationError(
+            f'Nhà cung cấp "{supplier.name}" đã ngừng giao dịch hoặc bị tạm khóa, không thể tạo PO.')
+```
+- [ ] **Bước 10: Chạy lại toàn bộ test của class, xác nhận PASS**
+- [ ] **Bước 11: Viết test đang FAIL (Review lần 3, mục phụ #2 — chặn `unit_price` âm)**.
+  `PurchaseOrderItem.unit_price` đã có `MinValueValidator(0)` ở tầng model
+  (`purchasing/models.py:208-209`), nhưng validator model chỉ chạy khi có `full_clean()` (ví dụ
+  qua `ModelForm.is_valid()`) — `PurchaseOrderItem.objects.create(...)` ở Bước 3 gọi thẳng, bỏ qua
+  validator hoàn toàn. `unit_price_by_product` trong hàm này tới từ giá trị người dùng nhập tay ở
+  view Task 3.6 (`Decimal(request.POST.get(f'unit_price_{product_id}', ''))`), nên một chuỗi
+  `"-100"` sẽ lọt qua thẳng xuống DB nếu không tự kiểm tra lại — cùng dạng "field có sibling bị
+  chặn ở nơi khác" như `PurchaseRequestItem.estimated_unit_price` (`MinValueValidator(0)`,
+  `purchasing/models.py:350-352`) đã có từ trước.
+```python
+    def test_build_po_from_allocations_rejects_negative_unit_price(self):
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(
+                self.supplier, [(self.pr_item_a, 10)],
+                {self.product.pk: Decimal('-100')}, actor=self.admin_user)
+        self.assertFalse(PurchaseOrder.objects.filter(supplier=self.supplier).exists())
+```
+- [ ] **Bước 12: Chạy test, xác nhận FAIL** — `unit_price=-100` vẫn tạo `PurchaseOrderItem`/`PO`
+  bình thường vì hàm chưa kiểm tra dấu.
+- [ ] **Bước 13: Sửa code tối thiểu để PASS** — thêm ngay sau check `unit_price is None` ở Bước 3
+  (trước dòng `po_item_by_product[product_id] = PurchaseOrderItem.objects.create(...)`):
+```python
+        if product_id not in po_item_by_product:
+            unit_price = unit_price_by_product.get(product_id)
+            if unit_price is None:
+                raise ValidationError(f'Thiếu đơn giá cho sản phẩm "{pr_item.product.product_code}".')
+            if unit_price < 0:
+                raise ValidationError(
+                    f'Đơn giá cho sản phẩm "{pr_item.product.product_code}" không được âm.')
+            po_item_by_product[product_id] = PurchaseOrderItem.objects.create(
+                purchase_order=po, product=pr_item.product, qty_ordered=0, unit_price=unit_price)
+```
+- [ ] **Bước 14: Chạy lại toàn bộ test của class, xác nhận PASS**
+- [ ] **Bước 15: Commit**
 ```bash
 git add purchasing/services.py purchasing/tests.py
 git commit -m "feat(pur): add build_po_from_allocations() service (PUR-PR-05)"
@@ -2126,7 +2185,56 @@ document.addEventListener('change', function (event) {
   mở `pr_create`, chọn 1 sản phẩm có `category` khác rỗng cho 1 dòng mới thêm bằng JS (chưa
   round-trip server) — xác nhận `budget_category` tự điền, sửa lại được, và submit thiếu field
   bắt buộc báo lỗi đúng field.
-- [ ] **Bước 7: Commit**
+
+  **Lỗi đã sửa so với v2 (review phát hiện — N+1 query trong `ProductSelectWithCategory
+  .create_option()`, Bước 5 ở trên)**: bản gốc dùng `Product.objects.get(pk=value)` để lấy
+  `category` cho từng `<option>`. Đã xác minh thực nghiệm trong đúng môi trường Django của repo
+  này (`python manage.py shell`, Django 5.2.16) rằng đây **không chỉ là N+1 (chậm) mà thực sự
+  CRASH**: kể từ Django 3.1, `value` mà `create_option()` nhận được cho một `ModelChoiceField`
+  không phải là pk thô, mà là instance `django.forms.models.ModelChoiceIteratorValue` (bọc pk +
+  giữ sẵn `.instance` — chính là object đã fetch từ vòng lặp queryset). Gọi
+  `Product.objects.get(pk=value)` khiến Django cố `int(value)` để chuẩn bị SQL param, và
+  `ModelChoiceIteratorValue` không định nghĩa `__int__`, nên raise:
+  ```
+  TypeError: Field 'id' expected a number but got <django.forms.models.ModelChoiceIteratorValue object at 0x...>.
+  ```
+  Đây là `TypeError`, không phải `Product.DoesNotExist`, nên khối `except Product.DoesNotExist:
+  pass` hiện có KHÔNG bắt được — lỗi văng thẳng lên, render form `product` (bất kỳ field nào dùng
+  `ProductSelectWithCategory` với ≥1 lựa chọn thật) sẽ crash toàn bộ trang, không chỉ chậm.
+  Sửa bằng TDD:
+  - [ ] **Bước 7: Viết test đang FAIL**
+```python
+    def test_product_select_with_category_widget_renders_without_error(self):
+        Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg', category='Phụ gia')
+        form = PurchaseRequestItemForm()
+        with self.assertNumQueries(1):
+            rendered = str(form['product'])
+        self.assertIn('data-category="Nguyên liệu"', rendered)
+        self.assertIn('data-category="Phụ gia"', rendered)
+```
+  - [ ] **Bước 8: Chạy test, xác nhận FAIL** — chạy
+    `python manage.py test purchasing.tests.PurchaseRequestItemFormTest.test_product_select_with_category_widget_renders_without_error -v 2`,
+    kỳ vọng: `TypeError: Field 'id' expected a number but got <django.forms.models.ModelChoiceIteratorValue ...>`
+    (văng ra từ bên trong `create_option()`, không phải một `AssertionError` thông thường).
+  - [ ] **Bước 9: Sửa code tối thiểu để PASS** — thay `ProductSelectWithCategory` ở Bước 5 bằng:
+```python
+class ProductSelectWithCategory(forms.Select):
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(name, value, label, selected, index, subindex, attrs)
+        instance = getattr(value, 'instance', None)
+        if instance is not None:
+            option['attrs']['data-category'] = instance.category
+        return option
+```
+    (`value.instance` là object `Product` Django đã fetch sẵn khi lặp qua
+    `self.fields['product'].queryset` để dựng danh sách `<option>` — không cần, và không được,
+    query lại. `value` cho lựa chọn "---------" mặc định là chuỗi rỗng `''`, không có thuộc tính
+    `instance`, nên `getattr(..., None)` trả `None` và bị bỏ qua đúng như mong muốn — không cần
+    try/except nữa.)
+  - [ ] **Bước 10: Chạy lại test, xác nhận PASS** — đúng 1 query (fetch `queryset.all()` một lần
+    khi dựng choices), không phát sinh thêm query nào theo số `<option>`, và không còn crash dù có
+    bao nhiêu sản phẩm.
+- [ ] **Bước 11: Commit**
 ```bash
 git add purchasing/forms.py purchasing/templates/purchasing/pr_form.html purchasing/tests.py
 git commit -m "feat(pur): PurchaseRequestItemForm - non-catalog toggle, budget_category JS prefill"
@@ -2289,9 +2397,25 @@ path('pr-item/<int:pk>/cancel-open-qty/', views.pr_item_cancel_open_qty, name='p
   (Nút "Huỷ phần còn mở" ở bản tối thiểu này huỷ TOÀN BỘ `qty_open` với lý do cố định — nếu cần
   huỷ 1 phần + lý do tự nhập, thay bằng modal/form riêng có input `qty`/`reason` — ghi chú lại đây
   làm quyết định UX tối thiểu cho Task này, có thể mở rộng sau không phải blocker.)
-  Thêm context vào view `pr_detail` (mục `return render(...)`, thêm 2 key mới):
+  Thêm helper quyền ngay trong **Task 3.3** (không chờ Task 3.5, vì Task 3.3 phải test/commit PASS
+  độc lập trước khi sang Task kế tiếp), đặt cạnh `can_decide_pr`/`can_manage_pur_pr` trong
+  `purchasing/views.py`:
 ```python
-'can_map_non_catalog': request.user.can('update', 'pr') and request.user.role in (User.Role.PURCHASING, User.Role.MANAGER, User.Role.ADMIN),
+def can_map_non_catalog(user):
+    if not (user.can('update', 'pr') and user.can_view_menu('catalog')):
+        return False
+    if user.is_superuser or user.role == User.Role.ADMIN:
+        return True
+    if user.role == User.Role.MANAGER:
+        return user.is_department_manager(User.Department.PURCHASING)
+    return user.department == User.Department.PURCHASING
+```
+  Sau đó thêm context vào view `pr_detail` (mục `return render(...)`, thêm 2 key mới). **Sửa theo
+  review lần 3**: dùng chung `can_map_non_catalog()` thay vì lặp lại điều kiện
+  role/permission rời rạc — tránh 2 nơi cùng biểu diễn một rule mà lệch nhau (đúng lỗi bị review lần
+  3 phát hiện: bản v2 viết riêng ở đây, thiếu `can_view_menu('catalog')` và ràng buộc phòng ban):
+```python
+'can_map_non_catalog': can_map_non_catalog(request.user),
 'can_cancel_pr_item': can_cancel_pr_item_open_qty(request.user, obj),
 ```
 - [ ] **Bước 7: Test thủ công trên trình duyệt** — xác nhận 7 số hiển thị đúng, nút chỉ hiện đúng
@@ -2469,6 +2593,45 @@ class PrItemMapProductViewTest(TestCase):
         self.assertIsNotNone(self.item.product_id)
         self.assertEqual(self.item.product.product_code, 'NVL-0099')
         self.assertEqual(self.item.product.category, 'Vật tư')
+
+    def test_catalog_menu_revoked_forbids_map(self):
+        """Review lần 3, blocker #3: FSD mục 1 ghi map-non-catalog đi theo `pr` + `catalog` — thu
+        hồi riêng `can_view_menu_catalog` của PUR Staff (dù vẫn còn `update` trên `pr`) phải chặn
+        được, không chỉ kiểm role/`can('update','pr')`."""
+        from django.contrib.auth.models import Permission
+        perm = Permission.objects.get(content_type__app_label='accounts', codename='can_view_menu_catalog')
+        self.pur_staff.user_permissions.remove(perm)
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'existing_product': ''})
+        self.assertEqual(response.status_code, 403)
+
+    def test_manager_wrong_department_forbidden(self):
+        """Review lần 3, blocker #3: FSD mục 5 ghi 'chỉ PUR Staff/Manager thấy nút' — "Manager" ở
+        đây là PUR Manager (`is_department_manager('PURCHASING')`), không phải bất kỳ Manager nào.
+        Bản v2 cho MANAGER role đi qua bất kể phòng ban."""
+        qc_manager = User.objects.create_user(
+            username='qcm', password='qcm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.QC, is_manager=True)
+        self.client.login(username='qcm', password='qcm-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'existing_product': ''})
+        self.assertEqual(response.status_code, 403)
+
+    def test_duplicate_new_product_code_renders_form_error_without_partial_map(self):
+        Product.objects.create(product_code='NVL-0099', name='Đã tồn tại', uom='kg')
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]), {
+                'new_product_code': 'NVL-0099', 'new_product_name': 'Ống nhựa PVC',
+                'new_product_uom': 'cây', 'new_product_category': 'Vật tư',
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Mã sản phẩm đã tồn tại')
+        self.item.refresh_from_db()
+        self.assertIsNone(self.item.product_id)
 ```
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `NoReverseMatch`.
 - [ ] **Bước 3: Viết code tối thiểu để PASS** — thêm form (`purchasing/forms.py`, cuối file):
@@ -2502,15 +2665,26 @@ class PrItemMapProductForm(forms.Form):
         if not existing and not new_fields_filled:
             raise forms.ValidationError(
                 'Phải chọn 1 sản phẩm có sẵn, hoặc điền đủ Mã/Tên/Đơn vị tính/Danh mục để tạo mới.')
+        new_code = cleaned_data.get('new_product_code')
+        if not existing and new_code and Product.objects.filter(product_code=new_code).exists():
+            self.add_error('new_product_code', 'Mã sản phẩm đã tồn tại.')
         return cleaned_data
 ```
+  **Sửa theo review lần 3 (blocker #3)**: FSD mục 1 dòng "PUR Staff" ghi rõ actor là `role` có
+  `update` trên `pr` **và** `department=PURCHASING`; mục 1 dòng cuối ghi rõ "map-non-catalog đi
+  theo `pr` + `catalog`" (2 permission, không phải chỉ `pr`); mục 5 ghi "chỉ PUR Staff/Manager thấy
+  nút" — "Manager" ở đây là PUR Manager (`is_department_manager('PURCHASING')`), không phải bất kỳ
+  Manager nào. Code v2 chỉ kiểm `can('update','pr')` + `role in (PURCHASING, MANAGER, ADMIN)` — bỏ
+  sót cả điều kiện `can_view_menu('catalog')` lẫn ràng buộc phòng ban cho `MANAGER` (một Manager
+  phòng khác, ví dụ QC, vẫn map được). Dùng helper `can_map_non_catalog()` **đã tạo và test ở Task
+  3.3** (không định nghĩa lại tại đây), cùng convention actor-gate của dự án — xem CLAUDE.md mục
+  "can_view_menu(key) alone only gates 'view'...".
   Thêm view (`purchasing/views.py`, sau `pr_item_cancel_open_qty`):
 ```python
 @login_required
 def pr_item_map_product(request, pk):
     item = get_object_or_404(PurchaseRequestItem.objects.select_related('purchase_request'), pk=pk)
-    if not (request.user.can('update', 'pr') and request.user.role in (
-            User.Role.PURCHASING, User.Role.MANAGER, User.Role.ADMIN)):
+    if not can_map_non_catalog(request.user):
         raise PermissionDenied('Không có quyền map sản phẩm cho dòng yêu cầu mua hàng này.')
     if not item.is_non_catalog:
         messages.error(request, 'Dòng này đã có sản phẩm.')
@@ -2520,6 +2694,7 @@ def pr_item_map_product(request, pk):
     if request.method == 'POST' and form.is_valid():
         try:
             with transaction.atomic():
+                original_non_catalog_name = item.non_catalog_name
                 product = form.cleaned_data.get('existing_product')
                 if not product:
                     product = Product.objects.create(
@@ -2529,12 +2704,22 @@ def pr_item_map_product(request, pk):
                         category=form.cleaned_data['new_product_category'],
                     )
                 map_non_catalog_item(item, product, actor=request.user, ip_address=client_ip(request))
-            messages.success(request, f'Đã map dòng "{item.non_catalog_name}" sang sản phẩm "{product.product_code}".')
+            messages.success(
+                request,
+                f'Đã map dòng "{original_non_catalog_name}" sang sản phẩm "{product.product_code}".')
             return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
+        except IntegrityError:
+            # Chặn race: mã chưa tồn tại lúc form validate nhưng transaction khác vừa tạo trước
+            # INSERT của transaction này. Exception thoát khỏi atomic nên transaction đã rollback
+            # sạch trước khi render lại form.
+            form.add_error('new_product_code', 'Mã sản phẩm đã tồn tại.')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return render(request, 'purchasing/pr_item_map_product.html', {'item': item, 'form': form})
 ```
+  Import thêm `IntegrityError` từ `django.db`. Việc lưu `original_non_catalog_name` trước khi gọi
+  service là bắt buộc vì `map_non_catalog_item()` xoá các field non-catalog trong cùng transaction;
+  đọc `item.non_catalog_name` sau lời gọi sẽ chỉ còn chuỗi rỗng trong success message.
   Template `pr_item_map_product.html` (form đơn giản, mirror bố cục `pr_form.html` — 1 card,
   `{{ form.as_p }}` hoặc render tay từng field theo pattern Bootstrap đã dùng khắp dự án, nút Lưu +
   Huỷ quay lại `pr_detail`).
@@ -2694,9 +2879,60 @@ path('po/build-from-pr-lines/', views.po_build_from_pr_lines, name='po_build_fro
   `{% url 'purchasing:po_create' %}?from_pr={{ obj.pk }}` sang
   `{% url 'purchasing:po_build_from_pr_lines' %}?from_pr={{ obj.pk }}`.
 - [ ] **Bước 6: Chạy test, xác nhận PASS**
-- [ ] **Bước 7: Test thủ công trên trình duyệt** — từ `pr_detail`, bấm "Tạo PO từ yêu cầu này",
+- [ ] **Bước 7: Viết test đang FAIL (Review lần 3, mục phụ #1 — chặn supplier không ACTIVE ở
+  tầng view, đối xứng với Bước 7-11 của Task 2.5 ở tầng service)**
+```python
+    def test_post_inactive_supplier_rejected_no_po_created(self):
+        from django.contrib.messages import get_messages
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': self.supplier.pk,
+            'selected_items': [str(self.pr_item_a.pk)],
+            f'qty_{self.pr_item_a.pk}': '10',
+            f'unit_price_{self.product.pk}': '1200',
+        })
+        self.assertEqual(PurchaseOrder.objects.count(), 0)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]),
+            'Nhà cung cấp đã ngừng giao dịch hoặc bị tạm khóa, vui lòng chọn nhà cung cấp khác.')
+```
+- [ ] **Bước 8: Chạy test, xác nhận FAIL** — supplier `INACTIVE` vẫn tạo PO bình thường (view
+  chưa kiểm tra `status`, chỉ có `get_object_or_404` tra theo `pk`).
+- [ ] **Bước 9: Sửa code tối thiểu để PASS** — thay đoạn code ở Bước 3 (từ dòng `error = None` tới
+  hết vòng lặp `for item in eligible_items:`) bằng:
+```python
+        error = None
+        # `suppliers` ở GET (trên) đã lọc status=ACTIVE cho dropdown, nhưng đây là field POST thô
+        # (không phải ModelForm có queryset ràng buộc) nên vẫn phải tự re-validate ở POST — cùng
+        # convention "form lọc, code xử lý phải tự kiểm tra lại" (chặn cả tampering lẫn trường hợp
+        # supplier bị chuyển INACTIVE/SUSPENDED giữa lúc GET và lúc submit).
+        if supplier.status != Supplier.Status.ACTIVE:
+            error = 'Nhà cung cấp đã ngừng giao dịch hoặc bị tạm khóa, vui lòng chọn nhà cung cấp khác.'
+        else:
+            for item in eligible_items:
+                if str(item.pk) not in selected_ids:
+                    continue
+                try:
+                    qty = int(request.POST.get(f'qty_{item.pk}', ''))
+                except ValueError:
+                    error = f'Số lượng không hợp lệ cho dòng "{item}".'
+                    break
+                allocation_requests.append((item, qty))
+                if item.product_id not in unit_price_by_product:
+                    try:
+                        unit_price_by_product[item.product_id] = Decimal(
+                            request.POST.get(f'unit_price_{item.product_id}', ''))
+                    except (InvalidOperation, TypeError):
+                        error = f'Đơn giá không hợp lệ cho sản phẩm "{item.product.product_code}".'
+                        break
+```
+- [ ] **Bước 10: Chạy lại toàn bộ test của class, xác nhận PASS**
+- [ ] **Bước 11: Test thủ công trên trình duyệt** — từ `pr_detail`, bấm "Tạo PO từ yêu cầu này",
   xác nhận dòng của PR đó được pre-check, chọn thêm dòng từ PR khác cùng lúc, submit tạo PO đúng.
-- [ ] **Bước 8: Commit**
+- [ ] **Bước 12: Commit**
 ```bash
 git add purchasing/views.py purchasing/urls.py purchasing/templates/purchasing/po_build_from_pr_lines.html purchasing/templates/purchasing/pr_detail.html purchasing/tests.py
 git commit -m "feat(pur): add po_build_from_pr_lines view, replaces po_create?from_pr= (PUR-PR-05)"
@@ -2767,14 +3003,24 @@ class PoUpdateFromPrGuardTest(TestCase):
         self.assertEqual(PurchaseOrderItem.objects.filter(purchase_order=self.po).count(), 1)
 
     def test_TC_PUR_PR_05_023_duplicate_pk_two_forms_rejected(self):
+        from django.contrib.messages import get_messages
         data = self._post_data()
         data['items-TOTAL_FORMS'] = '2'
+        # Review lần 3, blocker #4: phải nâng INITIAL_FORMS lên '2' — nếu để nguyên '1' (giá trị kế
+        # thừa từ _post_data()), Django coi form index 1 là form "extra" (i >= initial_form_count()),
+        # nên KHÔNG gán instance theo pk submit (BaseModelFormSet._construct_form chỉ tra pk khi
+        # i < initial_form_count()); form 1 sẽ có instance.pk=None và test PASS nhầm qua nhánh lỗi
+        # "dòng PO-item lạ" thay vì nhánh duplicate-pk (`submitted_pks`) thật sự cần kiểm ở đây.
+        data['items-INITIAL_FORMS'] = '2'
         data['items-1-id'] = str(self.po_item.pk)
         data['items-1-product'] = str(self.product.pk)
         data['items-1-qty_ordered'] = '10'
         data['items-1-unit_price'] = '200'
         response = self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), data)
         self.assertEqual(response.status_code, 302)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]), 'Một dòng PO không được xuất hiện nhiều lần trong formset.')
         self.po_item.refresh_from_db()
         self.assertEqual(self.po_item.unit_price, Decimal('1000'))  # giữ nguyên, không phải 1500 hay 200
 
@@ -2925,9 +3171,16 @@ def po_update(request, pk):
   test riêng cho lỗi đã sửa ở Bước 3 (pk trùng giữa 1 form giữ lại và 1 form đánh dấu xoá):
 ```python
     def test_TC_PUR_PR_05_017_duplicate_pk_across_kept_and_deleted_form_rejected(self):
+        from django.contrib.messages import get_messages
         payload = {
             'po_no': self.po.po_no, 'supplier': self.supplier.pk,
-            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '1', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            # Review lần 3, blocker #4: INITIAL_FORMS phải là '2', không phải '1' — cùng lý do đã
+            # sửa ở test_TC_PUR_PR_05_023 phía trên. Để '1' thì form index 1 (form đánh dấu DELETE)
+            # là form "extra": Django không gán instance theo pk submit nên instance.pk=None, và
+            # request rơi vào nhánh lỗi "dòng PO-item lạ" ở PASS ĐẦU TIÊN — response vẫn là 302 và
+            # po_item vẫn giữ nguyên, nên 2 assert bên dưới PASS "nhầm", không thực sự chứng minh
+            # guard duplicate-pk-giữa-form-giữ-và-form-xoá (lý do bug được sửa ở Bước 3) hoạt động.
+            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '2', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
             'items-0-id': str(self.po_item.pk), 'items-0-product': str(self.product.pk),
             'items-0-qty_ordered': str(self.po_item.qty_ordered), 'items-0-unit_price': '1000',
             # Form thứ 2 trỏ ĐÚNG cùng pk với form 0, nhưng đánh dấu DELETE — trước khi sửa, guard
@@ -2938,6 +3191,9 @@ def po_update(request, pk):
         }
         response = self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), payload)
         self.assertEqual(response.status_code, 302)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]), 'Một dòng PO không được xuất hiện nhiều lần trong formset.')
         self.po_item.refresh_from_db()
         self.assertTrue(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())  # KHÔNG bị xoá
         self.assertEqual(self.po_item.unit_price, Decimal('1000'))  # KHÔNG bị "sửa" trên dòng đã lẽ ra bị xoá
@@ -2962,7 +3218,7 @@ git commit -m "feat(pur): rewrite po_update for FROM_PR - disabled fields, dupli
 - Sửa: `purchasing/forms.py` (form mới `ExchangeRateForm`)
 - Sửa: `purchasing/views.py` (4 view mới)
 - Sửa: `purchasing/urls.py`
-- Sửa: `purchasing/templates/base.html` (hoặc file sidebar riêng — thêm mục "Tỷ giá ngoại tệ")
+- Sửa: `accounts/templates/base.html` (hoặc file sidebar riêng — thêm mục "Tỷ giá ngoại tệ")
 - Tạo: `purchasing/templates/purchasing/exchange_rate_list.html`,
   `exchange_rate_form.html`, `exchange_rate_confirm_delete.html`
 - Test: `purchasing/tests.py` (class mới `ExchangeRateViewTest`) — test cho `codenames_for_role`
@@ -3038,7 +3294,8 @@ class ExchangeRateViewTest(TestCase):
         self.assertEqual(ExchangeRate.objects.count(), 0)
 ```
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `NoReverseMatch`.
-- [ ] **Bước 3: Viết code tối thiểu để PASS.** Sửa `accounts/permissions.py`:
+- [ ] **Bước 3: Sửa permission/form/view — viết code tối thiểu để PASS.** Sửa
+  `accounts/permissions.py`:
 ```python
 MENU_ITEMS = {
     'warehouse': 'Kho hàng',
@@ -3168,20 +3425,12 @@ def exchange_rate_delete(request, pk):
     return render(request, 'purchasing/exchange_rate_confirm_delete.html', {'obj': obj})
 ```
   Import thêm ở đầu `purchasing/views.py`: `ExchangeRate`, `ExchangeRateForm`.
-- [ ] **Bước 4**: Thêm route (`purchasing/urls.py`):
-```python
-path('exchange-rate/', views.exchange_rate_list, name='exchange_rate_list'),
-path('exchange-rate/create/', views.exchange_rate_create, name='exchange_rate_create'),
-path('exchange-rate/<int:pk>/update/', views.exchange_rate_update, name='exchange_rate_update'),
-path('exchange-rate/<int:pk>/delete/', views.exchange_rate_delete, name='exchange_rate_delete'),
-```
-  Tạo 3 template tối thiểu (mirror bố cục các trang list/form/confirm-delete đã có trong
-  `purchasing/templates/purchasing/` — vd `po_price_comparison.html` cho list, `pr_form.html` cho
-  form đơn giản).
-- [ ] **Bước 5: Chạy test, xác nhận PASS**
-- [ ] **Bước 6: Migration `accounts` — tạo permission MỚI + backfill cho Admin hiện có**
-  (review phát hiện: `manage.py migrate` một mình không đủ, và `manage.py sync_roles` KHÔNG cấp
-  quyền hiệu lực cho user hiện có — 2 lý do độc lập, cả hai đều phải xử lý ở đây):
+- [ ] **Bước 4: Tạo migration `accounts` — permission MỚI + backfill cho Admin hiện có** (viết
+  file migration ở bước này; KHÔNG chạy `manage.py migrate` ngay — dời sang Bước 6, sau khi
+  route/template/context đã có ở Bước 5, để đúng thứ tự TDD: test chỉ được chạy xác nhận PASS ở
+  Bước 7, sau khi migration đã thực sự áp dụng). Lý do bắt buộc tách migration riêng — `manage.py
+  migrate` một mình không đủ, và `manage.py sync_roles` KHÔNG cấp quyền hiệu lực cho user hiện có —
+  2 lý do độc lập, cả hai đều phải xử lý ở đây:
 
   **Lý do #1 — `sync_roles` không đủ**: `sync_roles()` (`accounts/rbac.py`) chỉ set lại
   `Group.permissions` — "mẫu tham chiếu", không phải quyền hiệu lực. `DirectPermissionsBackend`
@@ -3196,13 +3445,13 @@ path('exchange-rate/<int:pk>/delete/', views.exchange_rate_delete, name='exchang
   cuối toàn bộ lệnh `migrate`** (sau khi MỌI migration, kể cả `RunPython` trong chính migration vừa
   thêm field, đã chạy xong) — nên 1 `RunPython` backfill nằm cùng migration với `AlterModelOptions`
   thêm permission mới KHÔNG thể `Permission.objects.get(codename='can_view_menu_exchange_rate')`
-  ngay được (permission đó chưa tồn tại tại thời điểm đó). Cách sửa (mirror đúng workaround Django
-  tự dùng ở `django/contrib/auth/migrations/0011_update_proxy_permissions.py`): gọi thẳng
+  ngay được (permission đó chưa tồn tại tại thời điểm đó). Cách sửa (cách xử lý chuẩn khi 1
+  migration cần dùng ngay permission mới do chính nó tạo ra): gọi thẳng
   `django.contrib.auth.management.create_permissions()` ngay trong `RunPython` đầu tiên, set tạm
   `app_config.models_module = app_config.models_module or True` (bản `apps.get_app_config()` lấy từ
   registry lịch sử trong migration không có `models_module` thật nên `create_permissions()` mặc
-  định bỏ qua app đó — set tạm về giá trị truthy bất kỳ để nó không bị bỏ qua), rồi trả lại `None`
-  ngay sau đó.
+  định bỏ qua app đó — set tạm về giá trị truthy bất kỳ để nó không bị bỏ qua), rồi khôi phục lại
+  giá trị GỐC (không phải gán cứng `None`) ngay sau đó trong `finally`.
 
   Chạy `manage.py makemigrations accounts` trước (Django tự sinh `AlterModelOptions` cho
   `Meta.permissions` mới), đổi tên file thành `0017_exchange_rate_menu_permission.py`, rồi CHÈN
@@ -3214,17 +3463,26 @@ from django.db import migrations
 def create_permissions_now(apps, schema_editor):
     from django.contrib.auth.management import create_permissions
     app_config = apps.get_app_config('accounts')
-    app_config.models_module = app_config.models_module or True
-    create_permissions(app_config, apps=apps, verbosity=0)
-    app_config.models_module = None
+    # Lưu/khôi phục trong finally — KHÔNG gán cứng None ở cuối (bug review phát hiện): nếu hàm này
+    # được gọi lại trực tiếp từ test (import_module, xem cuối Bước 4) khi models_module gốc đã có
+    # giá trị thật (khác None), gán cứng None sẽ xoá mất trạng thái registry thật của app
+    # 'accounts' sau khi chạy xong.
+    original_models_module = app_config.models_module
+    try:
+        app_config.models_module = original_models_module or True
+        create_permissions(
+            app_config, apps=apps, using=schema_editor.connection.alias, verbosity=0)
+    finally:
+        app_config.models_module = original_models_module
 
 
 def grant_exchange_rate_menu_to_existing_admins(apps, schema_editor):
     User = apps.get_model('accounts', 'User')
     Permission = apps.get_model('auth', 'Permission')
-    perm = Permission.objects.get(
+    db_alias = schema_editor.connection.alias
+    perm = Permission.objects.using(db_alias).get(
         content_type__app_label='accounts', codename='can_view_menu_exchange_rate')
-    for user in User.objects.filter(role='ADMIN'):
+    for user in User.objects.using(db_alias).filter(role='ADMIN'):
         user.user_permissions.add(perm)  # .add() — KHÔNG .set(), giữ nguyên phân quyền chi tiết khác
 
 
@@ -3243,30 +3501,54 @@ class Migration(migrations.Migration):
         migrations.RunPython(grant_exchange_rate_menu_to_existing_admins, noop_reverse),
     ]
 ```
-  Chạy `manage.py migrate`, xác nhận sạch. Viết test riêng cho migration này trong
-  `accounts`-side hoặc tái dùng `ProcurementAllocationModelTest`-style: tạo 1 Admin TRƯỚC khi gọi
+  Viết test riêng cho migration này trong `accounts`-side hoặc tái dùng
+  `ProcurementAllocationModelTest`-style: tạo 1 Admin TRƯỚC khi gọi
   `create_permissions_now`/`grant_exchange_rate_menu_to_existing_admins` (gọi trực tiếp 2 hàm qua
   `import_module`, cùng kỹ thuật `importlib.import_module` đã dùng ở Task 1.2/migration `0018`),
   xác nhận `admin_user.has_perm('accounts.can_view_menu_exchange_rate')` trả `True` sau khi chạy —
-  đây là bằng chứng thực sự bám đúng bug, không chỉ tin vào code đọc mắt thường.
+  đây là bằng chứng thực sự bám đúng bug, không chỉ tin vào code đọc mắt thường. **Không truyền
+  `schema_editor=None` như migration `0018`**, vì 2 hàm này cần `schema_editor.connection.alias`;
+  test truyền một stub chỉ-đọc kết nối (không mở schema editor thật trong `TestCase`):
+```python
+from types import SimpleNamespace
+from django.db import connection
 
-  (`manage.py sync_roles` vẫn nên chạy sau đó — không sai, chỉ là không ĐỦ — để Group "mẫu tham
-  chiếu" cũng khớp ma trận mới cho mục đích tham chiếu/test.)
-- [ ] **Bước 7**: Thêm flag context processor (`accounts/context_processors.py`, hàm
-  `sidebar_permissions`, thêm 1 dòng vào dict trả về — theo đúng pattern đã có cho 7 `MENU_ITEMS`
-  còn lại, KHÔNG gọi method có tham số trực tiếp trong template vì Django template không hỗ trợ
-  truyền literal argument khi resolve biến — đây chính là lỗi cú pháp review phát hiện ở bản v1):
+schema_editor_stub = SimpleNamespace(connection=connection)
+migration_module.create_permissions_now(django_apps, schema_editor_stub)
+migration_module.grant_exchange_rate_menu_to_existing_admins(django_apps, schema_editor_stub)
+```
+- [ ] **Bước 5: Thêm route/template/context.** Route (`purchasing/urls.py`):
+```python
+path('exchange-rate/', views.exchange_rate_list, name='exchange_rate_list'),
+path('exchange-rate/create/', views.exchange_rate_create, name='exchange_rate_create'),
+path('exchange-rate/<int:pk>/update/', views.exchange_rate_update, name='exchange_rate_update'),
+path('exchange-rate/<int:pk>/delete/', views.exchange_rate_delete, name='exchange_rate_delete'),
+```
+  Tạo 3 template tối thiểu (mirror bố cục các trang list/form/confirm-delete đã có trong
+  `purchasing/templates/purchasing/` — vd `po_price_comparison.html` cho list, `pr_form.html` cho
+  form đơn giản).
+
+  Thêm flag context processor (`accounts/context_processors.py`, hàm `sidebar_permissions`, thêm 1
+  dòng vào dict trả về — theo đúng pattern đã có cho 7 `MENU_ITEMS` còn lại, KHÔNG gọi method có
+  tham số trực tiếp trong template vì Django template không hỗ trợ truyền literal argument khi
+  resolve biến — đây chính là lỗi cú pháp review phát hiện ở bản v1):
 ```python
         'can_view_menu_exchange_rate': user.can_view_menu('exchange_rate'),
 ```
-  Thêm mục "Tỷ giá ngoại tệ" vào sidebar (`templates/base.html` hoặc file sidebar riêng — xác định
-  đúng vị trí bằng cách grep `can_view_menu_` trong template hiện có), gate bằng
+  Thêm mục "Tỷ giá ngoại tệ" vào sidebar (`accounts/templates/base.html` hoặc file sidebar riêng —
+  xác định đúng vị trí bằng cách grep `can_view_menu_` trong template hiện có), gate bằng
   `{% if can_view_menu_exchange_rate %}` (biến context có sẵn, không phải gọi method) — theo đúng
   pattern §6.1 skill `wms-conventions` (không cần role oversight bổ sung vì `exchange_rate` không có
   ngoại lệ ADMIN/superuser bypass nào khác ngoài chính permission này).
+- [ ] **Bước 6: Chạy `manage.py migrate`, xác nhận sạch** — áp dụng migration `0017` viết ở
+  Bước 4. Bắt buộc chạy TRƯỚC Bước 7: nếu chưa chạy, permission `can_view_menu_exchange_rate` chưa
+  tồn tại/chưa được backfill cho Admin hiện có, khiến test Admin hợp lệ ở Bước 7 nhận nhầm 403.
+  (`manage.py sync_roles` vẫn nên chạy sau đó — không sai, chỉ là không ĐỦ — để Group "mẫu tham
+  chiếu" cũng khớp ma trận mới cho mục đích tham chiếu/test.)
+- [ ] **Bước 7: Chạy test, xác nhận PASS**
 - [ ] **Bước 8: Commit**
 ```bash
-git add accounts/permissions.py accounts/context_processors.py accounts/migrations/0017_exchange_rate_menu_permission.py purchasing/forms.py purchasing/views.py purchasing/urls.py purchasing/templates/base.html purchasing/templates/purchasing/exchange_rate_*.html purchasing/tests.py
+git add accounts/permissions.py accounts/context_processors.py accounts/migrations/0017_exchange_rate_menu_permission.py accounts/templates/base.html purchasing/forms.py purchasing/views.py purchasing/urls.py purchasing/templates/purchasing/exchange_rate_*.html purchasing/tests.py
 git commit -m "feat(pur): ExchangeRate CRUD (Admin-only), exchange_rate menu item restricted by default"
 ```
 
@@ -4125,8 +4407,8 @@ sửa hết trong v2:
    decorator; `sync_roles()` không cấp quyền hiệu lực cho user hiện có (`DirectPermissionsBackend`
    không cộng dồn quyền từ Group) VÀ permission mới không tồn tại kịp lúc `RunPython` cần nó (thời
    điểm `post_migrate` tạo Permission) — sửa bằng migration `accounts/migrations/
-   0017_exchange_rate_menu_permission.py` gọi `create_permissions()` thủ công (mirror
-   `django/contrib/auth/migrations/0011_update_proxy_permissions.py`) rồi `.add()` permission cho
+   0017_exchange_rate_menu_permission.py` gọi `create_permissions()` thủ công (cách xử lý khi
+   migration phải dùng permission mới trước thời điểm `post_migrate`) rồi `.add()` permission cho
    Admin hiện có; thêm test Admin bị thu hồi quyền phải nhận 403 (Task 3.8).
 3. **Thiếu chặn `currency=VND` trên `ExchangeRate`** — chỉ có validate ngày tương lai. Sửa: thêm
    `CheckConstraint('exchange_rate_currency_not_vnd')` (Task 1.1) + `clean_currency()` ở form (Task
@@ -4163,6 +4445,22 @@ purchasing` sang `manage.py test` (toàn bộ project) vì Stage 2 sửa cả `a
 Không có thay đổi nào ở review lần 1 đụng tới `docs/pur/02_stage2_fsd.md` (đã Approved v6) — toàn bộ
 là quyết định cụ thể hoá ở tầng implementation, đúng như user đã chốt khi giao review lần này.
 
+## v2 → v3 (review chốt, trước khi bắt đầu TDD)
+
+Đã xử lý đủ 9 mục của review lần 2: sửa thứ tự TDD/migration `ExchangeRate`; khôi phục an toàn
+`app_config.models_module` và dùng đúng database alias; đồng bộ quyền map non-catalog theo `pr +
+catalog`/đúng phòng ban; làm test duplicate-PK thực sự đi qua nhánh duplicate; chặn supplier không
+ACTIVE và `unit_price` âm; bỏ query/crash trong `ProductSelectWithCategory`; sửa đúng đường dẫn base
+template; và mô tả đúng `UniqueConstraint`/`CheckConstraint`.
+
+Review chốt v3 bổ sung ba hiệu chỉnh cục bộ, không đổi phạm vi FSD: đưa
+`can_map_non_catalog()` về Task 3.3 để từng Task vẫn PASS độc lập khi triển khai tuần tự; ghi rõ stub
+`schema_editor` cho test trực tiếp migration permission; và chặn mã Product trùng/race đồng thời giữ
+lại tên non-catalog trước khi service xoá snapshot nhập tay để success message không bị rỗng.
+
+**Kết quả review chốt: GO — Approved v3 bởi luckyhoang1988 ngày 03/08/2026.** Không thay đổi
+`docs/pur/02_stage2_fsd.md` (Approved v6); từ đây được phép bắt đầu Phase 1/Task 1.1 theo TDD.
+
 ---
 
 # Bàn giao
@@ -4188,5 +4486,3 @@ Trước khi thực thi trên nhánh chính: cân nhắc `cach-ly-khong-gian-lam
 nếu muốn tách khỏi `docs/pur-stage2-fsd` hiện tại — nhánh này đã chứa 2 commit FSD (approve v6 +
 sửa quyết định #18), có thể tiếp tục dùng cho toàn bộ Stage 2 hoặc tách nhánh code riêng tuỳ ý
 người dùng.
-
-
