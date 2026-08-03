@@ -137,6 +137,13 @@
           </a>
         </li>
         {% endif %}
+        {% if can_view_menu_exchange_rate %}
+        <li class="nav-item">
+          <a class="nav-link {% if request.resolver_match.url_name == 'exchange_rate_list' %}active{% endif %}" href="{% url 'purchasing:exchange_rate_list' %}">
+            <i class="bi bi-currency-exchange"></i> Tỷ giá ngoại tệ
+          </a>
+        </li>
+        {% endif %}
         {% endif %}
       </ul>
     </nav>

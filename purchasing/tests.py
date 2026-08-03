@@ -3718,3 +3718,36 @@ class ExchangeRateViewTest(TestCase):
             'currency': 'VND', 'rate_date': timezone.localdate().isoformat(), 'rate_to_vnd': '1'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ExchangeRate.objects.count(), 0)
+
+
+class ExchangeRateMenuPermissionMigrationTest(TestCase):
+    """Task 3.8, Bước 4 - migration 0017 (accounts): tạo Admin TRƯỚC khi gọi
+    create_permissions_now/grant_exchange_rate_menu_to_existing_admins (import
+    thẳng qua importlib, không chạy lại toàn bộ chuỗi migration) - xác nhận
+    Admin đã tồn tại từ trước cũng có quyền hiệu lực sau khi 2 hàm này chạy,
+    không chỉ Admin tạo mới sau migration."""
+
+    def test_existing_admin_gets_effective_permission_after_migration_functions_run(self):
+        from types import SimpleNamespace
+        from django.db import connection
+
+        admin_user = User.objects.create_user(
+            username='admin-premigration', password='admin-pass-123', role=User.Role.ADMIN)
+        # User.save() (accounts/rbac.sync_user_permissions, chạy khi TẠO MỚI)
+        # đã cấp quyền này trong luồng bình thường của app đang chạy - xoá đi để
+        # mô phỏng đúng tình huống migration thật nhắm tới: 1 Admin có TỪ TRƯỚC
+        # migration 0017, nghĩa là chưa từng được sync_user_permissions() cấp
+        # permission mới này.
+        from django.contrib.auth.models import Permission
+        Permission.objects.filter(
+            content_type__app_label='accounts', codename='can_view_menu_exchange_rate',
+        ).delete()
+        admin_user.user_permissions.clear()
+
+        migration_module = import_module('accounts.migrations.0017_exchange_rate_menu_permission')
+        schema_editor_stub = SimpleNamespace(connection=connection)
+        migration_module.create_permissions_now(django_apps, schema_editor_stub)
+        migration_module.grant_exchange_rate_menu_to_existing_admins(django_apps, schema_editor_stub)
+
+        admin_user = User.objects.get(pk=admin_user.pk)
+        self.assertTrue(admin_user.has_perm('accounts.can_view_menu_exchange_rate'))

@@ -26,6 +26,7 @@ from catalog.models import Product
 from partners.models import Supplier
 
 from .forms import (
+    ExchangeRateForm,
     PrItemMapProductForm,
     PurchaseOrderCloseForm,
     PurchaseOrderForm,
@@ -36,7 +37,7 @@ from .forms import (
     PurchaseRequestItemFormSet,
     PurchaseRequestRejectForm,
 )
-from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
+from .models import ExchangeRate, PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
     build_po_from_allocations,
@@ -1132,3 +1133,70 @@ def pr_forward(request, pk):
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:pr_detail', pk=obj.pk)
+
+
+def _exchange_rate_admin_required(view):
+    """Chỉ Admin (role ``ADMIN`` hoặc superuser) VÀ còn quyền
+    ``can_view_menu('exchange_rate')`` — kiểm CẢ 2, không chỉ role/superuser,
+    vì 1 Admin bị thu hồi riêng quyền này qua trang "Phân quyền chi tiết" vẫn
+    phải bị chặn (cùng lỗi dạng ``can_transfer_inventory`` đã gặp ở module
+    inventory, xem CLAUDE.md mục "can_view_menu(key) alone only gates 'view'...").
+    """
+    @wraps(view)
+    @login_required
+    def wrapper(request, *args, **kwargs):
+        is_admin = request.user.role == User.Role.ADMIN or request.user.is_superuser
+        if not (is_admin and request.user.can_view_menu('exchange_rate')):
+            raise PermissionDenied('Chỉ Admin mới quản lý được tỷ giá ngoại tệ.')
+        return view(request, *args, **kwargs)
+    return wrapper
+
+
+@_exchange_rate_admin_required
+def exchange_rate_list(request):
+    rates = ExchangeRate.objects.select_related('created_by').all()
+    page_obj, page_size = paginate_queryset(request, rates)
+    return render(request, 'purchasing/exchange_rate_list.html', {
+        'rates': page_obj, 'page_obj': page_obj, 'page_size': page_size,
+    })
+
+
+@_exchange_rate_admin_required
+def exchange_rate_create(request):
+    form = ExchangeRateForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save(commit=False)
+        obj.created_by = request.user
+        obj.save()
+        log_action(
+            request.user, AuditLog.Action.CREATE, target=obj, description=f'Tạo tỷ giá {obj}.',
+            ip_address=client_ip(request))
+        messages.success(request, f'Đã tạo tỷ giá "{obj}".')
+        return redirect('purchasing:exchange_rate_list')
+    return render(request, 'purchasing/exchange_rate_form.html', {'form': form, 'mode': 'create'})
+
+
+@_exchange_rate_admin_required
+def exchange_rate_update(request, pk):
+    obj = get_object_or_404(ExchangeRate, pk=pk)
+    form = ExchangeRateForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save()
+        log_action(
+            request.user, AuditLog.Action.UPDATE, target=obj, description=f'Cập nhật tỷ giá {obj}.',
+            ip_address=client_ip(request))
+        messages.success(request, f'Đã cập nhật tỷ giá "{obj}".')
+        return redirect('purchasing:exchange_rate_list')
+    return render(request, 'purchasing/exchange_rate_form.html', {'form': form, 'mode': 'update', 'obj': obj})
+
+
+@_exchange_rate_admin_required
+def exchange_rate_delete(request, pk):
+    obj = get_object_or_404(ExchangeRate, pk=pk)
+    if request.method == 'POST':
+        description = f'Xoá tỷ giá {obj}.'
+        log_action(request.user, AuditLog.Action.DELETE, target=obj, description=description, ip_address=client_ip(request))
+        obj.delete()
+        messages.success(request, 'Đã xoá tỷ giá.')
+        return redirect('purchasing:exchange_rate_list')
+    return render(request, 'purchasing/exchange_rate_confirm_delete.html', {'obj': obj})

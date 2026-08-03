@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block title %}Tỷ giá ngoại tệ — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <span class="current">Tỷ giá ngoại tệ</span>
+{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h1 class="panel-title">Tỷ giá ngoại tệ</h1>
+    <div class="page-toolbar">
+      <a href="{% url 'purchasing:exchange_rate_create' %}" class="btn btn-primary btn-sm">
+        <i class="bi bi-plus-lg"></i> Thêm tỷ giá
+      </a>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Loại tiền</th>
+            <th>Ngày áp dụng</th>
+            <th>Tỷ giá quy đổi VND</th>
+            <th>Người nhập</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rate in rates %}
+          <tr>
+            <td>{{ rate.get_currency_display }}</td>
+            <td>{{ rate.rate_date|date:'d/m/Y' }}</td>
+            <td>{{ rate.rate_to_vnd }}</td>
+            <td>{{ rate.created_by.get_full_name|default:rate.created_by.username }}</td>
+            <td class="text-end">
+              <a href="{% url 'purchasing:exchange_rate_update' rate.pk %}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i></a>
+              <a href="{% url 'purchasing:exchange_rate_delete' rate.pk %}" class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-muted">Chưa có tỷ giá nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
+</div>
+{% endblock %}

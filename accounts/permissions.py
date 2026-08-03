@@ -45,7 +45,13 @@ MENU_ITEMS = {
     'handoff': 'Phiếu chờ nhận hàng',
     'user_mgmt': 'Quản lý user',
     'audit_log': 'Nhật ký hành động',
+    'exchange_rate': 'Tỷ giá ngoại tệ',
 }
+
+# Ngoại lệ: menu KHÔNG mặc định cấp cho mọi role (khác toàn bộ MENU_ITEMS còn
+# lại) — dữ liệu tài chính nhạy cảm dùng chung toàn hệ thống, chỉ Admin thấy
+# mặc định (mục 1 FSD Stage 2, PUR Expansion).
+DEFAULT_RESTRICTED_MENU_ITEMS = {'exchange_rate'}
 
 # Hành động (FR-USER-04: Create / Read / Update / Delete / Approve).
 # 'override' bổ sung riêng cho QC approval override (mục 2b/2c) — Supervisor
@@ -154,14 +160,19 @@ def all_permission_codenames():
 
 
 def codenames_for_role(role):
-    """Tập codename mà một role được cấp: CRUD theo ``ROLE_PERMISSIONS`` + TOÀN BỘ
-    quyền truy cập menu (``MENU_ITEMS`` mặc định cấp cho mọi role như nhau, xem
-    docstring ``MENU_ITEMS`` ở trên) — nhờ vậy user mới/đổi role/bấm "Đặt lại theo
-    vai trò" đều tự động có đủ quyền menu mà không cần logic riêng."""
+    """Tập codename mà một role được cấp: CRUD theo ``ROLE_PERMISSIONS`` + quyền
+    truy cập menu (``MENU_ITEMS`` mặc định cấp cho mọi role như nhau, xem
+    docstring ``MENU_ITEMS`` ở trên — trừ ``DEFAULT_RESTRICTED_MENU_ITEMS``, chỉ
+    cấp riêng cho ``ADMIN``) — nhờ vậy user mới/đổi role/bấm "Đặt lại theo vai
+    trò" đều tự động có đủ quyền menu mà không cần logic riêng."""
     module_actions = ROLE_PERMISSIONS.get(role, {})
     crud = [
         f'can_{action}_{module}'
         for module, actions in module_actions.items()
         for action in actions
     ]
-    return crud + all_menu_codenames()
+    default_menu = [
+        f'can_view_menu_{key}' for key in MENU_ITEMS if key not in DEFAULT_RESTRICTED_MENU_ITEMS
+    ]
+    restricted_menu = ['can_view_menu_exchange_rate'] if role == 'ADMIN' else []
+    return crud + default_menu + restricted_menu

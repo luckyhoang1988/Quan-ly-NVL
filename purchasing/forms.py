@@ -3,13 +3,21 @@ from django import forms
 from django.db.models import Q
 from django.forms import inlineformset_factory
 from django.forms.models import BaseInlineFormSet
+from django.utils import timezone
 
 from accounts.models import User
 from catalog.models import Product
 from partners.models import Supplier
 from warehouse.models import Warehouse
 
-from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
+from .models import (
+    Currency,
+    ExchangeRate,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PurchaseRequest,
+    PurchaseRequestItem,
+)
 
 
 def _bootstrapify(fields):
@@ -236,3 +244,26 @@ class PurchaseOrderCloseForm(forms.Form):
         if self.po and self.po.status != PurchaseOrder.Status.RECEIVED and not close_reason:
             self.add_error('close_reason', 'Bắt buộc nhập lý do khi đóng PO trước khi NCC giao đủ hàng.')
         return cleaned_data
+
+
+class ExchangeRateForm(forms.ModelForm):
+    class Meta:
+        model = ExchangeRate
+        fields = ['currency', 'rate_date', 'rate_to_vnd']
+        widgets = {'rate_date': forms.DateInput(attrs={'type': 'date'})}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+    def clean_currency(self):
+        currency = self.cleaned_data['currency']
+        if currency == Currency.VND:
+            raise forms.ValidationError('Không nhập tỷ giá cho VND — VND là đơn vị gốc quy đổi.')
+        return currency
+
+    def clean_rate_date(self):
+        rate_date = self.cleaned_data['rate_date']
+        if rate_date > timezone.localdate():
+            raise forms.ValidationError('Ngày áp dụng không được là ngày trong tương lai.')
+        return rate_date

@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Xoá tỷ giá — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:exchange_rate_list' %}">Tỷ giá ngoại tệ</a> <span class="mx-1">/</span>
+  <span class="current">Xoá</span>
+{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Xoá tỷ giá</h1>
+      </div>
+      <div class="card-body">
+        <p>Bạn có chắc muốn xoá tỷ giá <strong>{{ obj }}</strong>?</p>
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger"><i class="bi bi-trash"></i> Xoá</button>
+          <a href="{% url 'purchasing:exchange_rate_list' %}" class="btn btn-link">Huỷ</a>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

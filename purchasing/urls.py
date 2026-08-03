@@ -28,4 +28,8 @@ urlpatterns = [
     path('<int:pk>/send/', views.po_send, name='po_send'),
     path('<int:pk>/retry-email/', views.po_retry_email, name='po_retry_email'),
     path('<int:pk>/close/', views.po_close, name='po_close'),
+    path('exchange-rate/', views.exchange_rate_list, name='exchange_rate_list'),
+    path('exchange-rate/create/', views.exchange_rate_create, name='exchange_rate_create'),
+    path('exchange-rate/<int:pk>/update/', views.exchange_rate_update, name='exchange_rate_update'),
+    path('exchange-rate/<int:pk>/delete/', views.exchange_rate_delete, name='exchange_rate_delete'),
 ]

@@ -57,4 +57,5 @@ def sidebar_permissions(request):
         'can_view_menu_handoff': user.can_view_menu('handoff'),
         'can_view_menu_user_mgmt': user.can_view_menu('user_mgmt'),
         'can_view_menu_audit_log': user.can_view_menu('audit_log') and can_view_audit_log(user),
+        'can_view_menu_exchange_rate': user.can_view_menu('exchange_rate'),
     }
