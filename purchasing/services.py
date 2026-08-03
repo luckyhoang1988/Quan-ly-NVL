@@ -808,16 +808,29 @@ def forward_purchase_request(pr, staff, actor, ip_address=None):
     return pr
 
 
+MAPPABLE_PR_STATUSES = {
+    PurchaseRequest.Status.PENDING_DEPT,
+    PurchaseRequest.Status.PENDING_PUR,
+    PurchaseRequest.Status.APPROVED,
+}
+
+
 @transaction.atomic
 def map_non_catalog_item(pr_item, product, actor, ip_address=None):
-    """PUR-PR-06 (quyết định #9): gán Product cho 1 dòng PR non-catalog. Chỉ gọi được sau khi PR
-    đã rời DRAFT (mục 4 điểm 10) — map sớm lúc còn DRAFT chỉ tạo Product rác nếu Requester đổi ý.
+    """PUR-PR-06 (quyết định #9): gán Product cho 1 dòng PR non-catalog. Chỉ gọi được khi PR đang ở
+    một trong `MAPPABLE_PR_STATUSES` (mục 4 điểm 10) — dùng allow-list thay vì chặn mỗi `DRAFT`,
+    vì `REJECTED` mở lại được về `DRAFT` (`reopen_purchase_request`) nên vẫn mang đúng rủi ro "Product
+    rác nếu Requester đổi ý" mà rule này muốn tránh.
     """
     pr_item = PurchaseRequestItem.objects.select_related('purchase_request').select_for_update().get(pk=pr_item.pk)
     if pr_item.product_id is not None:
         raise ValidationError('Dòng này đã có sản phẩm, không cần map lại.')
-    if pr_item.purchase_request.status == PurchaseRequest.Status.DRAFT:
-        raise ValidationError('Chỉ map sản phẩm được sau khi yêu cầu mua hàng đã được nộp.')
+    if pr_item.purchase_request.status not in MAPPABLE_PR_STATUSES:
+        raise ValidationError('Chỉ map sản phẩm được khi yêu cầu mua hàng đang chờ duyệt hoặc đã duyệt.')
+
+    product = Product.objects.select_for_update().get(pk=product.pk)
+    if not product.is_active:
+        raise ValidationError('Chỉ được map sang sản phẩm đang hoạt động.')
 
     old_non_catalog_name = pr_item.non_catalog_name
     pr_item.product = product

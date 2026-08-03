@@ -1333,11 +1333,10 @@ class PurchaseRequestItemCleanTest(TestCase):
         if not has_product and not has_non_catalog:
             raise ValidationError(
                 'Phải chọn sản phẩm trong danh mục, hoặc điền đủ Tên hàng + Đơn vị tính cho hàng non-catalog.')
-        if self.budget_category:
-            normalized = re.sub(r'\s+', ' ', self.budget_category.strip())
-            self.budget_category = normalized
-        if has_product and not self.budget_category:
+        if has_product and not (self.budget_category or '').strip():
             self.budget_category = self.product.category
+        if self.budget_category:
+            self.budget_category = re.sub(r'\s+', ' ', self.budget_category.strip())
 ```
   (Import `re` ở đầu file thay vì trong hàm — dọn lại khi hoàn thiện, đặt tạm trong hàm ở bước này
   chỉ để tối thiểu hoá diff, sửa lại vị trí import trước khi commit ở Bước 4.)
@@ -1389,8 +1388,30 @@ class MapNonCatalogItemTest(TestCase):
         item = self._make_non_catalog_item(PurchaseRequest.Status.DRAFT)
         with self.assertRaises(ValidationError):
             map_non_catalog_item(item, self.product, actor=self.user)
+
+    def test_TC_PUR_PR_06_005_map_blocked_while_rejected(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.REJECTED)
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, self.product, actor=self.user)
+
+    def test_TC_PUR_PR_06_006_map_blocked_for_inactive_product(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.PENDING_DEPT)
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, self.product, actor=self.user)
+
+    def test_TC_PUR_PR_06_007_map_blocked_for_product_deactivated_after_form_validated(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.PENDING_DEPT)
+        stale_product = Product.objects.get(pk=self.product.pk)
+        Product.objects.filter(pk=self.product.pk).update(is_active=False)
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, stale_product, actor=self.user)
 ```
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `ImportError`.
+- [ ] **Bổ sung sau review code (thực hiện sau khi triển khai, không nằm trong RED ban đầu)**:
+  `test_TC_PUR_PR_06_005/006/007` ở trên được thêm ở 1 vòng review riêng, sau khi `map_non_catalog_item()`
+  đã commit — xem "Lỗi đã sửa (review sau khi triển khai)" bên dưới.
 - [ ] **Bước 3: Viết code tối thiểu để PASS** — thêm vào `purchasing/services.py` (nhóm cùng các
   hàm PR-level, sau `forward_purchase_request`).
 
@@ -1428,6 +1449,37 @@ def map_non_catalog_item(pr_item, product, actor, ip_address=None):
     return pr_item
 ```
 - [ ] **Bước 4: Chạy test, xác nhận PASS**
+- [ ] **Lỗi đã sửa (review sau khi triển khai, code ở Bước 3 trên đã chốt commit
+  `e2c767d`/`35aa449` — 2 vấn đề Quan trọng phát hiện lúc review Task 3.5)**:
+  1. Guard `if pr_item.purchase_request.status == PurchaseRequest.Status.DRAFT` chỉ chặn đúng
+     `DRAFT` — `REJECTED` không phải `DRAFT` nên vẫn map thành công, trong khi hệ thống cho phép
+     `REJECTED → DRAFT` (`reopen_purchase_request()`), sau đó Requester lại sửa/xoá dòng tự do,
+     tái tạo đúng nguy cơ "Product rác" mà rule mục 4 điểm 10 muốn tránh. Sửa bằng **allow-list**
+     thay vì deny-list:
+     ```python
+     MAPPABLE_PR_STATUSES = {
+         PurchaseRequest.Status.PENDING_DEPT,
+         PurchaseRequest.Status.PENDING_PUR,
+         PurchaseRequest.Status.APPROVED,
+     }
+     # ...
+     if pr_item.purchase_request.status not in MAPPABLE_PR_STATUSES:
+         raise ValidationError('Chỉ map sản phẩm được khi yêu cầu mua hàng đang chờ duyệt hoặc đã duyệt.')
+     ```
+  2. Hàm không tái kiểm `product.is_active` — form ở Task 3.5 chỉ hiển thị Product đang hoạt động,
+     nhưng đó là lớp UX (đúng pattern "Form querysets filter, services must re-validate
+     independently" trong CLAUDE.md), không chặn được caller khác truyền Product inactive, hoặc
+     Product bị deactivate (qua `QuerySet.update()`) sau khi form validate nhưng trước khi service
+     chạy (TOCTOU). Sửa bằng cách khoá và đọc lại `product` từ DB ngay trong service, trước khi
+     gán:
+     ```python
+     product = Product.objects.select_for_update().get(pk=product.pk)
+     if not product.is_active:
+         raise ValidationError('Chỉ được map sang sản phẩm đang hoạt động.')
+     ```
+  3 test mới ở Bước 1 (`TC-PUR-PR-06-005/006/007`) đi kèm 2 sửa trên — RED trước (guard cũ cho map
+  qua, product cũ vẫn active-check thiếu) rồi GREEN sau khi áp 2 đoạn code trên vào đúng vị trí
+  trong thân hàm ở Bước 3.
 - [ ] **Bước 5: Commit**
 ```bash
 git add purchasing/services.py purchasing/tests.py

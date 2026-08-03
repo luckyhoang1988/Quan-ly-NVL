@@ -2512,6 +2512,25 @@ class MapNonCatalogItemTest(TestCase):
         with self.assertRaises(ValidationError):
             map_non_catalog_item(item, self.product, actor=self.user)
 
+    def test_TC_PUR_PR_06_005_map_blocked_while_rejected(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.REJECTED)
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, self.product, actor=self.user)
+
+    def test_TC_PUR_PR_06_006_map_blocked_for_inactive_product(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.PENDING_DEPT)
+        self.product.is_active = False
+        self.product.save(update_fields=['is_active'])
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, self.product, actor=self.user)
+
+    def test_TC_PUR_PR_06_007_map_blocked_for_product_deactivated_after_form_validated(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.PENDING_DEPT)
+        stale_product = Product.objects.get(pk=self.product.pk)
+        Product.objects.filter(pk=self.product.pk).update(is_active=False)
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, stale_product, actor=self.user)
+
     def test_map_with_max_length_names_does_not_overflow_audit_description(self):
         long_code_product = Product.objects.create(product_code='P' * 30, name='Sản phẩm dài', uom='cây')
         pr = PurchaseRequest.objects.create(
