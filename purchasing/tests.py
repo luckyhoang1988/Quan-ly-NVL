@@ -2512,6 +2512,23 @@ class MapNonCatalogItemTest(TestCase):
         with self.assertRaises(ValidationError):
             map_non_catalog_item(item, self.product, actor=self.user)
 
+    def test_map_with_max_length_names_does_not_overflow_audit_description(self):
+        long_code_product = Product.objects.create(product_code='P' * 30, name='Sản phẩm dài', uom='cây')
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.PENDING_DEPT)
+        item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=None, qty_requested=3,
+            non_catalog_name='X' * 200, non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('5000'),
+            budget_category='VT')
+
+        map_non_catalog_item(item, long_code_product, actor=self.user)
+
+        item.refresh_from_db()
+        self.assertEqual(item.product_id, long_code_product.pk)
+        self.assertTrue(AuditLog.objects.filter(target_id=str(pr.pk)).exists())
+
 
 class ExchangeRateModelTest(TestCase):
     def test_TC_PUR_XR_unique_currency_rate_date(self):

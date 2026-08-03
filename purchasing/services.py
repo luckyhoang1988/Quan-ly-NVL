@@ -827,7 +827,11 @@ def map_non_catalog_item(pr_item, product, actor, ip_address=None):
     pr_item.save(update_fields=['product', 'non_catalog_name', 'non_catalog_uom', 'non_catalog_note'])
     log_action(
         actor, AuditLog.Action.UPDATE, target=pr_item.purchase_request,
-        description=f'Map dòng non-catalog "{old_non_catalog_name}" sang sản phẩm "{product.product_code}".',
+        description=f'Map dòng PR #{pr_item.pk} sang sản phẩm "{product.product_code}".',
+        changes={
+            'product_id': [None, product.pk],
+            'non_catalog_name': [old_non_catalog_name, ''],
+        },
         ip_address=ip_address,
     )
     return pr_item
