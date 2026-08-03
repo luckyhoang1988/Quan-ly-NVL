@@ -2426,6 +2426,52 @@ class PurchaseRequestItemFieldsTest(TestCase):
         self.assertTrue(item.is_non_catalog)
 
 
+class PurchaseRequestItemCleanTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg', category='Nguyên liệu')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001')
+
+    def test_TC_PUR_PR_01_003_product_and_non_catalog_both_set_rejected(self):
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=self.product, qty_requested=1,
+            non_catalog_name='Ống nhựa', non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'))
+        with self.assertRaises(ValidationError):
+            item.clean()
+
+    def test_TC_PUR_PR_01_005_non_catalog_missing_uom_rejected(self):
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=None, qty_requested=1,
+            non_catalog_name='Ống nhựa', non_catalog_uom='',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'))
+        with self.assertRaises(ValidationError):
+            item.clean()
+
+    def test_TC_PUR_PR_01_006_budget_category_fallback_to_product_category(self):
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=self.product, qty_requested=1, budget_category='',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'))
+        item.clean()
+        self.assertEqual(item.budget_category, 'Nguyên liệu')
+
+    def test_budget_category_normalized_strip_and_collapse_spaces(self):
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=self.product, qty_requested=1,
+            budget_category='  Nguyên   liệu  ',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'))
+        item.clean()
+        self.assertEqual(item.budget_category, 'Nguyên liệu')
+
+    def test_TC_PUR_PR_06_004_str_does_not_crash_on_non_catalog(self):
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=None, qty_requested=1,
+            non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây')
+        self.assertIn('Ống nhựa PVC', str(item))
+
+
 class ExchangeRateModelTest(TestCase):
     def test_TC_PUR_XR_unique_currency_rate_date(self):
         admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)

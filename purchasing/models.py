@@ -34,8 +34,10 @@ chỉ quản lý đúng phòng ban đang giữ cấp hiện tại (``can_decide_
 Manager/Admin mới thật sự DUYỆT/từ chối (xem
 ``purchasing.services.submit_purchase_request``/``decide_purchase_request``).
 """
+import re
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
 from django.db.models import Q
@@ -430,7 +432,22 @@ class PurchaseRequestItem(models.Model):
         verbose_name_plural = 'Dòng yêu cầu mua hàng'
 
     def __str__(self):
-        return f'{self.purchase_request.request_no} - {self.product.product_code} x{self.qty_requested}'
+        label = self.product.product_code if self.product_id else (self.non_catalog_name or 'non-catalog')
+        return f'{self.purchase_request.request_no} - {label} x{self.qty_requested}'
+
+    def clean(self):
+        super().clean()
+        has_product = self.product_id is not None
+        has_non_catalog = bool((self.non_catalog_name or '').strip()) and bool((self.non_catalog_uom or '').strip())
+        if has_product and (self.non_catalog_name or self.non_catalog_uom):
+            raise ValidationError('Đã chọn sản phẩm trong danh mục thì không được điền thông tin non-catalog.')
+        if not has_product and not has_non_catalog:
+            raise ValidationError(
+                'Phải chọn sản phẩm trong danh mục, hoặc điền đủ Tên hàng + Đơn vị tính cho hàng non-catalog.')
+        if self.budget_category:
+            self.budget_category = re.sub(r'\s+', ' ', self.budget_category.strip())
+        if has_product and not self.budget_category:
+            self.budget_category = self.product.category
 
     @property
     def is_non_catalog(self):
