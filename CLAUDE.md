@@ -696,3 +696,25 @@ rather than rediscovering the failure.
   `CSRF_TRUSTED_ORIGINS`/media-file auth are intentionally left unset — no Docker/deploy target exists yet
   for those settings to protect (see repo-state note at top of this file). Revisit at Phase 9
   (Docker/deploy), not before.
+- **A migration's historical `apps.get_app_config(label)` returns `AppConfigStub`
+  (`django.db.migrations.state.AppConfigStub`), not a real `AppConfig`** (PUR-PR-05, `accounts` 0017):
+  `AppConfigStub.__init__` never sets `models_module` at all — reading `app_config.models_module` directly
+  inside a `RunPython` step raises `AttributeError`, it does not just return `None`. This matters whenever a
+  migration needs to call `django.contrib.auth.management.create_permissions()` itself (e.g. to use a
+  brand-new `Meta.permissions` codename in the same migration that adds it, before `post_migrate` would
+  normally create it) — that function skips an app whose `models_module` is falsy, so the standard fix is
+  temporarily forcing it truthy and restoring the original value afterward. Use `getattr`/`hasattr` (not a
+  direct read) to capture the "before" state, and branch the `finally` between "restore the original value"
+  and "delete the attribute" — a test that calls the same migration function directly against the *real* app
+  registry (`django.apps.apps`, which does have a real `models_module`) must not have it wiped out afterward.
+- **`BaseModelFormSet.validate_unique()` compares `cleaned_data` across sibling forms, not just against the
+  DB** (PUR-PR-05, `po_update` for `FROM_PR` purchase orders): when a formset's `product` field is
+  `disabled=True` (Task 3.7's guard against editing PO lines outside `create_allocation()`/
+  `release_allocation()`), two forms that both reference the *same* underlying row (a duplicate-`pk` tamper
+  attempt) carry identical `product` values as far as Django's formset-level uniqueness check is concerned —
+  it flags this as a cross-form collision on the model's `UniqueConstraint` and fails `formset.is_valid()`
+  with Django's own generic message, before any view-level duplicate-`pk` check (which already covers the
+  same invariant with a clearer, dedicated message) gets a chance to run. Fix by subclassing the formset's
+  base class and overriding `validate_unique()` to a no-op — safe specifically when every row in the formset
+  is guaranteed to reference a pre-existing, already-unique DB row (no `extra` slots, disabled identity
+  fields), so the check was never protecting a real "two new rows collide" scenario in the first place.

@@ -458,6 +458,20 @@ không viết gộp `{% if (role check) and can_view_menu_x %}` trên 1 dòng.
 ADMIN tự bỏ tick `can_view_menu_user_mgmt` của chính họ (không có cách khôi phục qua UI nếu lỡ khoá, giống
 lý do chặn tự khoá `is_active`).
 
+**Ngoại lệ: 1 mục KHÔNG mặc định cấp cho mọi role** (`exchange_rate`, PUR Expansion Stage 2, Task 3.8) — dữ
+liệu tài chính nhạy cảm dùng chung toàn hệ thống. `accounts/permissions.py::DEFAULT_RESTRICTED_MENU_ITEMS`
+(tập `{key, ...}`) liệt kê các key bị loại khỏi phần cấp mặc định trong `codenames_for_role()`, cấp lại
+CHỈ cho `ADMIN`. `all_menu_codenames()` (dùng để sinh `Meta.permissions`) **giữ nguyên** — permission vẫn
+phải tồn tại trong DB dù không role nào khác được cấp mặc định. Actor-gate riêng cho module này
+(`_exchange_rate_admin_required`, `purchasing/views.py`) vẫn phải kiểm CẢ role/superuser LẪN
+`can_view_menu(key)` — không được chỉ dựa vào role, vì thu hồi riêng quyền này qua "Phân quyền chi tiết"
+vẫn phải chặn được 1 Admin (cùng lỗi dạng mục actor-gate ở trên). Retrofit permission mới này lên Admin đã
+tồn tại cần thêm 1 bước migration mà 2 chỗ khác không cần: tự gọi `create_permissions()` trong chính
+migration đó trước khi backfill — permission mới chưa tồn tại tại thời điểm `RunPython` chạy (Django chỉ
+tạo `Meta.permissions` mới qua `post_migrate`, phát 1 lần ở CUỐI `migrate`) — xem
+`accounts/migrations/0017_exchange_rate_menu_permission.py` và mục "Established patterns to apply
+proactively" trong CLAUDE.md (bẫy `AppConfigStub.models_module`).
+
 ## 7. Topbar user-menu (bánh răng góc trên-phải) — thay cho khối user-box cuối sidebar (2026-07-28)
 
 Khối "tên user · role + nút Đổi mật khẩu + nút Đăng xuất" trước đây nằm cố định cuối sidebar (`.user-box`),
