@@ -21,7 +21,7 @@ from receiving.models import Grn, GrnItem
 from warehouse.models import Warehouse
 
 from . import views as purchasing_views
-from .forms import PurchaseRequestForm
+from .forms import PurchaseRequestForm, PurchaseRequestItemForm
 from .models import (
     ExchangeRate,
     ProcurementAllocation,
@@ -1292,6 +1292,7 @@ class PrCreatePrefillTest(TestCase):
             'items-MAX_NUM_FORMS': '1000',
             'items-0-product': self.product.pk,
             'items-0-qty_requested': 50,
+            'items-0-currency': 'VND',
         }
         payload.update(overrides)
         return payload
@@ -1419,6 +1420,7 @@ class PurchaseRequestCrudTest(TestCase):
             'items-MAX_NUM_FORMS': '1000',
             'items-0-product': self.product.pk,
             'items-0-qty_requested': 20,
+            'items-0-currency': 'VND',
         }
         payload.update(overrides)
         return payload
@@ -3266,3 +3268,44 @@ class PurchaseRequestFormFieldsTest(TestCase):
         form = PurchaseRequestForm(data={
             'warehouse': self.warehouse.pk, 'note': '', 'cost_center': 'CC-001', 'project': 'Dự án A'})
         self.assertTrue(form.is_valid(), form.errors)
+class PurchaseRequestItemFormTest(TestCase):
+    """Task 3.2 — ``PurchaseRequestItemForm`` phải render/validate đủ field non-
+    catalog + budget/currency/estimate mới, và chạy được ``PurchaseRequestItem.
+    clean()`` (Task 2.6) xuyên qua ``ModelForm.full_clean()``."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg', category='Nguyên liệu')
+
+    def _base_data(self, **overrides):
+        data = {
+            'product': '', 'qty_requested': 5, 'required_date': timezone.localdate().isoformat(),
+            'currency': 'VND', 'estimated_unit_price': '1000', 'budget_category': '',
+            'non_catalog_name': '', 'non_catalog_uom': '', 'non_catalog_note': '',
+        }
+        data.update(overrides)
+        return data
+
+    def test_catalog_line_valid_without_non_catalog_fields(self):
+        form = PurchaseRequestItemForm(data=self._base_data(product=self.product.pk))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_non_catalog_line_valid_without_product(self):
+        form = PurchaseRequestItemForm(data=self._base_data(non_catalog_name='Ống nhựa', non_catalog_uom='cây'))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_neither_product_nor_non_catalog_invalid(self):
+        form = PurchaseRequestItemForm(data=self._base_data())
+        self.assertFalse(form.is_valid())
+
+    def test_budget_category_fallback_applied_through_form(self):
+        form = PurchaseRequestItemForm(data=self._base_data(product=self.product.pk, budget_category=''))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.instance.budget_category, 'Nguyên liệu')
+
+    def test_product_select_with_category_widget_renders_without_error(self):
+        Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg', category='Phụ gia')
+        form = PurchaseRequestItemForm()
+        with self.assertNumQueries(1):
+            rendered = str(form['product'])
+        self.assertIn('data-category="Nguyên liệu"', rendered)
+        self.assertIn('data-category="Phụ gia"', rendered)

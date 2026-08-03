@@ -48,7 +48,12 @@
               <thead>
                 <tr>
                   <th>Sản phẩm</th>
+                  <th>Hàng chưa có trong danh mục</th>
                   <th>Số lượng</th>
+                  <th>Ngày cần hàng</th>
+                  <th>Loại tiền</th>
+                  <th>Đơn giá ước tính</th>
+                  <th>Nhóm ngân sách</th>
                   {% if formset.can_delete %}<th>Xoá</th>{% endif %}
                 </tr>
               </thead>
@@ -56,13 +61,43 @@
                 {% for item_form in formset %}
                 <tr>
                   {% for hidden in item_form.hidden_fields %}{{ hidden }}{% endfor %}
+                  {% if item_form.non_field_errors %}
+                  <td colspan="8" class="p-0">
+                    {% for error in item_form.non_field_errors %}<div class="alert alert-danger py-1 mb-0">{{ error }}</div>{% endfor %}
+                  </td>
+                  </tr>
+                  <tr>
+                  {% endif %}
                   <td>
                     {{ item_form.product }}
                     {% for error in item_form.product.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
                   </td>
                   <td>
+                    {{ item_form.non_catalog_name }}
+                    {{ item_form.non_catalog_uom }}
+                    {{ item_form.non_catalog_note }}
+                    {% for error in item_form.non_catalog_name.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                    {% for error in item_form.non_catalog_uom.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  <td>
                     {{ item_form.qty_requested }}
                     {% for error in item_form.qty_requested.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  <td>
+                    {{ item_form.required_date }}
+                    {% for error in item_form.required_date.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  <td>
+                    {{ item_form.currency }}
+                    {% for error in item_form.currency.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  <td>
+                    {{ item_form.estimated_unit_price }}
+                    {% for error in item_form.estimated_unit_price.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+                  </td>
+                  <td>
+                    {{ item_form.budget_category }}
+                    {% for error in item_form.budget_category.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
                   </td>
                   {% if formset.can_delete %}<td>{{ item_form.DELETE }}</td>{% endif %}
                 </tr>
@@ -82,4 +117,17 @@
     </div>
   </div>
 </div>
+<script>
+document.addEventListener('change', function (event) {
+  var select = event.target.closest('select[id$="-product"]');
+  if (!select) return;
+  var opt = select.options[select.selectedIndex];
+  var category = opt.getAttribute('data-category');
+  var row = select.closest('tr');
+  var budgetInput = row ? row.querySelector('input[id$="-budget_category"]') : null;
+  if (budgetInput && category && !budgetInput.value) {
+    budgetInput.value = category;
+  }
+});
+</script>
 {% endblock %}

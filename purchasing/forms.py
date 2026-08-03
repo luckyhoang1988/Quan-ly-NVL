@@ -78,10 +78,35 @@ class PurchaseRequestForm(forms.ModelForm):
         _bootstrapify(self.fields)
 
 
+class ProductSelectWithCategory(forms.Select):
+    """Gắn ``data-category`` lên mỗi ``<option>`` để JS ở ``pr_form.html`` tự
+    điền ``budget_category`` khi chọn sản phẩm. ``value`` mà Django truyền vào
+    đây (từ Django 3.1) là ``ModelChoiceIteratorValue``, không phải pk thô — nó
+    đã bọc sẵn ``.instance`` (object ``Product`` fetch lúc dựng choices), nên
+    dùng thẳng ``value.instance`` thay vì query lại theo pk (query lại sẽ crash:
+    ``ModelChoiceIteratorValue`` không định nghĩa ``__int__``).
+    """
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(name, value, label, selected, index, subindex, attrs)
+        instance = getattr(value, 'instance', None)
+        if instance is not None:
+            option['attrs']['data-category'] = instance.category
+        return option
+
+
 class PurchaseRequestItemForm(forms.ModelForm):
     class Meta:
         model = PurchaseRequestItem
-        fields = ['product', 'qty_requested']
+        fields = [
+            'product', 'qty_requested', 'required_date', 'currency', 'estimated_unit_price',
+            'budget_category', 'non_catalog_name', 'non_catalog_uom', 'non_catalog_note',
+        ]
+        widgets = {
+            'product': ProductSelectWithCategory,
+            'required_date': forms.DateInput(attrs={'type': 'date'}),
+            'non_catalog_note': forms.Textarea(attrs={'rows': 2}),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
