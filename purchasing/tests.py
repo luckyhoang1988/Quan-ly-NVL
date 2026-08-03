@@ -2764,3 +2764,14 @@ class BuildPoFromAllocationsTest(TestCase):
                 self.supplier, [(self.pr_item_a, 10)],
                 {self.product.pk: Decimal('-100')}, actor=self.admin_user)
         self.assertFalse(PurchaseOrder.objects.filter(supplier=self.supplier).exists())
+
+    def test_rejects_inactive_supplier_even_with_stale_caller_instance(self):
+        # .update() không refresh self.supplier trong bộ nhớ -> instance caller truyền vào
+        # vẫn còn status=ACTIVE cũ, chỉ có DB là INACTIVE thật sự.
+        Supplier.objects.filter(pk=self.supplier.pk).update(status=Supplier.Status.INACTIVE)
+        self.assertEqual(self.supplier.status, Supplier.Status.ACTIVE)
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(
+                self.supplier, [(self.pr_item_a, 10)],
+                {self.product.pk: Decimal('1000')}, actor=self.admin_user)
+        self.assertFalse(PurchaseOrder.objects.filter(supplier_id=self.supplier.pk).exists())

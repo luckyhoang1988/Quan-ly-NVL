@@ -329,6 +329,9 @@ def build_po_from_allocations(supplier, allocation_requests, unit_price_by_produ
     if not allocation_requests:
         raise ValidationError('Phải chọn ít nhất 1 dòng yêu cầu mua hàng để tạo PO.')
 
+    # Khoá + đọc lại supplier từ DB — instance caller truyền vào (lấy từ form/queryset trước đó)
+    # có thể đã stale nếu status bị đổi ở transaction khác giữa lúc form filter và lúc submit.
+    supplier = Supplier.objects.select_for_update().get(pk=supplier.pk)
     if supplier.status != Supplier.Status.ACTIVE:
         raise ValidationError(
             f'Nhà cung cấp "{supplier.name}" đã ngừng giao dịch hoặc bị tạm khóa, không thể tạo PO.')
