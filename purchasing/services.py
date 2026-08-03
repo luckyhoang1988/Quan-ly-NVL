@@ -262,11 +262,20 @@ def delete_draft_po_item_with_allocations(po_item, actor, ip_address=None):
     (nó tự khoá lại từ đầu cho từng allocation, tạo thứ tự khoá xen kẽ PRItem→Allocation→PRItem→
     Allocation — nguy cơ deadlock thật nếu 2 lời gọi song song trên 2 po_item khác nhau có tập
     pr_item chung theo thứ tự tương đối khác nhau).
+
+    ``select_for_update(of=('self',))`` khi kết hợp ``select_related('product')`` (mẫu BUG-16,
+    xem CLAUDE.md) — nếu không giới hạn ``of`` thì Postgres ``FOR UPDATE`` khoá luôn dòng
+    ``Product`` join vào, dù hàm này không ghi vào ``Product``.
     """
     po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
     if po.status != PurchaseOrder.Status.DRAFT:
         raise ValidationError('Chỉ xoá được dòng PO-item khi PO đang ở trạng thái Nháp.')
-    po_item = PurchaseOrderItem.objects.select_for_update().select_related('product').get(pk=po_item.pk)
+    po_item = (
+        PurchaseOrderItem.objects
+        .select_related('product')
+        .select_for_update(of=('self',))
+        .get(pk=po_item.pk)
+    )
 
     pr_item_ids_sorted = sorted(
         ProcurementAllocation.objects.filter(po_item=po_item, status=ProcurementAllocation.Status.ACTIVE)
