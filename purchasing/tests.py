@@ -36,6 +36,7 @@ from .services import (
     delete_draft_po_item_with_allocations,
     find_duplicate_po_products,
     forward_purchase_request,
+    map_non_catalog_item,
     received_qty_by_product,
     release_allocation,
     reopen_purchase_request,
@@ -2470,6 +2471,37 @@ class PurchaseRequestItemCleanTest(TestCase):
             purchase_request=self.pr, product=None, qty_requested=1,
             non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây')
         self.assertIn('Ống nhựa PVC', str(item))
+
+
+class MapNonCatalogItemTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='pur1', password='pur-pass-123', role=User.Role.PURCHASING)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0002', name='Ống nhựa PVC', uom='cây')
+
+    def _make_non_catalog_item(self, pr_status):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001', status=pr_status)
+        return PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=None, qty_requested=3,
+            non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('5000'), budget_category='VT')
+
+    def test_TC_PUR_PR_06_002_map_assigns_product(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.PENDING_DEPT)
+        map_non_catalog_item(item, self.product, actor=self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.product_id, self.product.pk)
+        self.assertFalse(item.is_non_catalog)
+        self.assertEqual(item.non_catalog_name, '')
+        self.assertEqual(item.non_catalog_uom, '')
+        self.assertEqual(item.non_catalog_note, '')
+        item.full_clean()  # không được raise — clean() (Task 2.6) cấm vừa có product vừa có non-catalog
+
+    def test_TC_PUR_PR_06_003_map_blocked_while_draft(self):
+        item = self._make_non_catalog_item(PurchaseRequest.Status.DRAFT)
+        with self.assertRaises(ValidationError):
+            map_non_catalog_item(item, self.product, actor=self.user)
 
 
 class ExchangeRateModelTest(TestCase):

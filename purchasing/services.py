@@ -809,6 +809,31 @@ def forward_purchase_request(pr, staff, actor, ip_address=None):
 
 
 @transaction.atomic
+def map_non_catalog_item(pr_item, product, actor, ip_address=None):
+    """PUR-PR-06 (quyết định #9): gán Product cho 1 dòng PR non-catalog. Chỉ gọi được sau khi PR
+    đã rời DRAFT (mục 4 điểm 10) — map sớm lúc còn DRAFT chỉ tạo Product rác nếu Requester đổi ý.
+    """
+    pr_item = PurchaseRequestItem.objects.select_related('purchase_request').select_for_update().get(pk=pr_item.pk)
+    if pr_item.product_id is not None:
+        raise ValidationError('Dòng này đã có sản phẩm, không cần map lại.')
+    if pr_item.purchase_request.status == PurchaseRequest.Status.DRAFT:
+        raise ValidationError('Chỉ map sản phẩm được sau khi yêu cầu mua hàng đã được nộp.')
+
+    old_non_catalog_name = pr_item.non_catalog_name
+    pr_item.product = product
+    pr_item.non_catalog_name = ''
+    pr_item.non_catalog_uom = ''
+    pr_item.non_catalog_note = ''
+    pr_item.save(update_fields=['product', 'non_catalog_name', 'non_catalog_uom', 'non_catalog_note'])
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=pr_item.purchase_request,
+        description=f'Map dòng non-catalog "{old_non_catalog_name}" sang sản phẩm "{product.product_code}".',
+        ip_address=ip_address,
+    )
+    return pr_item
+
+
+@transaction.atomic
 def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
     """Quản lý phòng ban đang giữ quyền quyết định ở cấp hiện tại (bộ phận gốc
     ở ``PENDING_DEPT``, Mua hàng ở ``PENDING_PUR`` — hoặc Manager/Admin) duyệt/
