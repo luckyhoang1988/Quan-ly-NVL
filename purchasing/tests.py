@@ -3541,3 +3541,180 @@ class PoBuildFromPrLinesViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'checked')
         self.assertContains(response, self.product.product_code)
+
+
+class PoUpdateFromPrGuardTest(TestCase):
+    """Task 3.7 - po_update viet lai cho PO nguon FROM_PR: product/qty_ordered
+    chi doi duoc qua create_allocation()/release_allocation() (muc 4 diem 4),
+    khong sua tay qua form - khoa o tang Form (disabled=True) + re-check raw
+    POST (phat hien tamper) + update_fields hep (lop phong ve thu 3). PO nguon
+    MANUAL KHONG doi hanh vi."""
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Cong ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bot mi', uom='kg')
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        self.client.login(username='admin1', password='admin-pass-123')
+
+    def _post_data(self, **item_overrides):
+        data = {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(self.po_item.pk),
+            'items-0-product': str(self.product.pk),
+            'items-0-qty_ordered': '10',
+            'items-0-unit_price': '1500',
+        }
+        data.update(item_overrides)
+        return data
+
+    def test_TC_PUR_PR_05_005_tamper_qty_ordered_rejected(self):
+        response = self.client.post(
+            reverse('purchasing:po_update', args=[self.po.pk]), self._post_data(**{'items-0-qty_ordered': '5'}))
+        self.assertEqual(response.status_code, 302)
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.qty_ordered, 10)
+
+    def test_TC_PUR_PR_05_017_unit_price_editable_freely(self):
+        self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), self._post_data())
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.unit_price, Decimal('1500'))
+
+    def test_TC_PUR_PR_05_016_extra_fake_form_rejected(self):
+        data = self._post_data()
+        data['items-TOTAL_FORMS'] = '2'
+        data['items-1-id'] = ''
+        data['items-1-product'] = str(self.product.pk)
+        data['items-1-qty_ordered'] = '99'
+        data['items-1-unit_price'] = '100'
+        response = self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), data)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(PurchaseOrderItem.objects.filter(purchase_order=self.po).count(), 1)
+
+    def test_TC_PUR_PR_05_023_duplicate_pk_two_forms_rejected(self):
+        from django.contrib.messages import get_messages
+        data = self._post_data()
+        data['items-TOTAL_FORMS'] = '2'
+        # INITIAL_FORMS phai la '2' - neu de '1', Django coi form index 1 la
+        # form "extra" (i >= initial_form_count()), nen KHONG gan instance theo
+        # pk submit; form 1 se co instance.pk=None va test PASS nham qua nhanh
+        # loi "dong PO-item la" thay vi nhanh duplicate-pk (submitted_pks) that
+        # can kiem o day.
+        data['items-INITIAL_FORMS'] = '2'
+        data['items-1-id'] = str(self.po_item.pk)
+        data['items-1-product'] = str(self.product.pk)
+        data['items-1-qty_ordered'] = '10'
+        data['items-1-unit_price'] = '200'
+        response = self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), data)
+        self.assertEqual(response.status_code, 302)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]), 'Một dòng PO không được xuất hiện nhiều lần trong formset.')
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.unit_price, Decimal('1000'))
+
+    def test_TC_PUR_PR_05_015_legacy_line_zero_allocation_still_locked(self):
+        response = self.client.post(
+            reverse('purchasing:po_update', args=[self.po.pk]), self._post_data(**{'items-0-qty_ordered': '3'}))
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.qty_ordered, 10)
+
+    def test_TC_PUR_PR_05_017_duplicate_pk_across_kept_and_deleted_form_rejected(self):
+        from django.contrib.messages import get_messages
+        payload = {
+            'po_no': self.po.po_no, 'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '2', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(self.po_item.pk), 'items-0-product': str(self.product.pk),
+            'items-0-qty_ordered': str(self.po_item.qty_ordered), 'items-0-unit_price': '1000',
+            'items-1-id': str(self.po_item.pk), 'items-1-product': str(self.product.pk),
+            'items-1-qty_ordered': str(self.po_item.qty_ordered), 'items-1-unit_price': '1000',
+            'items-1-DELETE': 'on',
+        }
+        response = self.client.post(reverse('purchasing:po_update', args=[self.po.pk]), payload)
+        self.assertEqual(response.status_code, 302)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]), 'Một dòng PO không được xuất hiện nhiều lần trong formset.')
+        self.po_item.refresh_from_db()
+        self.assertTrue(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())
+        self.assertEqual(self.po_item.unit_price, Decimal('1000'))
+
+    def test_manual_source_po_update_unchanged_product_qty_editable(self):
+        manual_po = PurchaseOrder.objects.create(po_no='PO-9002', supplier=self.supplier, source=PurchaseOrder.Source.MANUAL)
+        manual_item = PurchaseOrderItem.objects.create(
+            purchase_order=manual_po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        response = self.client.post(reverse('purchasing:po_update', args=[manual_po.pk]), {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(manual_item.pk),
+            'items-0-product': str(self.product.pk),
+            'items-0-qty_ordered': '25',
+            'items-0-unit_price': '1500',
+        })
+        self.assertEqual(response.status_code, 302)
+        manual_item.refresh_from_db()
+        self.assertEqual(manual_item.qty_ordered, 25)
+
+
+class ExchangeRateViewTest(TestCase):
+    """Task 3.8 - ExchangeRate CRUD (Admin-only) + can_view_menu_exchange_rate
+    (menu KHONG mac dinh cap moi role - chi ADMIN, xem
+    DEFAULT_RESTRICTED_MENU_ITEMS trong accounts/permissions.py)."""
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+
+    def test_TC_PUR_XR_001_staff_forbidden_create(self):
+        self.client.login(username='staff1', password='staff-pass-123')
+        response = self.client.post(reverse('purchasing:exchange_rate_create'), {
+            'currency': 'USD', 'rate_date': timezone.localdate().isoformat(), 'rate_to_vnd': '25000'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PUR_XR_002_duplicate_currency_rate_date_rejected(self):
+        self.client.login(username='admin1', password='admin-pass-123')
+        payload = {'currency': 'USD', 'rate_date': timezone.localdate().isoformat(), 'rate_to_vnd': '25000'}
+        self.client.post(reverse('purchasing:exchange_rate_create'), payload)
+        response = self.client.post(reverse('purchasing:exchange_rate_create'), payload)
+        self.assertEqual(ExchangeRate.objects.count(), 1)
+        self.assertEqual(response.status_code, 200)
+
+    def test_TC_PUR_XR_003_staff_forbidden_update_delete_admin_allowed(self):
+        rate = ExchangeRate.objects.create(
+            currency='USD', rate_date=timezone.localdate(), rate_to_vnd=Decimal('25000'), created_by=self.admin_user)
+        self.client.login(username='staff1', password='staff-pass-123')
+        self.assertEqual(self.client.post(reverse('purchasing:exchange_rate_update', args=[rate.pk]), {}).status_code, 403)
+        self.assertEqual(self.client.post(reverse('purchasing:exchange_rate_delete', args=[rate.pk])).status_code, 403)
+        self.client.login(username='admin1', password='admin-pass-123')
+        response = self.client.post(reverse('purchasing:exchange_rate_delete', args=[rate.pk]))
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(ExchangeRate.objects.filter(pk=rate.pk).exists())
+
+    def test_default_role_does_not_get_exchange_rate_menu_but_admin_does(self):
+        from accounts.permissions import codenames_for_role
+        self.assertNotIn('can_view_menu_exchange_rate', codenames_for_role('STAFF'))
+        self.assertIn('can_view_menu_exchange_rate', codenames_for_role('ADMIN'))
+
+    def test_TC_PUR_XR_005_admin_with_menu_permission_revoked_gets_403(self):
+        """Admin co role dung nhung bi thu hoi RIENG quyen
+        can_view_menu_exchange_rate qua trang "Phan quyen chi tiet" van phai bi
+        chan - view khong duoc chi kiem role/is_superuser ma bo qua
+        can_view_menu, giong pattern can_transfer_inventory da ap dung o module
+        inventory."""
+        from django.contrib.auth.models import Permission
+        perm = Permission.objects.get(content_type__app_label='accounts', codename='can_view_menu_exchange_rate')
+        self.admin_user.user_permissions.remove(perm)
+        self.client.login(username='admin1', password='admin-pass-123')
+        response = self.client.post(reverse('purchasing:exchange_rate_create'), {
+            'currency': 'USD', 'rate_date': timezone.localdate().isoformat(), 'rate_to_vnd': '25000'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_PUR_XR_006_form_rejects_vnd_currency(self):
+        self.client.login(username='admin1', password='admin-pass-123')
+        response = self.client.post(reverse('purchasing:exchange_rate_create'), {
+            'currency': 'VND', 'rate_date': timezone.localdate().isoformat(), 'rate_to_vnd': '1'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ExchangeRate.objects.count(), 0)

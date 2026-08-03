@@ -2,6 +2,7 @@
 from django import forms
 from django.db.models import Q
 from django.forms import inlineformset_factory
+from django.forms.models import BaseInlineFormSet
 
 from accounts.models import User
 from catalog.models import Product
@@ -60,6 +61,44 @@ class PurchaseOrderItemForm(forms.ModelForm):
 PurchaseOrderItemFormSet = inlineformset_factory(
     PurchaseOrder, PurchaseOrderItem, form=PurchaseOrderItemForm,
     extra=3, min_num=1, validate_min=True, can_delete=True,
+)
+
+
+class PurchaseOrderItemFromPrForm(forms.ModelForm):
+    """PO nguồn FROM_PR: product/qty_ordered chỉ đổi được qua create_allocation()/
+    release_allocation() (mục 4 điểm 4) — disabled=True ở tầng Form (không chỉ
+    HTML readonly) khiến Django luôn dùng giá trị initial trong cleaned_data,
+    bỏ qua hoàn toàn giá trị POST.
+    """
+    product = forms.ModelChoiceField(queryset=Product.objects.all(), disabled=True, required=False)
+    qty_ordered = forms.IntegerField(disabled=True, required=False)
+
+    class Meta:
+        model = PurchaseOrderItem
+        fields = ['product', 'qty_ordered', 'unit_price']
+
+
+class _PoItemFromPrFormSet(BaseInlineFormSet):
+    """Vì ``product`` bị khoá (``disabled=True``), 2 form cùng trỏ 1
+    ``PurchaseOrderItem`` (submit trùng pk — tampering) sẽ mang cùng giá trị
+    ``product`` như nhau, và ``BaseModelFormSet.validate_unique()`` mặc định
+    của Django so sánh ``cleaned_data`` GIỮA CÁC FORM để bắt lỗi trùng
+    ``unique_together``/``UniqueConstraint`` — sẽ hiểu nhầm đây là 2 dòng MỚI
+    đụng ràng buộc unique, và chặn ở tầng ``formset.is_valid()`` với thông báo
+    Django mặc định, TRƯỚC KHI ``po_update`` kịp chạy check ``submitted_pks``
+    riêng (rõ ràng hơn, đã có ở view). Tắt hẳn check này ở đây — check
+    ``submitted_pks`` trong ``po_update`` đã phủ đúng bất biến cần thiết cho
+    formset này (không có dòng nào thật sự MỚI được tạo qua form này, mọi pk
+    đều phải khớp 1 ``PurchaseOrderItem`` đã tồn tại).
+    """
+
+    def validate_unique(self):
+        pass
+
+
+PurchaseOrderItemFromPrFormSet = inlineformset_factory(
+    PurchaseOrder, PurchaseOrderItem, form=PurchaseOrderItemFromPrForm,
+    formset=_PoItemFromPrFormSet, extra=0, can_delete=True,
 )
 
 

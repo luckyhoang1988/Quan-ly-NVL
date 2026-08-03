@@ -30,18 +30,20 @@ from .forms import (
     PurchaseOrderCloseForm,
     PurchaseOrderForm,
     PurchaseOrderItemFormSet,
+    PurchaseOrderItemFromPrFormSet,
     PurchaseRequestForm,
     PurchaseRequestForwardForm,
     PurchaseRequestItemFormSet,
     PurchaseRequestRejectForm,
 )
-from .models import PurchaseOrder, PurchaseRequest, PurchaseRequestItem
+from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
     build_po_from_allocations,
     cancel_pr_item_open_qty,
     close_po,
     decide_purchase_request,
+    delete_draft_po_item_with_allocations,
     delete_purchase_request,
     forward_purchase_request,
     map_non_catalog_item,
@@ -523,6 +525,23 @@ def po_build_from_pr_lines(request):
     })
 
 
+def _raw_disabled_field_tampered(post_data, form, field_name, db_value):
+    """``disabled=True`` khiến Django bỏ qua giá trị POST trong ``cleaned_data``
+    (luôn giữ ``initial``) — nhưng để PHÁT HIỆN việc client cố tamper (không chỉ
+    im lặng bỏ qua), phải tự so giá trị POST thô với giá trị thật trong DB.
+    """
+    key = form.add_prefix(field_name)
+    if key not in post_data:
+        return False
+    raw_value = post_data[key].strip()
+    if field_name == 'qty_ordered':
+        try:
+            return int(raw_value) != db_value
+        except ValueError:
+            return True
+    return str(db_value) != raw_value
+
+
 @po_permission_required('update')
 def po_update(request, pk):
     """UPDATE — sửa PO + chi tiết đơn hàng. Chỉ cho sửa khi còn ở state DRAFT
@@ -534,11 +553,24 @@ def po_update(request, pk):
     trên instance cũ (còn giữ status DRAFT trong bộ nhớ) sẽ ghi đè status mới
     xuống DB — instance dùng để save phải là bản đã khóa, không phải ``obj``
     fetch trước đó.
+
+    PO nguồn ``FROM_PR``: ``product``/``qty_ordered`` chỉ đổi được qua
+    ``create_allocation()``/``release_allocation()`` (mục 4 điểm 4), không sửa
+    tay ở đây — dùng ``PurchaseOrderItemFromPrFormSet`` (field ``disabled=True``)
+    thay vì formset thường, cộng 2 lớp phòng vệ nữa: re-check raw POST (phát
+    hiện tamper qua ``_raw_disabled_field_tampered``) và ``update_fields=
+    ['unit_price']`` khi save (giới hạn UPDATE thật xuống đúng 1 cột). PO nguồn
+    ``MANUAL`` KHÔNG đổi hành vi — vẫn dùng formset thường.
     """
     obj = get_object_or_404(PurchaseOrder, pk=pk)
     if obj.status != PurchaseOrder.Status.DRAFT:
         messages.error(request, f'Không thể sửa PO "{obj.po_no}" khi đã qua state DRAFT.')
         return redirect('purchasing:po_detail', pk=obj.pk)
+
+    formset_class = (
+        PurchaseOrderItemFromPrFormSet if obj.source == PurchaseOrder.Source.FROM_PR
+        else PurchaseOrderItemFormSet
+    )
 
     if request.method == 'POST':
         with transaction.atomic():
@@ -547,11 +579,58 @@ def po_update(request, pk):
                 messages.error(
                     request, f'Không thể sửa PO "{locked_obj.po_no}" khi đã qua state DRAFT.')
                 return redirect('purchasing:po_detail', pk=pk)
+            locked_items_by_pk = {
+                item.pk: item for item in
+                PurchaseOrderItem.objects.select_for_update().filter(purchase_order=locked_obj).order_by('pk')
+            }
             form = PurchaseOrderForm(request.POST, instance=locked_obj)
-            formset = PurchaseOrderItemFormSet(request.POST, instance=locked_obj, prefix='items')
+            formset = formset_class(
+                request.POST, instance=locked_obj, prefix='items',
+                queryset=PurchaseOrderItem.objects.filter(pk__in=locked_items_by_pk.keys()),
+            )
             if form.is_valid() and formset.is_valid():
-                obj = form.save()
-                formset.save()
+                if locked_obj.source == PurchaseOrder.Source.FROM_PR:
+                    # Pass 1 — quét TOÀN BỘ form đã submit, kể cả form đánh dấu
+                    # xoá (formset.deleted_forms), TRƯỚC khi tách nhánh xoá/sửa:
+                    # submit cùng 1 pk ở 2 form (1 giữ lại, 1 đánh dấu xoá) phải
+                    # bị chặn ở đây, không được lọt qua rồi xoá+sửa lẫn lộn.
+                    submitted_pks = []
+                    for item_form in formset.forms:
+                        item_pk = item_form.instance.pk
+                        if item_pk is None or item_pk not in locked_items_by_pk:
+                            messages.error(request, 'Dữ liệu gửi lên không hợp lệ (dòng PO-item lạ).')
+                            return redirect('purchasing:po_update', pk=pk)
+                        if item_pk in submitted_pks:
+                            messages.error(request, 'Một dòng PO không được xuất hiện nhiều lần trong formset.')
+                            return redirect('purchasing:po_update', pk=pk)
+                        submitted_pks.append(item_pk)
+
+                    # Pass 2 — chỉ form KHÔNG bị đánh dấu xoá — kiểm tra field
+                    # khoá bị sửa qua raw POST (mọi pk ở đây đã hợp lệ + không
+                    # trùng từ pass 1).
+                    for item_form in formset.forms:
+                        if item_form in formset.deleted_forms:
+                            continue
+                        db_item = locked_items_by_pk[item_form.instance.pk]
+                        if (_raw_disabled_field_tampered(request.POST, item_form, 'product', db_item.product_id)
+                                or _raw_disabled_field_tampered(
+                                    request.POST, item_form, 'qty_ordered', db_item.qty_ordered)):
+                            messages.error(request, f'Không được sửa sản phẩm/số lượng của dòng "{db_item}".')
+                            return redirect('purchasing:po_update', pk=pk)
+
+                    for item_form in formset.deleted_forms:
+                        if item_form.instance.pk:
+                            delete_draft_po_item_with_allocations(
+                                item_form.instance, actor=request.user, ip_address=client_ip(request))
+                    obj = form.save()
+                    for item_form in formset.forms:
+                        if item_form in formset.deleted_forms or item_form.instance.pk is None:
+                            continue
+                        item_form.instance.save(update_fields=['unit_price'])
+                else:
+                    obj = form.save()
+                    formset.save()
+
                 log_action(
                     request.user, AuditLog.Action.UPDATE, target=obj,
                     description=f'Cập nhật PO {obj.po_no}',
@@ -561,7 +640,7 @@ def po_update(request, pk):
                 return redirect('purchasing:po_detail', pk=obj.pk)
     else:
         form = PurchaseOrderForm(instance=obj)
-        formset = PurchaseOrderItemFormSet(instance=obj, prefix='items')
+        formset = formset_class(instance=obj, prefix='items')
     return render(
         request, 'purchasing/po_form.html',
         {'form': form, 'formset': formset, 'mode': 'update', 'obj': obj},
