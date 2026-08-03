@@ -3186,14 +3186,16 @@ class QtyReceivedByAllocationTest(TestCase):
         po_item.refresh_from_db()  # create_allocation() tăng qty_ordered qua bản khoá riêng, không mutate instance caller
         grn = Grn.objects.create(po=po, supplier=supplier, created_by=qc_user)
         GrnItem.objects.create(
-            grn=grn, product=product, qty_ordered=9, qty_received=9, unit_price=Decimal('1000'))
+            grn=grn, product=product, qty_ordered=10, qty_received=10, unit_price=Decimal('1000'))
 
         result = qty_received_by_allocation(po_item)
-        self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 9)
-        # 9 * 10 // 15 = 6 (allocation_a, pk nhỏ hơn, không nhận dư); phần dư 3 dồn vào allocation_b.
+        self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 10)
+        # 10 * 10 // 15 = 6 (allocation_a, pk nhỏ hơn, không nhận dư).
+        # Nếu chia độc lập, allocation_b = 10 * 5 // 15 = 3 -> tổng chỉ 9, thiếu 1 so với total_received=10.
+        # Phần dư 1 đó phải dồn vào allocation cuối (allocation_b) -> 4, không phải 3.
         self.assertEqual(result[allocation_a.pk], 6)
-        self.assertEqual(result[allocation_b.pk], 3)
+        self.assertEqual(result[allocation_b.pk], 4)
         pr_item_a.refresh_from_db()
         pr_item_b.refresh_from_db()
         self.assertEqual(pr_item_a.qty_received, 6)
-        self.assertEqual(pr_item_b.qty_received, 3)
+        self.assertEqual(pr_item_b.qty_received, 4)

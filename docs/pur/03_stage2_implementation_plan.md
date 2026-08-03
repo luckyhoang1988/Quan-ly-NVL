@@ -2031,18 +2031,28 @@ class QtyReceivedByAllocationTest(TestCase):
         # LƯU Ý (phát hiện khi thực thi Task 2.11): GrnItem.qty_ordered là PositiveIntegerField
         # KHÔNG có default/null — thiếu field này raise IntegrityError ngay khi tạo, không liên
         # quan gì tới hành vi đang test.
+        # LƯU Ý #2 (phát hiện khi xin review Task 2.11): total_received=9 với qty_ordered=15
+        # (10+5) khiến CẢ HAI phép chia độc lập đều tròn khít — 9*10//15=6 và 9*5//15=3, tổng
+        # vừa đúng 9 — nên test KHÔNG thực sự phân biệt được thuật toán đúng (dồn dư vào
+        # allocation cuối) với một implementation sai chia độc lập từng allocation rồi không
+        # cộng dư (`for a in allocations: result[a.pk] = total*a.qty_allocated // po_item.qty_ordered`
+        # cũng cho ra {A:6, B:3}, vẫn pass). Đổi total_received=10 để phép chia độc lập của
+        # allocation_b bị hụt 1 đơn vị (10*5//15=3, nhưng 10-6=4 mới đúng), buộc thuật toán phải
+        # thật sự dồn phần dư mới pass.
         GrnItem.objects.create(
-            grn=grn, product=product, qty_ordered=9, qty_received=9, unit_price=Decimal('1000'))
+            grn=grn, product=product, qty_ordered=10, qty_received=10, unit_price=Decimal('1000'))
 
         result = qty_received_by_allocation(po_item)
-        self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 9)
-        # 9 * 10 // 15 = 6 (allocation_a, pk nhỏ hơn, không nhận dư); phần dư 3 dồn vào allocation_b.
+        self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 10)
+        # 10 * 10 // 15 = 6 (allocation_a, pk nhỏ hơn, không nhận dư).
+        # Nếu chia độc lập: allocation_b = 10 * 5 // 15 = 3 -> tổng chỉ 9, thiếu 1 so với
+        # total_received=10. Phần dư 1 đó phải dồn vào allocation cuối (allocation_b) -> 4.
         self.assertEqual(result[allocation_a.pk], 6)
-        self.assertEqual(result[allocation_b.pk], 3)
+        self.assertEqual(result[allocation_b.pk], 4)
         pr_item_a.refresh_from_db()
         pr_item_b.refresh_from_db()
         self.assertEqual(pr_item_a.qty_received, 6)
-        self.assertEqual(pr_item_b.qty_received, 3)
+        self.assertEqual(pr_item_b.qty_received, 4)
 ```
   (Cần import `Grn`, `GrnItem` đã có sẵn ở đầu `purchasing/tests.py`.)
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `ImportError`.
