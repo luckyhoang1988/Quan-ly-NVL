@@ -2466,6 +2466,15 @@ class PurchaseRequestItemCleanTest(TestCase):
         item.clean()
         self.assertEqual(item.budget_category, 'Nguyên liệu')
 
+    def test_budget_category_fallback_value_is_normalized(self):
+        product = Product.objects.create(
+            product_code='NVL-0002', name='Đường', uom='kg', category='  Nguyên   liệu  ')
+        item = PurchaseRequestItem(
+            purchase_request=self.pr, product=product, qty_requested=1, budget_category='',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'))
+        item.clean()
+        self.assertEqual(item.budget_category, 'Nguyên liệu')
+
     def test_TC_PUR_PR_06_004_str_does_not_crash_on_non_catalog(self):
         item = PurchaseRequestItem(
             purchase_request=self.pr, product=None, qty_requested=1,

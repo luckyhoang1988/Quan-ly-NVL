@@ -444,10 +444,10 @@ class PurchaseRequestItem(models.Model):
         if not has_product and not has_non_catalog:
             raise ValidationError(
                 'Phải chọn sản phẩm trong danh mục, hoặc điền đủ Tên hàng + Đơn vị tính cho hàng non-catalog.')
+        if has_product and not (self.budget_category or '').strip():
+            self.budget_category = self.product.category
         if self.budget_category:
             self.budget_category = re.sub(r'\s+', ' ', self.budget_category.strip())
-        if has_product and not self.budget_category:
-            self.budget_category = self.product.category
 
     @property
     def is_non_catalog(self):
