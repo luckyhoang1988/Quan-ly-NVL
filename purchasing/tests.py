@@ -2476,3 +2476,51 @@ class ProcurementAllocationModelTest(TestCase):
                     pr_item=self.pr_item, po_item=self.po_item, qty_allocated=0,
                     po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
                 )
+
+
+class AllocationBackfillMigrationTest(TestCase):
+    """TC-PUR-MIG-001/002/003: backfill dùng hàm thuần tách khỏi RunPython (import trực tiếp
+    module migration bằng importlib, gọi thẳng hàm nội bộ mà không cần chạy lại toàn bộ chuỗi
+    migration)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED, linked_po=self.po)
+        self.pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'),
+            budget_category='Nguyên liệu')
+
+    def _run_backfill(self):
+        migration_module = import_module('purchasing.migrations.0018_backfill_procurement_allocation_from_linked_po')
+        migration_module.backfill_allocations(django_apps, None)
+
+    def test_TC_PUR_MIG_001_clear_match_creates_one_allocation(self):
+        self._run_backfill()
+        allocation = ProcurementAllocation.objects.get(pr_item=self.pr_item)
+        self.assertEqual(allocation.qty_allocated, 10)
+        self.assertIsNone(allocation.created_by)
+        self.pr_item.refresh_from_db()
+        self.assertEqual(self.pr_item.qty_approved, 10)
+
+    def test_TC_PUR_MIG_002_ambiguous_match_creates_no_allocation(self):
+        # 2 dòng PR cùng product trỏ 1 PO cùng product -> không khớp rõ ràng
+        PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=3,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'),
+            budget_category='Nguyên liệu')
+        self._run_backfill()
+        self.assertEqual(ProcurementAllocation.objects.filter(pr_item__purchase_request=self.pr).count(), 0)
+
+    def test_TC_PUR_MIG_003_rerun_is_idempotent(self):
+        self._run_backfill()
+        self._run_backfill()
+        self.assertEqual(ProcurementAllocation.objects.filter(pr_item=self.pr_item).count(), 1)
