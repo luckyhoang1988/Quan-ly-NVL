@@ -2625,6 +2625,7 @@ class ReleaseAllocationTest(TestCase):
 
     def test_release_last_allocation_deletes_po_item(self):
         release_allocation(self.allocation_a, reason='r1', actor=self.admin_user)
-        _, deleted = release_allocation(self.allocation_b, reason='r2', actor=self.admin_user)
+        returned, deleted = release_allocation(self.allocation_b, reason='r2', actor=self.admin_user)
         self.assertTrue(deleted)
         self.assertFalse(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())
+        self.assertIsNone(returned.po_item_id)

@@ -240,6 +240,9 @@ def release_allocation(allocation, reason, actor, *, delete_empty_po_item=True, 
         po_item_repr = str(po_item)
         po_item.delete()
         deleted = True
+        # po_item FK là on_delete=SET_NULL: DB đã tự SET NULL po_item_id của allocation,
+        # nhưng object `allocation` đang giữ trong tay vẫn còn giá trị cũ trong bộ nhớ.
+        allocation.refresh_from_db(fields=['po_item'])
         log_action(
             actor, AuditLog.Action.DELETE, target=po,
             description=f'Xoá dòng PO-item "{po_item_repr}" khỏi PO "{po.po_no}" — hết số lượng sau khi giải phóng.',
