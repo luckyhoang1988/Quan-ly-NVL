@@ -871,10 +871,23 @@ def pr_approve(request, pk):
         raise PermissionDenied('Không có quyền duyệt yêu cầu mua hàng.')
     if request.method == 'POST':
         approval = latest_approval_for(obj)
+        qty_approved_overrides = {}
+        if obj.status == PurchaseRequest.Status.PENDING_PUR:
+            for item in obj.items.all():
+                raw = request.POST.get(f'qty_approved_{item.pk}', '').strip()
+                if raw:
+                    try:
+                        qty_approved_overrides[item.pk] = int(raw)
+                    except ValueError:
+                        messages.error(request, f'Số lượng duyệt không hợp lệ cho dòng "{item}".')
+                        return redirect('purchasing:pr_detail', pk=obj.pk)
         try:
             if approval is None or approval.status != Approval.Status.PENDING:
                 raise ValidationError('Yêu cầu này không có phiếu duyệt nào đang chờ xử lý.')
-            decide_purchase_request(approval, True, actor=request.user, ip_address=client_ip(request))
+            decide_purchase_request(
+                approval, True, actor=request.user, ip_address=client_ip(request),
+                qty_approved_overrides=qty_approved_overrides,
+            )
             messages.success(request, f'Đã duyệt yêu cầu "{obj.request_no}".')
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))

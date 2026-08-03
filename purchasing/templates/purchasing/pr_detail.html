@@ -47,7 +47,7 @@
         </a>
       {% endif %}
       {% if can_approve %}
-        <form method="post" action="{% url 'purchasing:pr_approve' obj.pk %}" class="d-inline">
+        <form method="post" id="pr-approve-form" action="{% url 'purchasing:pr_approve' obj.pk %}" class="d-inline">
           {% csrf_token %}
           <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-check-lg"></i> Duyệt</button>
         </form>
@@ -147,7 +147,14 @@
               {% endif %}
             </td>
             <td>{{ item.qty_requested }}</td>
-            <td>{{ item.qty_approved|default:"—" }}</td>
+            <td>
+              {% if obj.status == 'PENDING_PUR' and can_approve %}
+                <input type="number" name="qty_approved_{{ item.pk }}" value="{{ item.qty_requested }}"
+                       min="0" max="{{ item.qty_requested }}" form="pr-approve-form" class="form-control form-control-sm" style="width: 6rem;">
+              {% else %}
+                {{ item.qty_approved|default:"—" }}
+              {% endif %}
+            </td>
             <td>{{ item.qty_allocated }}</td>
             <td>{{ item.qty_ordered }}</td>
             <td>{{ item.qty_received }}</td>

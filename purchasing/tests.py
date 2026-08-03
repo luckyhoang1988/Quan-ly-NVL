@@ -3356,3 +3356,38 @@ class PrItemCancelOpenQtyViewTest(TestCase):
             reverse('purchasing:pr_item_cancel_open_qty', args=[self.item.pk]),
             {'qty': 2, 'reason': 'test'})
         self.assertEqual(response.status_code, 302)
+
+
+class PrApproveQtyOverrideViewTest(TestCase):
+    """Task 3.4 — ``pr_approve`` đọc ``qty_approved_<pr_item_id>`` từ POST và áp
+    dụng qua ``decide_purchase_request(..., qty_approved_overrides=...)`` (Task
+    2.9), chỉ khi PR đang ở cấp ``PENDING_PUR``."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001')
+        self.item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        submit_purchase_request(self.pr, actor=self.staff)  # -> PENDING_PUR
+
+    def test_approve_view_applies_qty_approved_override_from_post(self):
+        self.client.login(username='purm', password='purm-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_approve', args=[self.pr.pk]),
+            {f'qty_approved_{self.item.pk}': '6'})
+        self.assertEqual(response.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.qty_approved, 6)
+
+    def test_approve_view_invalid_qty_input_shows_error_no_transition(self):
+        self.client.login(username='purm', password='purm-pass-123')
+        self.client.post(reverse('purchasing:pr_approve', args=[self.pr.pk]), {f'qty_approved_{self.item.pk}': 'abc'})
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
