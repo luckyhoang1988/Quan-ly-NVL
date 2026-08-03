@@ -3391,3 +3391,83 @@ class PrApproveQtyOverrideViewTest(TestCase):
         self.client.post(reverse('purchasing:pr_approve', args=[self.pr.pk]), {f'qty_approved_{self.item.pk}': 'abc'})
         self.pr.refresh_from_db()
         self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+
+class PrItemMapProductViewTest(TestCase):
+    """Task 3.5 — ``pr_item_map_product`` (PUR-PR-06): map 1 dòng PR non-catalog
+    sang Product có sẵn hoặc Product mới tạo tại chỗ, qua ``map_non_catalog_item``
+    (Task 2.7). Quyền đi theo ``can_map_non_catalog`` (Task 3.3): update trên 'pr'
+    + xem menu 'catalog', với "Manager" nghĩa là PUR Manager cụ thể."""
+
+    def setUp(self):
+        self.pur_staff = User.objects.create_user(
+            username='pur1', password='pur-pass-123', role=User.Role.PURCHASING, department=User.Department.PURCHASING)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.pur_staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.PENDING_PUR)
+        self.item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=None, qty_requested=3,
+            non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('5000'), budget_category='VT')
+
+    def test_map_to_existing_product(self):
+        existing = Product.objects.create(product_code='NVL-0002', name='Ống nhựa PVC', uom='cây')
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'existing_product': existing.pk})
+        self.assertEqual(response.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.product_id, existing.pk)
+
+    def test_map_creates_new_product(self):
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'new_product_code': 'NVL-0099', 'new_product_name': 'Ống nhựa PVC', 'new_product_uom': 'cây',
+             'new_product_category': 'Vật tư'})
+        self.assertEqual(response.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertIsNotNone(self.item.product_id)
+        self.assertEqual(self.item.product.product_code, 'NVL-0099')
+        self.assertEqual(self.item.product.category, 'Vật tư')
+
+    def test_catalog_menu_revoked_forbids_map(self):
+        """FSD mục 1 ghi map-non-catalog đi theo `pr` + `catalog` — thu hồi riêng
+        `can_view_menu_catalog` của PUR Staff (dù vẫn còn `update` trên `pr`) phải
+        chặn được, không chỉ kiểm role/`can('update','pr')`."""
+        from django.contrib.auth.models import Permission
+        perm = Permission.objects.get(content_type__app_label='accounts', codename='can_view_menu_catalog')
+        self.pur_staff.user_permissions.remove(perm)
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'existing_product': ''})
+        self.assertEqual(response.status_code, 403)
+
+    def test_manager_wrong_department_forbidden(self):
+        """FSD mục 5 ghi 'chỉ PUR Staff/Manager thấy nút' — "Manager" ở đây là PUR
+        Manager (`is_department_manager('PURCHASING')`), không phải bất kỳ Manager
+        nào."""
+        qc_manager = User.objects.create_user(
+            username='qcm', password='qcm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.QC, is_manager=True)
+        self.client.login(username='qcm', password='qcm-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]),
+            {'existing_product': ''})
+        self.assertEqual(response.status_code, 403)
+
+    def test_duplicate_new_product_code_renders_form_error_without_partial_map(self):
+        Product.objects.create(product_code='NVL-0099', name='Đã tồn tại', uom='kg')
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[self.item.pk]), {
+                'new_product_code': 'NVL-0099', 'new_product_name': 'Ống nhựa PVC',
+                'new_product_uom': 'cây', 'new_product_category': 'Vật tư',
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Mã sản phẩm đã tồn tại')
+        self.item.refresh_from_db()
+        self.assertIsNone(self.item.product_id)

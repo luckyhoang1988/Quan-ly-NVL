@@ -12,7 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -25,6 +25,7 @@ from catalog.models import Product
 from partners.models import Supplier
 
 from .forms import (
+    PrItemMapProductForm,
     PurchaseOrderCloseForm,
     PurchaseOrderForm,
     PurchaseOrderItemFormSet,
@@ -41,6 +42,7 @@ from .services import (
     decide_purchase_request,
     delete_purchase_request,
     forward_purchase_request,
+    map_non_catalog_item,
     received_qty_by_product,
     reopen_purchase_request,
     retry_po_email,
@@ -858,6 +860,45 @@ def pr_item_cancel_open_qty(request, pk):
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
+
+
+@login_required
+def pr_item_map_product(request, pk):
+    """Map 1 dòng PR non-catalog sang Product có sẵn hoặc Product mới tạo tại
+    chỗ (PUR-PR-06). Quyền: ``can_map_non_catalog`` (Task 3.3)."""
+    item = get_object_or_404(PurchaseRequestItem.objects.select_related('purchase_request'), pk=pk)
+    if not can_map_non_catalog(request.user):
+        raise PermissionDenied('Không có quyền map sản phẩm cho dòng yêu cầu mua hàng này.')
+    if not item.is_non_catalog:
+        messages.error(request, 'Dòng này đã có sản phẩm.')
+        return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
+
+    form = PrItemMapProductForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        try:
+            with transaction.atomic():
+                original_non_catalog_name = item.non_catalog_name
+                product = form.cleaned_data.get('existing_product')
+                if not product:
+                    product = Product.objects.create(
+                        product_code=form.cleaned_data['new_product_code'],
+                        name=form.cleaned_data['new_product_name'],
+                        uom=form.cleaned_data['new_product_uom'],
+                        category=form.cleaned_data['new_product_category'],
+                    )
+                map_non_catalog_item(item, product, actor=request.user, ip_address=client_ip(request))
+            messages.success(
+                request,
+                f'Đã map dòng "{original_non_catalog_name}" sang sản phẩm "{product.product_code}".')
+            return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
+        except IntegrityError:
+            # Chặn race: mã chưa tồn tại lúc form validate nhưng transaction khác
+            # vừa tạo trước INSERT của transaction này — exception thoát khỏi
+            # atomic nên transaction đã rollback sạch trước khi render lại form.
+            form.add_error('new_product_code', 'Mã sản phẩm đã tồn tại.')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return render(request, 'purchasing/pr_item_map_product.html', {'item': item, 'form': form})
 
 
 @login_required

@@ -20,6 +20,7 @@ urlpatterns = [
     path('requests/<int:pk>/reject/', views.pr_reject, name='pr_reject'),
     path('requests/<int:pk>/forward/', views.pr_forward, name='pr_forward'),
     path('pr-item/<int:pk>/cancel-open-qty/', views.pr_item_cancel_open_qty, name='pr_item_cancel_open_qty'),
+    path('pr-item/<int:pk>/map-product/', views.pr_item_map_product, name='pr_item_map_product'),
     path('<int:pk>/', views.po_detail, name='po_detail'),
     path('<int:pk>/edit/', views.po_update, name='po_update'),
     path('<int:pk>/approve/', views.po_approve, name='po_approve'),

@@ -142,6 +142,40 @@ class PurchaseRequestRejectForm(forms.Form):
         _bootstrapify(self.fields)
 
 
+class PrItemMapProductForm(forms.Form):
+    existing_product = forms.ModelChoiceField(
+        queryset=Product.objects.filter(is_active=True), required=False, label='Chọn sản phẩm có sẵn')
+    new_product_code = forms.CharField(max_length=50, required=False, label='Mã sản phẩm mới')
+    new_product_name = forms.CharField(max_length=200, required=False, label='Tên sản phẩm mới')
+    new_product_uom = forms.CharField(max_length=20, required=False, label='Đơn vị tính')
+    new_product_category = forms.CharField(max_length=100, required=False, label='Danh mục sản phẩm mới')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _bootstrapify(self.fields)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        existing = cleaned_data.get('existing_product')
+        # 4 field (kể cả new_product_category) bắt buộc CÙNG NHAU khi tạo sản
+        # phẩm mới — nếu category bị bỏ trống, Product mới tạo ra sẽ không có gì
+        # để PurchaseRequestItem.clean() (Task 2.6) fallback budget_category cho
+        # các dòng PR sau này dùng sản phẩm mới đó.
+        new_fields_filled = all([
+            cleaned_data.get('new_product_code'), cleaned_data.get('new_product_name'),
+            cleaned_data.get('new_product_uom'), cleaned_data.get('new_product_category'),
+        ])
+        if existing and new_fields_filled:
+            raise forms.ValidationError('Chỉ chọn 1 trong 2: sản phẩm có sẵn HOẶC tạo sản phẩm mới.')
+        if not existing and not new_fields_filled:
+            raise forms.ValidationError(
+                'Phải chọn 1 sản phẩm có sẵn, hoặc điền đủ Mã/Tên/Đơn vị tính/Danh mục để tạo mới.')
+        new_code = cleaned_data.get('new_product_code')
+        if not existing and new_code and Product.objects.filter(product_code=new_code).exists():
+            self.add_error('new_product_code', 'Mã sản phẩm đã tồn tại.')
+        return cleaned_data
+
+
 class PurchaseOrderCloseForm(forms.Form):
     """Không bắt buộc ở mức field (đóng từ RECEIVED không cần lý do) — ``clean()``
     tự bắt buộc khi ``po.status`` là SENT/PARTIAL_RECEIVED, dựa vào ``po`` truyền

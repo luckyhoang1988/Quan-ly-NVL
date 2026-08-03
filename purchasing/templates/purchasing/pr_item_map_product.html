@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block title %}Map sản phẩm — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:pr_list' %}">Yêu cầu mua hàng</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:pr_detail' item.purchase_request_id %}">{{ item.purchase_request.request_no }}</a> <span class="mx-1">/</span>
+  <span class="current">Map sản phẩm</span>
+{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-header panel-toolbar">
+        <h1 class="panel-title">Map sản phẩm: {{ item.non_catalog_name }}</h1>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small">
+          Dòng non-catalog "{{ item.non_catalog_name }}" ({{ item.non_catalog_uom }}) — chọn 1 sản phẩm có sẵn trong danh mục, hoặc điền đủ thông tin để tạo sản phẩm mới.
+        </p>
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% if form.non_field_errors %}
+            <div class="alert alert-danger py-2">{{ form.non_field_errors }}</div>
+          {% endif %}
+          {% for field in form %}
+            <div class="mb-3">
+              <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+              {{ field }}
+              {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+            </div>
+          {% endfor %}
+          <div class="d-flex gap-2 mt-4">
+            <button type="submit" class="btn btn-primary">Lưu</button>
+            <a class="btn btn-link" href="{% url 'purchasing:pr_detail' item.purchase_request_id %}">Huỷ</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
