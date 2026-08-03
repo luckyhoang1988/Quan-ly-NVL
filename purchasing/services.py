@@ -882,7 +882,8 @@ def submit_purchase_request(pr, actor, ip_address=None):
     else:
         pr.status = PurchaseRequest.Status.PENDING_PUR
         approval_department = User.Department.PURCHASING
-    pr.department_snapshot = origin_department
+    if not pr.department_snapshot:
+        pr.department_snapshot = origin_department
     pr.save(update_fields=['status', 'department_snapshot'])
     create_approval(
         pr, department=approval_department,

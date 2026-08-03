@@ -3205,6 +3205,9 @@ class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
     def setUp(self):
         self.staff = User.objects.create_user(
             username='staff1', password='staff-pass-123', role=User.Role.STAFF, department=User.Department.WAREHOUSE)
+        self.manager = User.objects.create_user(
+            username='manager1', password='manager-pass-123', role=User.Role.MANAGER,
+            department=User.Department.WAREHOUSE, is_manager=True)
         self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
         self.pr = PurchaseRequest.objects.create(
             requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001')
@@ -3224,3 +3227,20 @@ class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
         self.staff.save(update_fields=['department'])
         self.pr.refresh_from_db()
         self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)  # không đọc lại
+
+    def test_TC_PUR_PR_02_003_snapshot_not_overwritten_on_resubmit_after_reopen(self):
+        """REJECTED -> reopen -> đổi department người nộp -> nộp lại: snapshot
+        phải giữ nguyên giá trị lần nộp đầu (bất biến VĨNH VIỄN, không chỉ
+        trong 1 lần nộp) — đây là khoảng trống mà TC-PUR-PR-02-002 chưa phủ
+        vì nó không đi qua một lần nộp lại thật sự."""
+        submit_purchase_request(self.pr, actor=self.staff)
+        approval = Approval.objects.get(target_id=str(self.pr.pk), status=Approval.Status.PENDING)
+        decide_purchase_request(approval, False, actor=self.manager, note='Không cần thiết')
+
+        reopen_purchase_request(self.pr, actor=self.staff)
+        self.staff.department = User.Department.QC
+        self.staff.save(update_fields=['department'])
+
+        submit_purchase_request(self.pr, actor=self.staff)
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)

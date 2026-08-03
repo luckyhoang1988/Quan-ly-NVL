@@ -2141,6 +2141,16 @@ git add purchasing/services.py purchasing/tests.py
 git commit -m "feat(pur): submit_purchase_request() sets department_snapshot (immutable after submit)"
 ```
 
+**Lỗi đã sửa (review phát hiện, sau khi commit ở trên)**: code ban đầu gán vô điều kiện
+`pr.department_snapshot = origin_department` mỗi lần gọi — đúng cho lần nộp đầu, nhưng PR có thể
+đi `REJECTED -> reopen_purchase_request() -> DRAFT -> submit_purchase_request()` lần 2; nếu
+`requested_by.department` đổi giữa 2 lần nộp, lần nộp lại sẽ ghi đè snapshot, trái với chính
+help_text của field ("bất biến sau khi set"). `TC-PUR-PR-02-002` không bắt được lỗi này vì nó chỉ
+đổi `department` rồi đọc lại PR mà không nộp lại thật. Thêm `test_TC_PUR_PR_02_003` (submit → reject
+→ reopen → đổi department → submit lại → snapshot vẫn giữ giá trị lần đầu), xác nhận FAIL đúng lý
+do (`'QC' != WAREHOUSE`), rồi sửa thành `if not pr.department_snapshot: pr.department_snapshot =
+origin_department` (set-once, không set lại nếu đã có giá trị).
+
 ---
 
 # Phase 3 — Form/View
