@@ -851,6 +851,34 @@ def map_non_catalog_item(pr_item, product, actor, ip_address=None):
 
 
 @transaction.atomic
+def cancel_pr_item_open_qty(pr_item, qty, reason, actor, ip_address=None):
+    """PUR-PR-07: huỷ 1 phần qty_open của dòng PR (không xoá dòng, không đổi qty_requested/
+    qty_approved). Không có giới hạn "chỉ PR APPROVED" — dòng đã APPROVED mới có qty_open > 0 để
+    huỷ, điều kiện tự nhiên đã chặn (mục 4 điểm 9). Hàm KHÔNG tự kiểm quyền actor — quyền kiểm ở
+    view (mục 1/mục 4 điểm 9).
+    """
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError('Bắt buộc nhập lý do khi huỷ phần còn mở.')
+    pr_item = PurchaseRequestItem.objects.select_related('purchase_request').select_for_update().get(pk=pr_item.pk)
+    if qty < 1:
+        raise ValidationError('Số lượng huỷ phải lớn hơn 0.')
+    if qty > pr_item.qty_open:
+        raise ValidationError(f'Số lượng huỷ ({qty}) vượt quá số lượng còn mở ({pr_item.qty_open}).')
+
+    pr_item.qty_cancelled = F('qty_cancelled') + qty
+    pr_item.save(update_fields=['qty_cancelled'])
+    pr_item.refresh_from_db(fields=['qty_cancelled'])
+
+    log_action(
+        actor, AuditLog.Action.CANCEL, target=pr_item.purchase_request,
+        description=f'Huỷ {qty} số lượng còn mở của dòng "{pr_item}" — lý do: {reason}.',
+        ip_address=ip_address,
+    )
+    return pr_item
+
+
+@transaction.atomic
 def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
     """Quản lý phòng ban đang giữ quyền quyết định ở cấp hiện tại (bộ phận gốc
     ở ``PENDING_DEPT``, Mua hàng ở ``PENDING_PUR`` — hoặc Manager/Admin) duyệt/

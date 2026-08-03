@@ -30,6 +30,7 @@ from .models import (
 from .services import (
     approve_po,
     build_po_from_allocations,
+    cancel_pr_item_open_qty,
     close_po,
     create_allocation,
     decide_purchase_request,
@@ -2547,6 +2548,30 @@ class MapNonCatalogItemTest(TestCase):
         item.refresh_from_db()
         self.assertEqual(item.product_id, long_code_product.pk)
         self.assertTrue(AuditLog.objects.filter(target_id=str(pr.pk)).exists())
+
+
+class CancelPrItemOpenQtyTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='pur1', password='pur-pass-123', role=User.Role.PURCHASING)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        self.pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_07_001_cancel_more_than_open_rejected(self):
+        with self.assertRaises(ValidationError):
+            cancel_pr_item_open_qty(self.pr_item, qty=11, reason='Không cần nữa', actor=self.user)
+
+    def test_TC_PUR_PR_07_002_cancel_valid_increments_qty_cancelled(self):
+        cancel_pr_item_open_qty(self.pr_item, qty=4, reason='Giảm nhu cầu', actor=self.user)
+        self.pr_item.refresh_from_db()
+        self.assertEqual(self.pr_item.qty_cancelled, 4)
+        self.assertEqual(self.pr_item.qty_open, 6)
+        self.assertTrue(AuditLog.objects.filter(description__icontains='Giảm nhu cầu').exists())
 
 
 class ExchangeRateModelTest(TestCase):
