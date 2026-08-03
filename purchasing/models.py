@@ -38,8 +38,90 @@ from decimal import Decimal
 
 from django.core.validators import MinValueValidator
 from django.db import IntegrityError, models, transaction
+from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
+
+from accounts.models import User
+
+
+class Currency(models.TextChoices):
+    VND = 'VND', 'VND'
+    USD = 'USD', 'USD'
+    EUR = 'EUR', 'EUR'
+    JPY = 'JPY', 'JPY'
+    CNY = 'CNY', 'CNY'
+
+
+class ExchangeRate(models.Model):
+    currency = models.CharField(max_length=3, choices=Currency.choices, verbose_name='Loại tiền')
+    rate_date = models.DateField(verbose_name='Ngày áp dụng')
+    rate_to_vnd = models.DecimalField(
+        max_digits=14, decimal_places=6, validators=[MinValueValidator(Decimal('0.000001'))],
+        verbose_name='Tỷ giá quy đổi VND', help_text='1 đơn vị ngoại tệ = ? VND.')
+    created_by = models.ForeignKey(
+        'accounts.User', on_delete=models.PROTECT, verbose_name='Người nhập')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày nhập')
+
+    class Meta:
+        verbose_name = 'Tỷ giá ngoại tệ'
+        verbose_name_plural = 'Tỷ giá ngoại tệ'
+        ordering = ['-rate_date', '-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['currency', 'rate_date'], name='unique_currency_rate_date'),
+            models.CheckConstraint(condition=~Q(currency='VND'), name='exchange_rate_currency_not_vnd'),
+        ]
+
+    def __str__(self):
+        return f'{self.currency} @ {self.rate_date}: {self.rate_to_vnd}'
+
+
+class ProcurementAllocation(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = 'ACTIVE', 'Đang hiệu lực'
+        RELEASED = 'RELEASED', 'Đã giải phóng'
+
+    pr_item = models.ForeignKey(
+        'PurchaseRequestItem', on_delete=models.PROTECT, related_name='allocations',
+        verbose_name='Dòng yêu cầu mua hàng')
+    po_item = models.ForeignKey(
+        'PurchaseOrderItem', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='allocations', verbose_name='Dòng đơn mua hàng')
+    po_no_snapshot = models.CharField(max_length=30, blank=True, editable=False, verbose_name='Số PO (lưu vết)')
+    product_code_snapshot = models.CharField(max_length=50, blank=True, editable=False, verbose_name='Mã sản phẩm (lưu vết)')
+    qty_allocated = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name='Số lượng phân bổ')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, verbose_name='Trạng thái')
+    released_reason = models.TextField(blank=True, verbose_name='Lý do giải phóng')
+    released_by = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+        verbose_name='Người giải phóng')
+    released_at = models.DateTimeField(null=True, blank=True, verbose_name='Thời điểm giải phóng')
+    created_by = models.ForeignKey(
+        'accounts.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+        verbose_name='Người tạo phân bổ')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')
+
+    class Meta:
+        verbose_name = 'Phân bổ PR-PO'
+        verbose_name_plural = 'Phân bổ PR-PO'
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status='RELEASED') | Q(po_item__isnull=False),
+                name='active_allocation_requires_po_item'),
+            models.CheckConstraint(
+                condition=(
+                    Q(status='ACTIVE', released_at__isnull=True, released_by__isnull=True, released_reason='')
+                    | (Q(status='RELEASED', released_at__isnull=False) & ~Q(released_reason=''))
+                ),
+                name='allocation_release_fields_match_status'),
+            models.CheckConstraint(condition=Q(qty_allocated__gte=1), name='allocation_qty_positive'),
+            models.CheckConstraint(
+                condition=~Q(po_no_snapshot='') & ~Q(product_code_snapshot=''),
+                name='allocation_snapshots_required'),
+        ]
+
+    def __str__(self):
+        return f'{self.pr_item} -> {self.po_no_snapshot} ({self.qty_allocated})'
 
 
 class PurchaseOrder(models.Model):
@@ -254,6 +336,15 @@ class PurchaseRequest(models.Model):
         'warehouse.Warehouse', on_delete=models.PROTECT, related_name='purchase_requests', verbose_name='Kho',
         help_text='Kho đang thiếu hàng (chỉ kho loại MAIN).')
     note = models.TextField(blank=True, verbose_name='Ghi chú')
+    cost_center = models.CharField(
+        max_length=50, default='', verbose_name='Trung tâm chi phí',
+        help_text='Bắt buộc — khoá ngân sách theo quyết định #2 (cost_center + budget_category dòng PR).')
+    department_snapshot = models.CharField(
+        max_length=20, choices=User.Department.choices, blank=True, default='', editable=False,
+        verbose_name='Phòng ban (snapshot lúc nộp)',
+        help_text='Set tự động trong submit_purchase_request() — bất biến sau khi set, không đọc lại '
+                   'requested_by.department nếu người đó đổi phòng ban sau này.')
+    project = models.CharField(max_length=100, blank=True, default='', verbose_name='Dự án (tuỳ chọn)')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, verbose_name='Trạng thái')
     decided_by = models.ForeignKey(
         'accounts.User', null=True, blank=True, on_delete=models.PROTECT, related_name='+',
@@ -315,8 +406,24 @@ class PurchaseRequestItem(models.Model):
     purchase_request = models.ForeignKey(
         PurchaseRequest, on_delete=models.CASCADE, related_name='items', verbose_name='Yêu cầu mua hàng')
     product = models.ForeignKey(
-        'catalog.Product', on_delete=models.PROTECT, related_name='pr_items', verbose_name='Sản phẩm')
+        'catalog.Product', null=True, blank=True, on_delete=models.PROTECT,
+        related_name='pr_items', verbose_name='Sản phẩm')
     qty_requested = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name='Số lượng yêu cầu')
+    non_catalog_name = models.CharField(
+        max_length=200, blank=True, default='', verbose_name='Tên hàng (chưa có trong danh mục)')
+    non_catalog_uom = models.CharField(
+        max_length=20, blank=True, default='', verbose_name='Đơn vị tính (đề xuất)')
+    non_catalog_note = models.TextField(blank=True, default='', verbose_name='Mô tả/quy cách (non-catalog)')
+    required_date = models.DateField(null=True, blank=True, verbose_name='Ngày cần hàng')
+    budget_category = models.CharField(
+        max_length=100, null=True, blank=True, verbose_name='Nhóm ngân sách/Tài khoản')
+    currency = models.CharField(
+        max_length=3, choices=Currency.choices, default=Currency.VND, verbose_name='Loại tiền')
+    estimated_unit_price = models.DecimalField(
+        max_digits=14, decimal_places=2, validators=[MinValueValidator(0)], null=True, blank=True,
+        verbose_name='Đơn giá ước tính')
+    qty_approved = models.PositiveIntegerField(null=True, blank=True, verbose_name='Số lượng được duyệt')
+    qty_cancelled = models.PositiveIntegerField(default=0, verbose_name='Số lượng đã huỷ (phần còn mở)')
 
     class Meta:
         verbose_name = 'Dòng yêu cầu mua hàng'
@@ -324,3 +431,39 @@ class PurchaseRequestItem(models.Model):
 
     def __str__(self):
         return f'{self.purchase_request.request_no} - {self.product.product_code} x{self.qty_requested}'
+
+    @property
+    def is_non_catalog(self):
+        return self.product_id is None
+
+    @property
+    def qty_allocated(self):
+        from django.db.models import Sum
+        return self.allocations.filter(
+            status=ProcurementAllocation.Status.ACTIVE,
+        ).aggregate(total=Sum('qty_allocated'))['total'] or 0
+
+    @property
+    def qty_ordered(self):
+        from django.db.models import Sum
+        committed_statuses = (
+            PurchaseOrder.Status.SENT, PurchaseOrder.Status.PARTIAL_RECEIVED,
+            PurchaseOrder.Status.RECEIVED, PurchaseOrder.Status.CLOSED,
+        )
+        return self.allocations.filter(
+            status=ProcurementAllocation.Status.ACTIVE,
+            po_item__purchase_order__status__in=committed_statuses,
+        ).aggregate(total=Sum('qty_allocated'))['total'] or 0
+
+    @property
+    def qty_open(self):
+        return max(0, (self.qty_approved or 0) - self.qty_allocated - self.qty_cancelled)
+
+    @property
+    def qty_received(self):
+        from .services import qty_received_by_allocation
+        total = 0
+        for allocation in self.allocations.filter(
+                status=ProcurementAllocation.Status.ACTIVE, po_item__isnull=False):
+            total += qty_received_by_allocation(allocation.po_item).get(allocation.pk, 0)
+        return total

@@ -7,7 +7,7 @@ from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -19,7 +19,14 @@ from receiving.models import Grn, GrnItem
 from warehouse.models import Warehouse
 
 from . import views as purchasing_views
-from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
+from .models import (
+    ExchangeRate,
+    ProcurementAllocation,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PurchaseRequest,
+    PurchaseRequestItem,
+)
 from .services import (
     approve_po,
     close_po,
@@ -2375,3 +2382,97 @@ class AuditLogConfirmationTest(TestCase):
                     po = send_po(po, actor=self.manager)
             log = AuditLog.objects.filter(target_id=str(po.pk)).latest('created_at')
             self.assertIn(expected_keyword, log.description)
+
+
+class PurchaseRequestFieldsTest(TestCase):
+    def test_TC_PUR_PR_new_fields_exist_with_correct_defaults(self):
+        user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        pr = PurchaseRequest.objects.create(
+            requested_by=user, warehouse=warehouse, cost_center='CC-001')
+        self.assertEqual(pr.cost_center, 'CC-001')
+        self.assertEqual(pr.department_snapshot, '')
+        self.assertEqual(pr.project, '')
+
+
+class PurchaseRequestItemFieldsTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg', category='Nguyên liệu')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001')
+
+    def test_TC_PUR_PR_01_catalog_item_default_qty_properties_zero(self):
+        item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'),
+            budget_category='Nguyên liệu')
+        self.assertFalse(item.is_non_catalog)
+        self.assertEqual(item.qty_allocated, 0)
+        self.assertEqual(item.qty_ordered, 0)
+        self.assertEqual(item.qty_open, 0)  # qty_approved=None -> qty_open=0 (mục 2.2)
+
+    def test_TC_PUR_PR_01_non_catalog_item_is_non_catalog_true(self):
+        item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=None, qty_requested=5,
+            non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('50000'),
+            budget_category='Vật tư')
+        self.assertTrue(item.is_non_catalog)
+
+
+class ExchangeRateModelTest(TestCase):
+    def test_TC_PUR_XR_unique_currency_rate_date(self):
+        admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        ExchangeRate.objects.create(
+            currency='USD', rate_date=timezone.localdate(), rate_to_vnd=Decimal('25000'),
+            created_by=admin_user)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ExchangeRate.objects.create(
+                    currency='USD', rate_date=timezone.localdate(), rate_to_vnd=Decimal('25100'),
+                    created_by=admin_user)
+
+    def test_TC_PUR_XR_currency_cannot_be_vnd(self):
+        admin_user = User.objects.create_user(username='admin2', password='admin-pass-123', role=User.Role.ADMIN)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ExchangeRate.objects.create(
+                    currency='VND', rate_date=timezone.localdate(), rate_to_vnd=Decimal('1'),
+                    created_by=admin_user)
+
+
+class ProcurementAllocationModelTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001', status=PurchaseRequest.Status.APPROVED)
+        self.pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'),
+            budget_category='Nguyên liệu')
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+
+    def test_TC_PUR_PR_05_009_active_allocation_requires_po_item(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=None, qty_allocated=5,
+                    status=ProcurementAllocation.Status.ACTIVE,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+                )
+
+    def test_TC_PUR_PR_05_011_allocation_qty_positive(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=0,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+                )

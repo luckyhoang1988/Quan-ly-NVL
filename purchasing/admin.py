@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest, PurchaseRequestItem
+from .models import (
+    ProcurementAllocation,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PurchaseRequest,
+    PurchaseRequestItem,
+)
 
 
 class ServiceManagedAdminMixin:
@@ -49,3 +55,9 @@ class PurchaseRequestAdmin(ServiceManagedAdminMixin, admin.ModelAdmin):
     list_filter = ('status', 'warehouse')
     search_fields = ('request_no',)
     inlines = [PurchaseRequestItemInline]
+
+
+@admin.register(ProcurementAllocation)
+class ProcurementAllocationAdmin(ServiceManagedAdminMixin, admin.ModelAdmin):
+    list_display = ('pr_item', 'po_no_snapshot', 'product_code_snapshot', 'qty_allocated', 'status', 'created_at')
+    list_filter = ('status',)
