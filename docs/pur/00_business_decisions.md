@@ -358,9 +358,10 @@ dùng tỷ giá gần nhất trước đó kèm cảnh báo?
 **Quyết định cuối**: **Dùng `ExchangeRate` có `rate_date` gần nhất trước ngày cần snapshot**, kèm
 cảnh báo rõ ràng trên UI và ghi audit log — **nhưng chỉ chấp nhận nếu tỷ giá đó không cũ quá 5
 ngày lịch** (tính cả cuối tuần) so với ngày cần snapshot. Nếu không có `ExchangeRate` nào trong
-vòng 5 ngày gần nhất, **chặn transition**, bắt buộc Admin nhập tỷ giá mới trước khi tiếp tục. Đây
-là quyết định trực tiếp mở khóa Stage 2 — trong 5 mục DEFERRED, đây là mục duy nhất từng được xác
-định là điểm chặn cứng cho phạm vi Stage 2 (PR Allocation).
+vòng 5 ngày gần nhất, **chặn transition**, bắt buộc Admin nhập tỷ giá mới trước khi tiếp tục.
+Quyết định này là điều kiện để hoàn tất Discovery và viết FSD Stage 2; logic tìm tỷ giá gần nhất
+trong 5 ngày và chặn transition được triển khai tại Stage 3, khi tỷ giá bắt đầu được tiêu thụ để
+snapshot ngân sách.
 
 ---
 
