@@ -66,7 +66,7 @@ PurchaseOrderItemFormSet = inlineformset_factory(
 class PurchaseRequestForm(forms.ModelForm):
     class Meta:
         model = PurchaseRequest
-        fields = ['warehouse', 'assigned_to', 'note']
+        fields = ['warehouse', 'assigned_to', 'cost_center', 'project', 'note']
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

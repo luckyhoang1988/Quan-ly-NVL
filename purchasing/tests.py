@@ -21,6 +21,7 @@ from receiving.models import Grn, GrnItem
 from warehouse.models import Warehouse
 
 from . import views as purchasing_views
+from .forms import PurchaseRequestForm
 from .models import (
     ExchangeRate,
     ProcurementAllocation,
@@ -1283,6 +1284,7 @@ class PrCreatePrefillTest(TestCase):
     def _payload(self, **overrides):
         payload = {
             'warehouse': self.warehouse.pk,
+            'cost_center': 'CC-001',
             'min_level_origin': '1',
             'items-TOTAL_FORMS': '1',
             'items-INITIAL_FORMS': '0',
@@ -1409,6 +1411,7 @@ class PurchaseRequestCrudTest(TestCase):
     def _payload(self, **overrides):
         payload = {
             'warehouse': self.warehouse.pk,
+            'cost_center': 'CC-001',
             'note': 'Thiếu hàng gấp',
             'items-TOTAL_FORMS': '1',
             'items-INITIAL_FORMS': '0',
@@ -3244,3 +3247,22 @@ class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
         submit_purchase_request(self.pr, actor=self.staff)
         self.pr.refresh_from_db()
         self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)
+
+
+class PurchaseRequestFormFieldsTest(TestCase):
+    """Task 3.1 — ``PurchaseRequestForm`` phải có ``cost_center``/``project`` để
+    khớp field bắt buộc mới ở model (quyết định #2, Task 1.1)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+
+    def test_AC1_missing_cost_center_invalid(self):
+        form = PurchaseRequestForm(data={'warehouse': self.warehouse.pk, 'note': '', 'project': ''})
+        self.assertFalse(form.is_valid())
+        self.assertIn('cost_center', form.errors)
+
+    def test_cost_center_and_project_accepted(self):
+        form = PurchaseRequestForm(data={
+            'warehouse': self.warehouse.pk, 'note': '', 'cost_center': 'CC-001', 'project': 'Dự án A'})
+        self.assertTrue(form.is_valid(), form.errors)
