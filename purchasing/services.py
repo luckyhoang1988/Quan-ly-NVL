@@ -67,6 +67,29 @@ def received_qty_by_product(po):
     )
 
 
+def qty_received_by_allocation(po_item):
+    """Mục 4 điểm 6: chia total_received (GRN đã ghi nhận cho product của po_item) cho các
+    ProcurementAllocation ACTIVE trỏ tới po_item, theo tỷ lệ qty_allocated/qty_ordered — phần dư
+    do làm tròn xuống dồn hết vào allocation CUỐI CÙNG theo pk tăng dần, đảm bảo tổng luôn khớp
+    chính xác total_received (không thừa/thiếu). Trả dict {allocation_id: qty_received}.
+    """
+    total_received = received_qty_by_product(po_item.purchase_order).get(po_item.product_id, 0)
+    allocations = list(
+        po_item.allocations.filter(status=ProcurementAllocation.Status.ACTIVE).order_by('pk')
+    )
+    if not allocations or po_item.qty_ordered == 0:
+        return {}
+    result = {}
+    distributed = 0
+    for allocation in allocations[:-1]:
+        share = (total_received * allocation.qty_allocated) // po_item.qty_ordered
+        result[allocation.pk] = share
+        distributed += share
+    last = allocations[-1]
+    result[last.pk] = total_received - distributed
+    return result
+
+
 def find_duplicate_po_products():
     """PUR-FND-06 Bước 1 — báo cáo read-only các PO đang có ≥2 dòng cùng Product,
     chạy thủ công (``manage.py shell``/management command tạm) TRƯỚC KHI migrate

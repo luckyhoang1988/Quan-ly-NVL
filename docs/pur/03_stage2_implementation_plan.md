@@ -2021,8 +2021,18 @@ class QtyReceivedByAllocationTest(TestCase):
             required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
         allocation_a = create_allocation(pr_item_a, po_item, qty=10, actor=admin_user)  # pk nhỏ hơn
         allocation_b = create_allocation(pr_item_b, po_item, qty=5, actor=admin_user)   # pk lớn hơn -> nhận phần dư
+        # LƯU Ý (phát hiện khi thực thi Task 2.11): create_allocation() tăng qty_ordered qua 1 bản
+        # PurchaseOrderItem khoá riêng bên trong hàm — KHÔNG mutate instance `po_item` của caller.
+        # Thiếu dòng refresh_from_db() này, po_item.qty_ordered ở test vẫn là 0 -> nhánh early-return
+        # `if ... or po_item.qty_ordered == 0: return {}` khiến qty_received_by_allocation() trả về
+        # {} rỗng, và assertion bên dưới raise KeyError chứ không phải AssertionError.
+        po_item.refresh_from_db()
         grn = Grn.objects.create(po=po, supplier=supplier, created_by=qc_user)
-        GrnItem.objects.create(grn=grn, product=product, qty_received=9, unit_price=Decimal('1000'))
+        # LƯU Ý (phát hiện khi thực thi Task 2.11): GrnItem.qty_ordered là PositiveIntegerField
+        # KHÔNG có default/null — thiếu field này raise IntegrityError ngay khi tạo, không liên
+        # quan gì tới hành vi đang test.
+        GrnItem.objects.create(
+            grn=grn, product=product, qty_ordered=9, qty_received=9, unit_price=Decimal('1000'))
 
         result = qty_received_by_allocation(po_item)
         self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 9)

@@ -40,6 +40,7 @@ from .services import (
     find_duplicate_po_products,
     forward_purchase_request,
     map_non_catalog_item,
+    qty_received_by_allocation,
     received_qty_by_product,
     reconcile_legacy_po_item_allocations,
     release_allocation,
@@ -3159,3 +3160,40 @@ class ReconcileLegacyPoItemAllocationsTest(TestCase):
         with self.assertRaises(ValidationError):
             reconcile_legacy_po_item_allocations(self.po_item, [], actor=self.admin_user)
         self.assertEqual(AuditLog.objects.count(), audit_count_before)
+
+
+class QtyReceivedByAllocationTest(TestCase):
+    def test_TC_PUR_PR_05_004_remainder_goes_to_last_allocation_by_pk(self):
+        admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=supplier, source=PurchaseOrder.Source.FROM_PR)
+        po_item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=product, qty_ordered=0, unit_price=Decimal('1000'))
+        pr = PurchaseRequest.objects.create(
+            requested_by=staff, warehouse=warehouse, cost_center='CC-001', status=PurchaseRequest.Status.APPROVED)
+        pr_item_a = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        pr_item_b = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        allocation_a = create_allocation(pr_item_a, po_item, qty=10, actor=admin_user)  # pk nhỏ hơn
+        allocation_b = create_allocation(pr_item_b, po_item, qty=5, actor=admin_user)   # pk lớn hơn -> nhận phần dư
+        po_item.refresh_from_db()  # create_allocation() tăng qty_ordered qua bản khoá riêng, không mutate instance caller
+        grn = Grn.objects.create(po=po, supplier=supplier, created_by=qc_user)
+        GrnItem.objects.create(
+            grn=grn, product=product, qty_ordered=9, qty_received=9, unit_price=Decimal('1000'))
+
+        result = qty_received_by_allocation(po_item)
+        self.assertEqual(result[allocation_a.pk] + result[allocation_b.pk], 9)
+        # 9 * 10 // 15 = 6 (allocation_a, pk nhỏ hơn, không nhận dư); phần dư 3 dồn vào allocation_b.
+        self.assertEqual(result[allocation_a.pk], 6)
+        self.assertEqual(result[allocation_b.pk], 3)
+        pr_item_a.refresh_from_db()
+        pr_item_b.refresh_from_db()
+        self.assertEqual(pr_item_a.qty_received, 6)
+        self.assertEqual(pr_item_b.qty_received, 3)
