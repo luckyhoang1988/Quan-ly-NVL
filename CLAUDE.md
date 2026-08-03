@@ -509,6 +509,19 @@ rather than rediscovering the failure.
   leading `'` to force plain-text if the string starts with one of those four characters). Apply generally:
   any future export path that writes arbitrary user-entered strings into a spreadsheet needs the same
   guard — CSV exports are equally vulnerable if one is ever added.
+- **`log_action(description=...)` must never interpolate an unbounded value** (`str(model)`,
+  a free-text `reason`, a name field with no short cap) — `AuditLog.description` is
+  `CharField(max_length=255)`, and a Postgres overflow raises `StringDataRightTruncation` /
+  `DataError` from inside the same `@transaction.atomic` service, rolling back the entire
+  transaction (the real business mutation included, not just the audit row) — found twice in
+  `purchasing.services` (`map_non_catalog_item`, then `cancel_pr_item_open_qty`, both hit by
+  `PurchaseRequestItem.non_catalog_name` being 200 chars and embedded via `str(pr_item)`).
+  `AuditLog` has dedicated fields for exactly this — `reason` (`TextField`, unbounded) and
+  `changes` (`JSONField`, structured before/after) — pass free-text/long values through those
+  `log_action()` kwargs instead, and keep `description` to short, length-bounded identifiers only
+  (a PK, a short code, a fixed-length enum label). Apply generally: any new `log_action()` call
+  whose `description` f-string embeds a model's `__str__`, a `name`/`non_catalog_name`-style
+  field, or a caller-supplied `reason` needs the same split.
 - **Per-SKU thresholds/KPIs must aggregate across every row in scope before comparing**, not row-by-row —
   e.g. `low_stock_count` must sum a SKU's qty across all MAIN warehouses before comparing to `min_level`,
   or a split-stock SKU gets miscounted. A KPI naming a business concept that maps to a multi-value status

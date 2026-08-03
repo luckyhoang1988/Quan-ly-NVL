@@ -866,13 +866,16 @@ def cancel_pr_item_open_qty(pr_item, qty, reason, actor, ip_address=None):
     if qty > pr_item.qty_open:
         raise ValidationError(f'Số lượng huỷ ({qty}) vượt quá số lượng còn mở ({pr_item.qty_open}).')
 
+    old_qty_cancelled = pr_item.qty_cancelled
     pr_item.qty_cancelled = F('qty_cancelled') + qty
     pr_item.save(update_fields=['qty_cancelled'])
     pr_item.refresh_from_db(fields=['qty_cancelled'])
 
     log_action(
         actor, AuditLog.Action.CANCEL, target=pr_item.purchase_request,
-        description=f'Huỷ {qty} số lượng còn mở của dòng "{pr_item}" — lý do: {reason}.',
+        description=f'Huỷ {qty} số lượng còn mở của dòng PR #{pr_item.pk}.',
+        reason=reason,
+        changes={'qty_cancelled': [old_qty_cancelled, pr_item.qty_cancelled]},
         ip_address=ip_address,
     )
     return pr_item

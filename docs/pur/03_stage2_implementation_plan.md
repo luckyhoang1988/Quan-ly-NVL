@@ -1521,7 +1521,24 @@ class CancelPrItemOpenQtyTest(TestCase):
         self.pr_item.refresh_from_db()
         self.assertEqual(self.pr_item.qty_cancelled, 4)
         self.assertEqual(self.pr_item.qty_open, 6)
-        self.assertTrue(AuditLog.objects.filter(description__icontains='Giảm nhu cầu').exists())
+        self.assertTrue(AuditLog.objects.filter(reason='Giảm nhu cầu').exists())
+
+    def test_TC_PUR_PR_07_003_cancel_with_long_non_catalog_name_does_not_overflow_audit(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=None, qty_requested=10, qty_approved=10,
+            non_catalog_name='X' * 200, non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'),
+            budget_category='VT')
+
+        cancel_pr_item_open_qty(item, qty=3, reason='Huỷ toàn bộ phần còn mở', actor=self.user)
+
+        item.refresh_from_db()
+        self.assertEqual(item.qty_cancelled, 3)
+        log = AuditLog.objects.filter(target_id=str(pr.pk), action=AuditLog.Action.CANCEL).latest('id')
+        self.assertEqual(log.reason, 'Huỷ toàn bộ phần còn mở')
 ```
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `ImportError`.
 - [ ] **Bước 3: Viết code tối thiểu để PASS**:
@@ -1541,13 +1558,20 @@ def cancel_pr_item_open_qty(pr_item, qty, reason, actor, ip_address=None):
     if qty > pr_item.qty_open:
         raise ValidationError(f'Số lượng huỷ ({qty}) vượt quá số lượng còn mở ({pr_item.qty_open}).')
 
+    old_qty_cancelled = pr_item.qty_cancelled
     pr_item.qty_cancelled = F('qty_cancelled') + qty
     pr_item.save(update_fields=['qty_cancelled'])
     pr_item.refresh_from_db(fields=['qty_cancelled'])
 
+    # description KHÔNG được nhúng str(pr_item)/reason trực tiếp — non_catalog_name dài tới 200
+    # ký tự + reason tự do có thể vượt AuditLog.description (max_length=255) và làm
+    # StringDataRightTruncation rollback cả transaction huỷ. Dùng reason=/changes= (không giới
+    # hạn độ dài) thay vì nhét hết vào description, cùng pattern đã chốt ở map_non_catalog_item.
     log_action(
         actor, AuditLog.Action.CANCEL, target=pr_item.purchase_request,
-        description=f'Huỷ {qty} số lượng còn mở của dòng "{pr_item}" — lý do: {reason}.',
+        description=f'Huỷ {qty} số lượng còn mở của dòng PR #{pr_item.pk}.',
+        reason=reason,
+        changes={'qty_cancelled': [old_qty_cancelled, pr_item.qty_cancelled]},
         ip_address=ip_address,
     )
     return pr_item
