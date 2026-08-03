@@ -1,3 +1,4 @@
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from importlib import import_module
@@ -8,7 +9,8 @@ from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
-from django.test import TestCase
+from django.db.utils import OperationalError
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -2254,6 +2256,82 @@ class DecidePurchaseRequestQtyApprovedTest(TestCase):
         log = AuditLog.objects.get(
             target_id=str(self.pr.pk), action=AuditLog.Action.APPROVE, changes__isnull=False)
         self.assertEqual(log.changes['qty_approved'], {str(self.item.pk): [10, 6], str(item2.pk): [10, 4]})
+
+
+class DecidePurchaseRequestMapNonCatalogLockOrderDeadlockTests(TransactionTestCase):
+    """BUG-24, 2026-08-03: ``decide_purchase_request`` (Task 2.9) khoá theo thứ tự
+    ``PurchaseRequest`` -> ``PurchaseRequestItem`` ở nhánh ``PENDING_PUR``, trong
+    khi ``map_non_catalog_item`` dùng ``select_related('purchase_request')
+    .select_for_update()`` KHÔNG giới hạn ``of=`` — Postgres ``FOR UPDATE`` không
+    kèm ``OF <table>`` khoá LUÔN bảng JOIN (cùng lớp BUG-16 đã sửa ở
+    ``create_allocation``/... trong chính file này), nên khoá
+    ``PurchaseRequestItem`` trước rồi mới "khoá oan" ``PurchaseRequest`` — ngược
+    chiều với ``decide_purchase_request``. Duyệt PR ở ``PENDING_PUR`` chạy đồng
+    thời với map sản phẩm cho 1 dòng non-catalog của chính PR đó có thể deadlock
+    thật. Dùng ``TransactionTestCase`` (không phải ``TestCase``) vì cần 2 thread
+    với 2 transaction/kết nối DB thật để tạo tranh chấp khoá thật.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.map_product = Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001')
+        self.item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10,
+            required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='NL')
+        self.non_catalog_item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=None, qty_requested=5,
+            non_catalog_name='Vật tư ngoài danh mục', non_catalog_uom='cái',
+            required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='VT')
+        submit_purchase_request(self.pr, actor=self.staff)  # staff không thuộc PURCHASING -> PENDING_PUR ngay
+
+    def test_TC_PUR_PR_09_001_concurrent_decide_and_map_non_catalog_no_deadlock(self):
+        """Duyệt PR (không override) chạy song song với map sản phẩm cho dòng
+        non-catalog của cùng PR. Bất kể bên nào thắng tranh chấp khoá, kỳ vọng:
+        không deadlock, không thread nào bị treo, cả hai đều thành công (PR ở
+        PENDING_PUR/APPROVED đều nằm trong MAPPABLE_PR_STATUSES nên map không có
+        lý do nghiệp vụ nào để thất bại)."""
+        from accounts.approvals import latest_approval_for
+        approval = latest_approval_for(self.pr)
+
+        barrier = threading.Barrier(2)
+        errors = {}
+
+        def wrap(name, fn):
+            try:
+                barrier.wait(timeout=5)
+                fn()
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                errors[name] = exc
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=lambda: wrap(
+            'decide', lambda: decide_purchase_request(approval, approved=True, actor=self.pur_manager)))
+        t2 = threading.Thread(target=lambda: wrap(
+            'map', lambda: map_non_catalog_item(self.non_catalog_item, self.map_product, actor=self.pur_manager)))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        self.assertFalse(t1.is_alive(), 'decide_purchase_request bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t2.is_alive(), 'map_non_catalog_item bị treo quá 10s (nghi deadlock)')
+        for name, exc in errors.items():
+            self.assertNotIsInstance(
+                exc, OperationalError,
+                f'{name} raised {exc!r} — nghi deadlock giữa decide_purchase_request và map_non_catalog_item '
+                f'(BUG-24 regression)',
+            )
 
 
 class PurchaseRequestTwoStageVisibilityTest(TestCase):

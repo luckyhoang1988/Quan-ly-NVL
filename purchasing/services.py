@@ -821,8 +821,21 @@ def map_non_catalog_item(pr_item, product, actor, ip_address=None):
     một trong `MAPPABLE_PR_STATUSES` (mục 4 điểm 10) — dùng allow-list thay vì chặn mỗi `DRAFT`,
     vì `REJECTED` mở lại được về `DRAFT` (`reopen_purchase_request`) nên vẫn mang đúng rủi ro "Product
     rác nếu Requester đổi ý" mà rule này muốn tránh.
+
+    ``select_for_update(of=('self',))`` khi kết hợp ``select_related('purchase_request')`` (mẫu
+    BUG-16, xem CLAUDE.md) — Postgres ``FOR UPDATE`` không kèm ``OF <table>`` sẽ khoá LUÔN
+    ``PurchaseRequest`` theo, dù hàm này không ghi vào ``PurchaseRequest``, chỉ join để đọc
+    ``pr_item.purchase_request.status``. Không giới hạn ``of`` từng gây deadlock thật (BUG-24)
+    với ``decide_purchase_request`` — hàm đó khoá theo thứ tự ``PurchaseRequest`` ->
+    ``PurchaseRequestItem`` ở nhánh ``PENDING_PUR``, ngược chiều với thứ tự "khoá oan" mà join
+    không giới hạn ``of`` tạo ra ở đây.
     """
-    pr_item = PurchaseRequestItem.objects.select_related('purchase_request').select_for_update().get(pk=pr_item.pk)
+    pr_item = (
+        PurchaseRequestItem.objects
+        .select_related('purchase_request')
+        .select_for_update(of=('self',))
+        .get(pk=pr_item.pk)
+    )
     if pr_item.product_id is not None:
         raise ValidationError('Dòng này đã có sản phẩm, không cần map lại.')
     if pr_item.purchase_request.status not in MAPPABLE_PR_STATUSES:

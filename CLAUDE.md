@@ -625,6 +625,20 @@ rather than rediscovering the failure.
   locks and reloads `Grn` then `QcInspection` (same order as `cancel_grn`) *before* any `Inventory`/`Batch`
   work, closing both the deadlock and the stale-read. Standing rule: **`Grn` → `QcInspection` → `Inventory` →
   `Batch` → `WarehouseHandoff`** is now the full chain for any function that touches 2+ of these.
+  **Trap (1) above recurred in a completely separate workflow** (BUG-24, 2026-08-03, PUR Expansion):
+  `purchasing.services.map_non_catalog_item` used `select_related('purchase_request').select_for_update()`
+  with no `of=`, so it locked `PurchaseRequest` too (only meant to lock `PurchaseRequestItem` — the join was
+  N+1 avoidance for reading `pr_item.purchase_request.status`). `decide_purchase_request`'s `PENDING_PUR`
+  branch locks `PurchaseRequest` then every `PurchaseRequestItem` — the opposite order — so approving a PR
+  concurrently with mapping a product onto one of its non-catalog lines could deadlock for real (reproduced
+  with a `TransactionTestCase` + 2 threads, ~50% hit rate over 8 runs, confirmed genuine
+  `OperationalError: deadlock detected ... in relation "purchasing_purchaserequestitem"`, not a fluke).
+  Fixed the same way as the original trap: `select_for_update(of=('self',))`, scoping the lock to
+  `PurchaseRequestItem` only — no need to reorder locks or add an extra query, since `map_non_catalog_item`
+  was never supposed to lock `PurchaseRequest` in the first place. General lesson: whenever a new function
+  introduces an explicit multi-model lock order, grep every other `select_for_update()` call already
+  touching those same two models — an *unscoped* `select_related().select_for_update()` written before the
+  new function existed can silently create the reverse order without anyone having decided on it.
 - **A numeric field/derived value with a sibling that has a bound** (a percentage field capped elsewhere, a
   sample-size floor on one sampling method but not another) should get the same bound by default — the
   asymmetry itself is usually evidence the bound was simply never added.
