@@ -3751,3 +3751,136 @@ class ExchangeRateMenuPermissionMigrationTest(TestCase):
 
         admin_user = User.objects.get(pk=admin_user.pk)
         self.assertTrue(admin_user.has_perm('accounts.can_view_menu_exchange_rate'))
+
+
+class Phase3FullFlowIntegrationTest(TestCase):
+    """Task 3.9, Bước 4 - không có trình duyệt để test thủ công luồng đầy đủ,
+    thay bằng 1 test tích hợp lái qua toàn bộ chain view thật của Phase 3: tạo
+    PR (1 dòng catalog + 1 dòng non-catalog) -> nộp -> duyệt cấp Mua hàng (sửa
+    qty_approved dòng catalog) -> map non-catalog -> build PO từ 2 dòng PR ->
+    sửa PO (po_update, xác nhận field khoá) -> duyệt PO -> gửi PO. Requester
+    không có department (bỏ qua PENDING_DEPT, đi thẳng PENDING_PUR) - luồng
+    duyệt 2 cấp tự nó đã có test riêng ở Task 2.9/2.12, mục đích test này là
+    xác nhận wiring các view Phase 3 khớp nhau, không lặp lại test đó."""
+
+    def setUp(self):
+        self.requester = User.objects.create_user(username='req1', password='req-pass-123', role=User.Role.STAFF)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg', category='Nguyên liệu')
+
+    def test_full_pr_to_po_flow_through_phase3_views(self):
+        self.client.login(username='req1', password='req-pass-123')
+
+        # 1. Tạo PR: 1 dòng catalog + 1 dòng non-catalog.
+        create_payload = {
+            'warehouse': self.warehouse.pk, 'cost_center': 'CC-001', 'note': '',
+            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '0', 'items-MIN_NUM_FORMS': '1', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-product': self.product.pk, 'items-0-qty_requested': '10',
+            'items-0-required_date': timezone.localdate().isoformat(), 'items-0-currency': 'VND',
+            'items-0-estimated_unit_price': '1000',
+            'items-1-non_catalog_name': 'Ống nhựa PVC', 'items-1-non_catalog_uom': 'cây', 'items-1-qty_requested': '5',
+            'items-1-required_date': timezone.localdate().isoformat(), 'items-1-currency': 'VND',
+            'items-1-estimated_unit_price': '5000',
+        }
+        response = self.client.post(reverse('purchasing:pr_create'), create_payload)
+        self.assertEqual(response.status_code, 302, response.context['form'].errors if response.status_code == 200 else None)
+        pr = PurchaseRequest.objects.get()
+        item_catalog = pr.items.get(product=self.product)
+        item_non_catalog = pr.items.get(product__isnull=True)
+
+        # 2. Nộp yêu cầu -> PENDING_PUR (requester không department).
+        response = self.client.post(reverse('purchasing:pr_submit', args=[pr.pk]))
+        self.assertEqual(response.status_code, 302)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+        # 3. Duyệt cấp Mua hàng, sửa qty_approved dòng catalog xuống 8.
+        self.client.login(username='purm', password='purm-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_approve', args=[pr.pk]), {f'qty_approved_{item_catalog.pk}': '8'})
+        self.assertEqual(response.status_code, 302)
+        pr.refresh_from_db()
+        self.assertEqual(pr.status, PurchaseRequest.Status.APPROVED)
+        item_catalog.refresh_from_db()
+        item_non_catalog.refresh_from_db()
+        self.assertEqual(item_catalog.qty_approved, 8)
+        self.assertEqual(item_non_catalog.qty_approved, 5)  # mặc định = qty_requested, không override
+
+        # 4. Map dòng non-catalog sang Product mới.
+        response = self.client.post(
+            reverse('purchasing:pr_item_map_product', args=[item_non_catalog.pk]), {
+                'new_product_code': 'NVL-0099', 'new_product_name': 'Ống nhựa PVC',
+                'new_product_uom': 'cây', 'new_product_category': 'Vật tư',
+            })
+        self.assertEqual(response.status_code, 302)
+        item_non_catalog.refresh_from_db()
+        self.assertIsNotNone(item_non_catalog.product_id)
+        mapped_product = item_non_catalog.product
+
+        # 5. Build PO từ cả 2 dòng PR đã duyệt.
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': self.supplier.pk,
+            'selected_items': [str(item_catalog.pk), str(item_non_catalog.pk)],
+            f'qty_{item_catalog.pk}': '8',
+            f'qty_{item_non_catalog.pk}': '5',
+            f'unit_price_{self.product.pk}': '1200',
+            f'unit_price_{mapped_product.pk}': '5500',
+        })
+        self.assertEqual(response.status_code, 302)
+        po = PurchaseOrder.objects.get(source=PurchaseOrder.Source.FROM_PR)
+        self.assertEqual(po.items.count(), 2)
+
+        # 6. Sửa PO: unit_price sửa được tự do (đúng luồng bình thường - test
+        # tamper qty_ordered/product riêng đã có ở PoUpdateFromPrGuardTest,
+        # Task 3.7 - post đúng qty_ordered hiện có, không phải giá trị khác, vì
+        # 1 dòng bị phát hiện tamper sẽ chặn TOÀN BỘ request, không lưu gì).
+        po_item_catalog = po.items.get(product=self.product)
+        po_item_mapped = po.items.get(product=mapped_product)
+        response = self.client.post(reverse('purchasing:po_update', args=[po.pk]), {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '2', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(po_item_catalog.pk), 'items-0-product': str(self.product.pk),
+            'items-0-qty_ordered': str(po_item_catalog.qty_ordered), 'items-0-unit_price': '1300',
+            'items-1-id': str(po_item_mapped.pk), 'items-1-product': str(mapped_product.pk),
+            'items-1-qty_ordered': str(po_item_mapped.qty_ordered), 'items-1-unit_price': '5600',
+        })
+        self.assertEqual(response.status_code, 302)
+        po_item_catalog.refresh_from_db()
+        po_item_mapped.refresh_from_db()
+        self.assertEqual(po_item_catalog.qty_ordered, 8)  # không đổi
+        self.assertEqual(po_item_catalog.unit_price, Decimal('1300'))
+        self.assertEqual(po_item_mapped.unit_price, Decimal('5600'))
+
+        # 6b. Xác nhận tamper qty_ordered vẫn bị chặn TOÀN BỘ request (không
+        # chỉ dòng bị tamper) trên đúng chain dữ liệu này, không chỉ trên dữ
+        # liệu tối giản của PoUpdateFromPrGuardTest.
+        response = self.client.post(reverse('purchasing:po_update', args=[po.pk]), {
+            'supplier': self.supplier.pk,
+            'items-TOTAL_FORMS': '2', 'items-INITIAL_FORMS': '2', 'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': str(po_item_catalog.pk), 'items-0-product': str(self.product.pk),
+            'items-0-qty_ordered': '999', 'items-0-unit_price': '1400',
+            'items-1-id': str(po_item_mapped.pk), 'items-1-product': str(mapped_product.pk),
+            'items-1-qty_ordered': str(po_item_mapped.qty_ordered), 'items-1-unit_price': '5700',
+        })
+        self.assertEqual(response.status_code, 302)
+        po_item_catalog.refresh_from_db()
+        po_item_mapped.refresh_from_db()
+        self.assertEqual(po_item_catalog.qty_ordered, 8)
+        self.assertEqual(po_item_catalog.unit_price, Decimal('1300'))  # không đổi thành 1400
+        self.assertEqual(po_item_mapped.unit_price, Decimal('5600'))  # cũng không đổi thành 5700
+
+        # 7. Duyệt PO rồi gửi NCC (NCC không có contact_email -> bỏ qua gửi mail).
+        response = self.client.post(reverse('purchasing:po_approve', args=[po.pk]))
+        self.assertEqual(response.status_code, 302)
+        po.refresh_from_db()
+        self.assertEqual(po.status, PurchaseOrder.Status.APPROVED)
+
+        response = self.client.post(reverse('purchasing:po_send', args=[po.pk]))
+        self.assertEqual(response.status_code, 302)
+        po.refresh_from_db()
+        self.assertEqual(po.status, PurchaseOrder.Status.SENT)
+        self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL)
