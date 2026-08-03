@@ -146,9 +146,21 @@ def create_allocation(pr_item, po_item, qty, actor, ip_address=None):
     đúng bằng qty (mục 4 điểm 4 FSD Stage 2 — điểm DUY NHẤT được phép tăng qty_ordered
     của PO nguồn FROM_PR). Lock order: PurchaseOrder -> PurchaseOrderItem ->
     PurchaseRequestItem -> ProcurementAllocation (mục 4 điểm 2).
+
+    ``select_for_update(of=('self',))`` khi kết hợp ``select_related('product')``
+    (mẫu BUG-16, xem CLAUDE.md / stocktake.services.apply_adjustment) — Postgres
+    ``FOR UPDATE`` không kèm ``OF <table>`` sẽ khoá LUÔN mọi bảng JOIN trong câu
+    query, nên nếu không giới hạn ``of`` thì dòng ``Product`` bị khoá "oan" theo,
+    dù hàm này không ghi vào ``Product`` — chỉ join để tránh N+1 khi đọc
+    ``po_item.product``. Giới hạn ``of=('self',)`` để chỉ khoá ``PurchaseOrderItem``.
     """
     po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
-    po_item = PurchaseOrderItem.objects.select_for_update().select_related('product').get(pk=po_item.pk)
+    po_item = (
+        PurchaseOrderItem.objects
+        .select_related('product')
+        .select_for_update(of=('self',))
+        .get(pk=po_item.pk)
+    )
     pr_item = PurchaseRequestItem.objects.select_for_update().get(pk=pr_item.pk)
     return _create_allocation_locked(pr_item, po, po_item, qty, actor, ip_address=ip_address)
 
