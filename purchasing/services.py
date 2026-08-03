@@ -19,7 +19,7 @@ import logging
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Avg, Count, Sum
+from django.db.models import Avg, Count, F, Q, Sum
 from django.utils import timezone
 
 from accounts.approvals import create_approval, decide_approval
@@ -30,7 +30,13 @@ from catalog.models import Product
 from partners.models import Supplier
 from receiving.models import Grn, GrnItem
 
-from .models import PurchaseOrder, PurchaseOrderItem, PurchaseRequest
+from .models import (
+    ProcurementAllocation,
+    PurchaseOrder,
+    PurchaseOrderItem,
+    PurchaseRequest,
+    PurchaseRequestItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,60 @@ def find_duplicate_po_products():
             item_ids,
         ))
     return results
+
+
+def _create_allocation_locked(pr_item, po, po_item, qty, actor, ip_address=None):
+    """Phần validate + ghi dữ liệu của PUR-PR-04, KHÔNG tự khoá — giả định `po`/`po_item`/`pr_item`
+    caller truyền vào đã là bản `select_for_update()` mới nhất (create_allocation() khoá 1 cặp;
+    build_po_from_allocations() khoá nhiều PurchaseRequestItem theo pk trước khi gọi hàm này lần
+    lượt cho từng cặp — xem Task 2.5)."""
+    if po.source != PurchaseOrder.Source.FROM_PR:
+        raise ValidationError('Chỉ tạo được phân bổ cho PO nguồn Từ yêu cầu mua hàng.')
+    if po.status != PurchaseOrder.Status.DRAFT:
+        raise ValidationError(
+            f'Chỉ tạo được phân bổ khi PO đang ở trạng thái Nháp (hiện tại: {po.get_status_display()}).')
+    if pr_item.purchase_request.status != PurchaseRequest.Status.APPROVED:
+        raise ValidationError('Chỉ tạo được phân bổ cho dòng PR đã duyệt.')
+    if pr_item.product_id is None:
+        raise ValidationError('Dòng yêu cầu mua hàng này chưa được map sang sản phẩm trong danh mục.')
+    if pr_item.product_id != po_item.product_id:
+        raise ValidationError('Sản phẩm của dòng PR và dòng PO không khớp.')
+    if qty < 1:
+        raise ValidationError('Số lượng phân bổ phải lớn hơn 0.')
+    if qty > pr_item.qty_open:
+        raise ValidationError(f'Số lượng phân bổ ({qty}) vượt quá số lượng còn mở ({pr_item.qty_open}).')
+
+    allocation = ProcurementAllocation.objects.create(
+        pr_item=pr_item, po_item=po_item, qty_allocated=qty,
+        po_no_snapshot=po.po_no, product_code_snapshot=po_item.product.product_code,
+        created_by=actor,
+    )
+    po_item.qty_ordered = F('qty_ordered') + qty
+    po_item.save(update_fields=['qty_ordered'])
+    po_item.refresh_from_db(fields=['qty_ordered'])  # F() -> phải refresh trước khi dùng lại giá trị số
+
+    log_action(
+        actor, AuditLog.Action.CREATE, target=allocation,
+        description=(
+            f'Phân bổ {qty} từ dòng PR "{pr_item}" sang PO "{po.po_no}" '
+            f'(sản phẩm {po_item.product.product_code}) — qty_ordered mới: {po_item.qty_ordered}.'
+        ),
+        ip_address=ip_address,
+    )
+    return allocation
+
+
+@transaction.atomic
+def create_allocation(pr_item, po_item, qty, actor, ip_address=None):
+    """PUR-PR-04: tạo 1 ProcurementAllocation, đồng thời tăng po_item.qty_ordered
+    đúng bằng qty (mục 4 điểm 4 FSD Stage 2 — điểm DUY NHẤT được phép tăng qty_ordered
+    của PO nguồn FROM_PR). Lock order: PurchaseOrder -> PurchaseOrderItem ->
+    PurchaseRequestItem -> ProcurementAllocation (mục 4 điểm 2).
+    """
+    po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
+    po_item = PurchaseOrderItem.objects.select_for_update().select_related('product').get(pk=po_item.pk)
+    pr_item = PurchaseRequestItem.objects.select_for_update().get(pk=pr_item.pk)
+    return _create_allocation_locked(pr_item, po, po_item, qty, actor, ip_address=ip_address)
 
 
 def sync_po_status(po):
