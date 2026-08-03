@@ -2670,3 +2670,27 @@ class DeleteDraftPoItemTest(TestCase):
             purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
         delete_draft_po_item_with_allocations(po_item, actor=self.admin_user)
         self.assertFalse(PurchaseOrderItem.objects.filter(pk=po_item.pk).exists())
+
+
+class SendPoAllocationGuardTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC', contact_email='')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        # PO APPROVED (không phải DRAFT) — bắt buộc để thực sự chạm guard mới, không bị chặn bởi
+        # điều kiện cũ "chỉ gửi PO APPROVED".
+        self.po = PurchaseOrder.objects.create(
+            po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR,
+            status=PurchaseOrder.Status.APPROVED)
+        # Legacy: qty_ordered=10 nhưng KHÔNG có allocation nào trỏ tới (mô phỏng dữ liệu cũ chưa reconcile).
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+
+    def test_TC_PUR_PR_05_008_send_po_blocked_when_qty_ordered_mismatches_allocation(self):
+        audit_count_before = AuditLog.objects.count()
+        with self.assertRaises(ValidationError):
+            send_po(self.po, actor=self.admin_user)
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.APPROVED)
+        self.assertEqual(AuditLog.objects.count(), audit_count_before)
+        self.assertEqual(len(mail.outbox), 0)

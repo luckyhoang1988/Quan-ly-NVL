@@ -415,6 +415,19 @@ def send_po(po, actor=None, ip_address=None):
     if po.status != PurchaseOrder.Status.APPROVED:
         raise ValidationError(f'Không thể gửi PO khi đang ở trạng thái {po.status}.')
 
+    if po.source == PurchaseOrder.Source.FROM_PR:
+        mismatched_lines = []
+        for po_item in po.items.select_related('product'):
+            total_allocated = po_item.allocations.filter(
+                status=ProcurementAllocation.Status.ACTIVE,
+            ).aggregate(total=Sum('qty_allocated'))['total'] or 0
+            if po_item.qty_ordered != total_allocated:
+                mismatched_lines.append(
+                    f'{po_item.product.product_code} (đặt: {po_item.qty_ordered}, đã phân bổ: {total_allocated})')
+        if mismatched_lines:
+            raise ValidationError(
+                'PO có dòng chưa khớp số lượng phân bổ, không thể gửi NCC: ' + '; '.join(mismatched_lines))
+
     po.status = PurchaseOrder.Status.SENT
     po.sent_at = timezone.now()
     po.save(update_fields=['status', 'sent_at'])
