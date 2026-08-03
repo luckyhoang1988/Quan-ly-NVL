@@ -165,6 +165,89 @@ def create_allocation(pr_item, po_item, qty, actor, ip_address=None):
     return _create_allocation_locked(pr_item, po, po_item, qty, actor, ip_address=ip_address)
 
 
+def _release_allocation_locked(allocation, po, po_item, pr_item, reason, actor, ip_address=None):
+    """Phần validate + ghi dữ liệu của việc giải phóng 1 allocation, KHÔNG tự khoá — giả định
+    `allocation`/`po`/`po_item`/`pr_item` caller truyền vào đã là bản `select_for_update()` mới
+    nhất. Trả về `qty_released` (int thật, đã refresh) để caller tự quyết định có xoá po_item
+    rỗng hay không (release_allocation() xoá ngay; delete_draft_po_item_with_allocations() gọi
+    với ý định xoá po_item đúng 1 lần ở cuối vòng lặp, không xoá lặp lại ở đây)."""
+    if allocation.status != ProcurementAllocation.Status.ACTIVE:
+        raise ValidationError('Chỉ giải phóng được phân bổ đang hiệu lực.')
+    if po.status != PurchaseOrder.Status.DRAFT:
+        raise ValidationError(
+            f'Chỉ giải phóng được phân bổ khi PO đang ở trạng thái Nháp (hiện tại: {po.get_status_display()}).')
+
+    qty_released = allocation.qty_allocated
+    allocation.status = ProcurementAllocation.Status.RELEASED
+    allocation.released_reason = reason
+    allocation.released_by = actor
+    allocation.released_at = timezone.now()
+    allocation.save(update_fields=['status', 'released_reason', 'released_by', 'released_at'])
+
+    po_item.qty_ordered = F('qty_ordered') - qty_released
+    po_item.save(update_fields=['qty_ordered'])
+    po_item.refresh_from_db(fields=['qty_ordered'])
+
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=allocation,
+        description=(
+            f'Giải phóng phân bổ {qty_released} của dòng PR "{pr_item}" khỏi PO "{po.po_no}" '
+            f'— lý do: {reason}. qty_ordered mới: {po_item.qty_ordered}.'
+        ),
+        ip_address=ip_address,
+    )
+    notify(pr_item.purchase_request.requested_by, (
+        f'Phân bổ {qty_released} của dòng yêu cầu mua hàng "{pr_item}" vừa được giải phóng khỏi '
+        f'PO "{po.po_no}" — số lượng còn mở đã tăng trở lại.'
+    ), target=pr_item.purchase_request)
+    return qty_released
+
+
+@transaction.atomic
+def release_allocation(allocation, reason, actor, *, delete_empty_po_item=True, ip_address=None):
+    """Chuyển 1 ProcurementAllocation ACTIVE -> RELEASED, trừ po_item.qty_ordered
+    tương ứng trong cùng transaction (mục 3/mục 4 điểm 4). ``delete_empty_po_item=False``
+    dùng bởi delete_draft_po_item_with_allocations() để tự quản lý xoá po_item đúng 1 lần
+    (Nghiêm trọng #4, review lần 3).
+
+    Cùng mẫu BUG-16 như ``create_allocation`` (xem CLAUDE.md /
+    stocktake.services.apply_adjustment): dùng ``select_for_update(of=('self',))`` khi kết hợp
+    ``select_related('product')`` để không khoá "oan" dòng ``Product`` — chỉ join tránh N+1.
+    """
+    reason = (reason or '').strip()
+    if not reason:
+        raise ValidationError('Bắt buộc nhập lý do khi giải phóng phân bổ.')
+    allocation = ProcurementAllocation.objects.select_related('po_item', 'pr_item').get(pk=allocation.pk)
+    if allocation.status != ProcurementAllocation.Status.ACTIVE:
+        raise ValidationError('Chỉ giải phóng được phân bổ đang hiệu lực.')
+    if allocation.po_item_id is None:
+        raise ValidationError('Phân bổ này không còn gắn với dòng PO nào.')
+
+    po = PurchaseOrder.objects.select_for_update().get(pk=allocation.po_item.purchase_order_id)
+    po_item = (
+        PurchaseOrderItem.objects
+        .select_related('product')
+        .select_for_update(of=('self',))
+        .get(pk=allocation.po_item_id)
+    )
+    pr_item = PurchaseRequestItem.objects.select_for_update().get(pk=allocation.pr_item_id)
+    allocation = ProcurementAllocation.objects.select_for_update().get(pk=allocation.pk)
+
+    _release_allocation_locked(allocation, po, po_item, pr_item, reason, actor, ip_address=ip_address)
+
+    deleted = False
+    if delete_empty_po_item and po_item.qty_ordered == 0:
+        po_item_repr = str(po_item)
+        po_item.delete()
+        deleted = True
+        log_action(
+            actor, AuditLog.Action.DELETE, target=po,
+            description=f'Xoá dòng PO-item "{po_item_repr}" khỏi PO "{po.po_no}" — hết số lượng sau khi giải phóng.',
+            ip_address=ip_address,
+        )
+    return allocation, deleted
+
+
 def sync_po_status(po):
     """Đối chiếu qty_received lũy kế so với qty_ordered từng dòng PO.
 

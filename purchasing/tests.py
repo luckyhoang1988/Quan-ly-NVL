@@ -35,6 +35,7 @@ from .services import (
     find_duplicate_po_products,
     forward_purchase_request,
     received_qty_by_product,
+    release_allocation,
     reopen_purchase_request,
     retry_po_email,
     send_po,
@@ -2581,3 +2582,49 @@ class CreateAllocationTest(TestCase):
             budget_category='Vật tư')
         with self.assertRaises(ValidationError):
             create_allocation(non_catalog_item, self.po_item, qty=1, actor=self.admin_user)
+
+
+class ReleaseAllocationTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.admin_user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=0, unit_price=Decimal('1000'))
+        self.pr_item_a = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        self.pr_item_b = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        self.allocation_a = create_allocation(self.pr_item_a, self.po_item, qty=10, actor=self.admin_user)
+        self.allocation_b = create_allocation(self.pr_item_b, self.po_item, qty=5, actor=self.admin_user)
+
+    def test_TC_PUR_PR_05_007_partial_release_keeps_po_item(self):
+        release_allocation(self.allocation_b, reason='Đổi ý giảm số lượng', actor=self.admin_user)
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.qty_ordered, 10)
+        self.assertTrue(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())
+        self.allocation_b.refresh_from_db()
+        self.assertEqual(self.allocation_b.status, ProcurementAllocation.Status.RELEASED)
+
+    def test_release_allocation_requires_reason(self):
+        with self.assertRaises(ValidationError):
+            release_allocation(self.allocation_b, reason='  ', actor=self.admin_user)
+
+    def test_TC_PUR_PR_04_005_release_allocation_rejected_when_po_approved(self):
+        self.po.status = PurchaseOrder.Status.APPROVED
+        self.po.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            release_allocation(self.allocation_a, reason='test', actor=self.admin_user)
+
+    def test_release_last_allocation_deletes_po_item(self):
+        release_allocation(self.allocation_a, reason='r1', actor=self.admin_user)
+        _, deleted = release_allocation(self.allocation_b, reason='r2', actor=self.admin_user)
+        self.assertTrue(deleted)
+        self.assertFalse(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())
