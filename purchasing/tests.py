@@ -29,6 +29,7 @@ from .models import (
 )
 from .services import (
     approve_po,
+    build_po_from_allocations,
     close_po,
     create_allocation,
     decide_purchase_request,
@@ -2694,3 +2695,72 @@ class SendPoAllocationGuardTest(TestCase):
         self.assertEqual(self.po.status, PurchaseOrder.Status.APPROVED)
         self.assertEqual(AuditLog.objects.count(), audit_count_before)
         self.assertEqual(len(mail.outbox), 0)
+
+
+class BuildPoFromAllocationsTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.admin_user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        self.pr_item_a = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        self.pr_item_b = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_05_001_two_pr_items_same_product_merge_into_one_po_item(self):
+        po = build_po_from_allocations(
+            self.supplier,
+            allocation_requests=[(self.pr_item_a, 10), (self.pr_item_b, 5)],
+            unit_price_by_product={self.product.pk: Decimal('1200')},
+            actor=self.admin_user,
+        )
+        self.assertEqual(po.source, PurchaseOrder.Source.FROM_PR)
+        self.assertEqual(po.items.count(), 1)
+        po_item = po.items.first()
+        self.assertEqual(po_item.qty_ordered, 15)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=po_item).count(), 2)
+
+    def test_build_po_from_allocations_rejects_empty(self):
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(self.supplier, [], {}, actor=self.admin_user)
+
+    def test_TC_PUR_PR_05_006_one_pr_item_split_into_two_pos(self):
+        pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=100, qty_approved=100,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        po_a = build_po_from_allocations(
+            self.supplier, [(pr_item, 40)], {self.product.pk: Decimal('1000')}, actor=self.admin_user)
+        po_b = build_po_from_allocations(
+            self.supplier, [(pr_item, 60)], {self.product.pk: Decimal('1000')}, actor=self.admin_user)
+        pr_item.refresh_from_db()
+        self.assertEqual(pr_item.qty_allocated, 100)
+        self.assertEqual(pr_item.qty_open, 0)
+        with self.assertRaises(ValidationError):
+            create_allocation(pr_item, po_a.items.first(), qty=1, actor=self.admin_user)
+        allocation_a = ProcurementAllocation.objects.get(pr_item=pr_item, po_item__purchase_order=po_a)
+        release_allocation(allocation_a, reason='test', actor=self.admin_user)
+        pr_item.refresh_from_db()
+        self.assertEqual(pr_item.qty_open, 40)
+        self.assertFalse(PurchaseOrderItem.objects.filter(purchase_order=po_a).exists())
+
+    def test_TC_PUR_PR_05_028_rejects_inactive_supplier(self):
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(
+                self.supplier, [(self.pr_item_a, 10)],
+                {self.product.pk: Decimal('1000')}, actor=self.admin_user)
+        self.assertFalse(PurchaseOrder.objects.filter(supplier=self.supplier).exists())
+
+    def test_build_po_from_allocations_rejects_negative_unit_price(self):
+        with self.assertRaises(ValidationError):
+            build_po_from_allocations(
+                self.supplier, [(self.pr_item_a, 10)],
+                {self.product.pk: Decimal('-100')}, actor=self.admin_user)
+        self.assertFalse(PurchaseOrder.objects.filter(supplier=self.supplier).exists())

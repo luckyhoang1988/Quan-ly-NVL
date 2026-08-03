@@ -308,6 +308,68 @@ def delete_draft_po_item_with_allocations(po_item, actor, ip_address=None):
     return po_item_repr
 
 
+@transaction.atomic
+def build_po_from_allocations(supplier, allocation_requests, unit_price_by_product, actor,
+                               expected_delivery_date=None, ip_address=None):
+    """PUR-PR-05 (po_build_from_pr_lines): tạo PurchaseOrder(DRAFT, FROM_PR) từ nhiều dòng PR,
+    gộp theo product thành đúng 1 PurchaseOrderItem/product (PUR-FND-06). ``qty_ordered=0`` khởi
+    tạo là giá trị TẠM trong transaction chưa commit (mục 4 điểm 4) — _create_allocation_locked()
+    tự cộng dồn tới giá trị thật cho từng cặp, hàm này không tự tính tổng.
+
+    Khoá TOÀN BỘ PurchaseRequestItem liên quan theo pk tăng dần MỘT LẦN trước, rồi lặp qua
+    allocation_requests gọi _create_allocation_locked() (không tự khoá) cho từng cặp — không gọi
+    lại create_allocation() công khai, vì nó tự khoá lại PurchaseRequestItem theo thứ tự caller
+    truyền vào (thứ tự người dùng chọn dòng trên UI), và 2 lời gọi song song cùng tập pr_item
+    nhưng khác thứ tự chọn có thể khoá ngược chiều nhau -> deadlock thật. po/po_item không cần
+    khoá thêm ở đây: cả hai đều được tạo mới trong chính transaction này, chưa transaction nào
+    khác có thể tham chiếu tới pk của chúng trước khi commit.
+
+    allocation_requests: list[(pr_item, qty)]. unit_price_by_product: {product_id: Decimal}.
+    """
+    if not allocation_requests:
+        raise ValidationError('Phải chọn ít nhất 1 dòng yêu cầu mua hàng để tạo PO.')
+
+    if supplier.status != Supplier.Status.ACTIVE:
+        raise ValidationError(
+            f'Nhà cung cấp "{supplier.name}" đã ngừng giao dịch hoặc bị tạm khóa, không thể tạo PO.')
+
+    po = PurchaseOrder.objects.create(
+        supplier=supplier, source=PurchaseOrder.Source.FROM_PR, created_by=actor,
+        expected_delivery_date=expected_delivery_date,
+    )
+
+    pr_item_ids_sorted = sorted({pr_item.pk for pr_item, _qty in allocation_requests})
+    locked_pr_items = {
+        obj.pk: obj
+        for obj in PurchaseRequestItem.objects.select_for_update()
+        .filter(pk__in=pr_item_ids_sorted).order_by('pk')
+    }
+
+    po_item_by_product = {}
+    for pr_item, qty in allocation_requests:
+        pr_item = locked_pr_items[pr_item.pk]  # dùng bản đã khoá — không dùng object caller truyền vào
+        if pr_item.product_id is None:
+            raise ValidationError(f'Dòng yêu cầu mua hàng "{pr_item}" chưa được map sang sản phẩm.')
+        product_id = pr_item.product_id
+        if product_id not in po_item_by_product:
+            unit_price = unit_price_by_product.get(product_id)
+            if unit_price is None:
+                raise ValidationError(f'Thiếu đơn giá cho sản phẩm "{pr_item.product.product_code}".')
+            if unit_price < 0:
+                raise ValidationError(
+                    f'Đơn giá cho sản phẩm "{pr_item.product.product_code}" không được âm.')
+            po_item_by_product[product_id] = PurchaseOrderItem.objects.create(
+                purchase_order=po, product=pr_item.product, qty_ordered=0, unit_price=unit_price)
+        _create_allocation_locked(pr_item, po, po_item_by_product[product_id], qty, actor, ip_address=ip_address)
+
+    log_action(
+        actor, AuditLog.Action.CREATE, target=po,
+        description=f'Tạo PO {po.po_no} từ {len(allocation_requests)} dòng yêu cầu mua hàng.',
+        ip_address=ip_address,
+    )
+    return po
+
+
 def sync_po_status(po):
     """Đối chiếu qty_received lũy kế so với qty_ordered từng dòng PO.
 
