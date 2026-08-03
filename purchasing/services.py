@@ -251,6 +251,54 @@ def release_allocation(allocation, reason, actor, *, delete_empty_po_item=True, 
     return allocation, deleted
 
 
+@transaction.atomic
+def delete_draft_po_item_with_allocations(po_item, actor, ip_address=None):
+    """Nghiêm trọng #4 review lần 3: điều phối release TOÀN BỘ allocation ACTIVE
+    của po_item rồi xoá hẳn po_item ĐÚNG 1 LẦN — tránh 2 tầng (release_allocation
+    tự xoá khi về 0, formset.save() xoá lại) cùng xoá 1 row.
+
+    Khoá TOÀN BỘ PurchaseRequestItem liên quan theo pk tăng dần MỘT LẦN trước, rồi TOÀN BỘ
+    ProcurementAllocation liên quan theo pk, thay vì gọi release_allocation() công khai lặp lại
+    (nó tự khoá lại từ đầu cho từng allocation, tạo thứ tự khoá xen kẽ PRItem→Allocation→PRItem→
+    Allocation — nguy cơ deadlock thật nếu 2 lời gọi song song trên 2 po_item khác nhau có tập
+    pr_item chung theo thứ tự tương đối khác nhau).
+    """
+    po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
+    if po.status != PurchaseOrder.Status.DRAFT:
+        raise ValidationError('Chỉ xoá được dòng PO-item khi PO đang ở trạng thái Nháp.')
+    po_item = PurchaseOrderItem.objects.select_for_update().select_related('product').get(pk=po_item.pk)
+
+    pr_item_ids_sorted = sorted(
+        ProcurementAllocation.objects.filter(po_item=po_item, status=ProcurementAllocation.Status.ACTIVE)
+        .values_list('pr_item_id', flat=True).distinct()
+    )
+    locked_pr_items = {
+        obj.pk: obj
+        for obj in PurchaseRequestItem.objects.select_for_update()
+        .filter(pk__in=pr_item_ids_sorted).order_by('pk')
+    }
+    active_allocations = list(
+        ProcurementAllocation.objects.select_for_update()
+        .filter(po_item=po_item, status=ProcurementAllocation.Status.ACTIVE)
+        .order_by('pk')
+    )
+    for allocation in active_allocations:
+        _release_allocation_locked(
+            allocation, po, po_item, locked_pr_items[allocation.pr_item_id],
+            reason=f'PO-item bị xoá khỏi PO {po.po_no} khi còn Nháp.', actor=actor, ip_address=ip_address,
+        )
+
+    po_item_repr = str(po_item)
+    po_item.refresh_from_db()
+    po_item.delete()
+    log_action(
+        actor, AuditLog.Action.DELETE, target=po,
+        description=f'Xoá dòng PO-item "{po_item_repr}" khỏi PO "{po.po_no}".',
+        ip_address=ip_address,
+    )
+    return po_item_repr
+
+
 def sync_po_status(po):
     """Đối chiếu qty_received lũy kế so với qty_ordered từng dòng PO.
 

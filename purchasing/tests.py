@@ -32,6 +32,7 @@ from .services import (
     close_po,
     create_allocation,
     decide_purchase_request,
+    delete_draft_po_item_with_allocations,
     find_duplicate_po_products,
     forward_purchase_request,
     received_qty_by_product,
@@ -2629,3 +2630,43 @@ class ReleaseAllocationTest(TestCase):
         self.assertTrue(deleted)
         self.assertFalse(PurchaseOrderItem.objects.filter(pk=self.po_item.pk).exists())
         self.assertIsNone(returned.po_item_id)
+
+
+class DeleteDraftPoItemTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+
+    def test_TC_PUR_PR_05_003_delete_po_item_releases_all_allocations_once(self):
+        po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=0, unit_price=Decimal('1000'))
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.admin_user, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        pr_item_a = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        pr_item_b = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        create_allocation(pr_item_a, po_item, qty=10, actor=self.admin_user)
+        create_allocation(pr_item_b, po_item, qty=5, actor=self.admin_user)
+
+        delete_draft_po_item_with_allocations(po_item, actor=self.admin_user)
+
+        self.assertFalse(PurchaseOrderItem.objects.filter(pk=po_item.pk).exists())
+        self.assertEqual(
+            ProcurementAllocation.objects.filter(
+                pr_item__in=[pr_item_a, pr_item_b], status=ProcurementAllocation.Status.RELEASED,
+            ).count(), 2)
+        pr_item_a.refresh_from_db()
+        self.assertEqual(pr_item_a.qty_open, 10)
+
+    def test_TC_PUR_PR_05_010_delete_legacy_po_item_no_allocation(self):
+        po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        delete_draft_po_item_with_allocations(po_item, actor=self.admin_user)
+        self.assertFalse(PurchaseOrderItem.objects.filter(pk=po_item.pk).exists())
