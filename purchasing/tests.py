@@ -2183,6 +2183,79 @@ class PurchaseRequestTwoStageServiceTest(TestCase):
         self.assertFalse(Notification.objects.filter(recipient=self.purchasing_staff).exists())
 
 
+class DecidePurchaseRequestQtyApprovedTest(TestCase):
+    """``decide_purchase_request(..., qty_approved_overrides=...)`` ở cấp
+    ``PENDING_PUR`` — AC #3, ``TC-PUR-PR-03-001/002/003``.
+    """
+
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001')
+        self.item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10,
+            required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='NL')
+        submit_purchase_request(self.pr, actor=self.staff)  # -> PENDING_PUR (staff không thuộc PURCHASING)
+
+    def _approval(self):
+        from accounts.approvals import latest_approval_for
+        return latest_approval_for(self.pr)
+
+    def test_TC_PUR_PR_03_001_approve_without_override_keeps_qty_requested(self):
+        decide_purchase_request(self._approval(), approved=True, actor=self.pur_manager)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.qty_approved, 10)
+
+    def test_TC_PUR_PR_03_002_approve_with_override_lower(self):
+        decide_purchase_request(
+            self._approval(), approved=True, actor=self.pur_manager,
+            qty_approved_overrides={self.item.pk: 6})
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.qty_approved, 6)
+
+    def test_TC_PUR_PR_03_003_approve_all_zero_rejected(self):
+        with self.assertRaises(ValidationError):
+            decide_purchase_request(
+                self._approval(), approved=True, actor=self.pur_manager,
+                qty_approved_overrides={self.item.pk: 0})
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.PENDING_PUR)
+
+    def test_override_above_qty_requested_rejected(self):
+        with self.assertRaises(ValidationError):
+            decide_purchase_request(
+                self._approval(), approved=True, actor=self.pur_manager,
+                qty_approved_overrides={self.item.pk: 11})
+
+    def test_override_with_long_non_catalog_name_does_not_overflow_audit_description(self):
+        """Hồi quy: dòng non-catalog có ``non_catalog_name`` dài 200 ký tự bị
+        điều chỉnh qty_approved không được làm description AuditLog (max_length
+        255) tràn — cùng lớp lỗi đã sửa ở ``cancel_pr_item_open_qty``
+        (StringDataRightTruncation rollback cả transaction duyệt)."""
+        item2 = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=None, qty_requested=10,
+            non_catalog_name='X' * 200, non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='VT')
+
+        decide_purchase_request(
+            self._approval(), approved=True, actor=self.pur_manager,
+            qty_approved_overrides={self.item.pk: 6, item2.pk: 4})
+
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.APPROVED)
+        log = AuditLog.objects.get(
+            target_id=str(self.pr.pk), action=AuditLog.Action.APPROVE, changes__isnull=False)
+        self.assertEqual(log.changes['qty_approved'], {str(self.item.pk): [10, 6], str(item2.pk): [10, 4]})
+
+
 class PurchaseRequestTwoStageVisibilityTest(TestCase):
     """View layer (qua HTTP client, không gọi service trực tiếp) cho các quy
     tắc tầm nhìn/quyền hành động riêng của luồng duyệt 2 cấp — bổ sung cho

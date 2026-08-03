@@ -1643,11 +1643,37 @@ class DecidePurchaseRequestQtyApprovedTest(TestCase):
             decide_purchase_request(
                 self._approval(), approved=True, actor=self.pur_manager,
                 qty_approved_overrides={self.item.pk: 11})
+
+    def test_override_with_long_non_catalog_name_does_not_overflow_audit_description(self):
+        """Hồi quy: dòng non-catalog có `non_catalog_name` dài 200 ký tự bị điều
+        chỉnh qty_approved không được làm description AuditLog (max_length=255)
+        tràn — cùng lớp lỗi đã sửa ở `cancel_pr_item_open_qty` (xem Task 2.8)."""
+        item2 = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=None, qty_requested=10,
+            non_catalog_name='X' * 200, non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='VT')
+
+        decide_purchase_request(
+            self._approval(), approved=True, actor=self.pur_manager,
+            qty_approved_overrides={self.item.pk: 6, item2.pk: 4})
+
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.status, PurchaseRequest.Status.APPROVED)
+        log = AuditLog.objects.get(
+            target_id=str(self.pr.pk), action=AuditLog.Action.APPROVE, changes__isnull=False)
+        self.assertEqual(log.changes['qty_approved'], {str(self.item.pk): [10, 6], str(item2.pk): [10, 4]})
 ```
 - [ ] **Bước 2: Chạy test, xác nhận FAIL** — `TypeError: unexpected keyword argument
-  'qty_approved_overrides'`.
+  'qty_approved_overrides'` (4 test đầu); test cuối (`test_override_with_long_non_catalog_name_...`)
+  báo lỗi tương tự trước khi tới được assertion — không tự động chứng minh gì về overflow ở bước
+  này, giá trị của nó chỉ phát huy ở Bước 4 sau khi code đã tồn tại.
 - [ ] **Bước 3: Viết code tối thiểu để PASS** — sửa chữ ký hàm và nội dung `on_approve()` nhánh
-  `else` (cấp `PENDING_PUR`) của `decide_purchase_request` hiện có:
+  `else` (cấp `PENDING_PUR`) của `decide_purchase_request` hiện có. **Lưu ý bắt buộc:** description
+  KHÔNG được nhúng `str(item)`/giá trị tự do trực tiếp — `non_catalog_name` dài tới 200 ký tự có thể
+  vượt `AuditLog.description` (`max_length=255`) và gây `StringDataRightTruncation` rollback cả
+  transaction duyệt (cùng lớp lỗi đã sửa ở Task 2.8 `cancel_pr_item_open_qty`) — dùng `changes=`
+  (JSONField, không giới hạn) cho chi tiết từng dòng thay vì nối chuỗi vào `description`:
 ```python
 def decide_purchase_request(approval, approved, actor, note='', ip_address=None, qty_approved_overrides=None):
     pr = PurchaseRequest.objects.select_for_update().get(pk=approval.target_id)
@@ -1666,16 +1692,16 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None,
             advance_to_pur = True
         else:
             items = list(pr.items.select_for_update().order_by('pk'))
-            changed_lines = []
+            changed = {}
             for item in items:
                 requested = item.qty_requested
                 approved_qty = qty_approved_overrides.get(item.pk, requested)
                 if approved_qty > requested:
-                    raise ValidationError(f'Không được duyệt tăng số lượng dòng "{item}" (yêu cầu: {requested}).')
+                    raise ValidationError(f'Không được duyệt tăng số lượng dòng PR #{item.pk} (yêu cầu: {requested}).')
                 if approved_qty < 0:
-                    raise ValidationError(f'Số lượng duyệt của dòng "{item}" không được âm.')
+                    raise ValidationError(f'Số lượng duyệt của dòng PR #{item.pk} không được âm.')
                 if approved_qty != requested:
-                    changed_lines.append(f'{item}: {requested} -> {approved_qty}')
+                    changed[str(item.pk)] = [requested, approved_qty]
                 item.qty_approved = approved_qty
                 item.save(update_fields=['qty_approved'])
             if items and all(item.qty_approved == 0 for item in items):
@@ -1685,10 +1711,11 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None,
             pr.decided_by = actor
             pr.decided_at = timezone.now()
             pr.save(update_fields=['status', 'decided_by', 'decided_at'])
-            if changed_lines:
+            if changed:
                 log_action(
                     actor, AuditLog.Action.APPROVE, target=pr,
-                    description=f'Duyệt yêu cầu {pr.request_no} — điều chỉnh số lượng duyệt: ' + '; '.join(changed_lines),
+                    description=f'Duyệt yêu cầu {pr.request_no} — điều chỉnh số lượng duyệt {len(changed)} dòng.',
+                    changes={'qty_approved': changed},
                     ip_address=ip_address,
                 )
             if pr.assigned_to_id:

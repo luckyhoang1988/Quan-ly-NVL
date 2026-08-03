@@ -882,7 +882,7 @@ def cancel_pr_item_open_qty(pr_item, qty, reason, actor, ip_address=None):
 
 
 @transaction.atomic
-def decide_purchase_request(approval, approved, actor, note='', ip_address=None):
+def decide_purchase_request(approval, approved, actor, note='', ip_address=None, qty_approved_overrides=None):
     """Quản lý phòng ban đang giữ quyền quyết định ở cấp hiện tại (bộ phận gốc
     ở ``PENDING_DEPT``, Mua hàng ở ``PENDING_PUR`` — hoặc Manager/Admin) duyệt/
     từ chối 1 PR đang chờ, thông qua ``Approval`` (xem
@@ -895,6 +895,10 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None)
     ``submit_purchase_request`` — không báo lúc nộp). Từ chối ở cấp nào cũng
     kết thúc PR ngay (``REJECTED``).
 
+    ``qty_approved_overrides``: dict ``{pr_item_id: int}``, chỉ áp dụng ở
+    nhánh duyệt cấp ``PENDING_PUR``; dòng không có trong dict giữ mặc định
+    ``qty_approved = qty_requested``.
+
     ⚠️ Việc tạo ``Approval`` cho cấp 2 PHẢI làm SAU KHI ``decide_approval()``
     trả về, không được làm trong ``on_approve()`` — ``decide_approval()`` gọi
     callback trước khi lưu ``approval.status=APPROVED``, nên tạo Approval mới
@@ -906,6 +910,7 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None)
     if stage not in (PurchaseRequest.Status.PENDING_DEPT, PurchaseRequest.Status.PENDING_PUR):
         raise ValidationError(f'Yêu cầu "{pr.request_no}" không ở trạng thái chờ duyệt.')
 
+    qty_approved_overrides = qty_approved_overrides or {}
     advance_to_pur = False
 
     def on_approve():
@@ -915,10 +920,36 @@ def decide_purchase_request(approval, approved, actor, note='', ip_address=None)
             pr.save(update_fields=['status'])
             advance_to_pur = True
         else:
+            items = list(pr.items.select_for_update().order_by('pk'))
+            changed = {}
+            for item in items:
+                requested = item.qty_requested
+                approved_qty = qty_approved_overrides.get(item.pk, requested)
+                if approved_qty > requested:
+                    raise ValidationError(f'Không được duyệt tăng số lượng dòng PR #{item.pk} (yêu cầu: {requested}).')
+                if approved_qty < 0:
+                    raise ValidationError(f'Số lượng duyệt của dòng PR #{item.pk} không được âm.')
+                if approved_qty != requested:
+                    changed[str(item.pk)] = [requested, approved_qty]
+                item.qty_approved = approved_qty
+                item.save(update_fields=['qty_approved'])
+            if items and all(item.qty_approved == 0 for item in items):
+                raise ValidationError(
+                    'Không thể duyệt yêu cầu với toàn bộ dòng có số lượng duyệt = 0 — dùng "Từ chối" thay thế.')
             pr.status = PurchaseRequest.Status.APPROVED
             pr.decided_by = actor
             pr.decided_at = timezone.now()
             pr.save(update_fields=['status', 'decided_by', 'decided_at'])
+            if changed:
+                # description KHÔNG nhúng str(item)/giá trị tự do — non_catalog_name dài tới 200
+                # ký tự có thể vượt AuditLog.description (max_length=255), cùng lớp lỗi đã sửa ở
+                # cancel_pr_item_open_qty. Dùng changes= (JSONField, không giới hạn) cho chi tiết.
+                log_action(
+                    actor, AuditLog.Action.APPROVE, target=pr,
+                    description=f'Duyệt yêu cầu {pr.request_no} — điều chỉnh số lượng duyệt {len(changed)} dòng.',
+                    changes={'qty_approved': changed},
+                    ip_address=ip_address,
+                )
             if pr.assigned_to_id:
                 notify(
                     pr.assigned_to,
