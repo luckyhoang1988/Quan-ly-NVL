@@ -3513,6 +3513,37 @@ class PoBuildFromPrLinesViewTest(TestCase):
         self.client.post(reverse('purchasing:po_build_from_pr_lines'), {'supplier': self.supplier.pk})
         self.assertEqual(PurchaseOrder.objects.count(), 0)
 
+    def test_post_empty_supplier_shows_error_no_500(self):
+        """Review phát hiện: ``get_object_or_404(Supplier, pk=request.POST.get('supplier'))``
+        với pk rỗng ném ``ValueError`` không bắt được (Postgres: "Field 'id' expected a
+        number but got ''") -> 500 thay vì message hợp lệ."""
+        from django.contrib.messages import get_messages
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': '',
+            'selected_items': [str(self.pr_item_a.pk)],
+            f'qty_{self.pr_item_a.pk}': '10',
+            f'unit_price_{self.product.pk}': '1200',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PurchaseOrder.objects.count(), 0)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(str(messages_list[-1]), 'Vui lòng chọn nhà cung cấp hợp lệ.')
+
+    def test_post_nonexistent_supplier_shows_error_no_500(self):
+        from django.contrib.messages import get_messages
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': '999999',
+            'selected_items': [str(self.pr_item_a.pk)],
+            f'qty_{self.pr_item_a.pk}': '10',
+            f'unit_price_{self.product.pk}': '1200',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(PurchaseOrder.objects.count(), 0)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(str(messages_list[-1]), 'Vui lòng chọn nhà cung cấp hợp lệ.')
+
     def test_post_inactive_supplier_rejected_no_po_created(self):
         from django.contrib.messages import get_messages
         self.supplier.status = Supplier.Status.INACTIVE

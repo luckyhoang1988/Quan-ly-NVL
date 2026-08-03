@@ -480,7 +480,13 @@ def po_build_from_pr_lines(request):
             prefill_supplier_id = first_item.product.preferred_supplier_id
 
     if request.method == 'POST':
-        supplier = get_object_or_404(Supplier, pk=request.POST.get('supplier'))
+        # pk thô từ POST (không phải ModelChoiceField có validate sẵn) — rỗng/không
+        # phải số ném ValueError từ get_prep_value(), không phải DoesNotExist; phải
+        # bắt cả 2 để tránh 500 khi tamper hoặc bỏ trống dropdown.
+        try:
+            supplier = Supplier.objects.get(pk=request.POST.get('supplier'))
+        except (Supplier.DoesNotExist, ValueError, TypeError):
+            supplier = None
         selected_ids = set(request.POST.getlist('selected_items'))
         allocation_requests = []
         unit_price_by_product = {}
@@ -489,7 +495,9 @@ def po_build_from_pr_lines(request):
         # là field POST thô (không phải ModelForm có queryset ràng buộc) nên vẫn
         # phải tự re-validate ở POST — chặn cả tampering lẫn trường hợp supplier
         # bị chuyển INACTIVE/SUSPENDED giữa lúc GET và lúc submit.
-        if supplier.status != Supplier.Status.ACTIVE:
+        if supplier is None:
+            error = 'Vui lòng chọn nhà cung cấp hợp lệ.'
+        elif supplier.status != Supplier.Status.ACTIVE:
             error = 'Nhà cung cấp đã ngừng giao dịch hoặc bị tạm khóa, vui lòng chọn nhà cung cấp khác.'
         else:
             for item in eligible_items:
