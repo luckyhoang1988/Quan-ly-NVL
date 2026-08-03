@@ -6,6 +6,7 @@ RBAC thật qua ``user.can(action, 'po')``. Theo ma trận: MANAGER/PURCHASING/A
 có Create+Update; chỉ MANAGER/ADMIN có Approve (duyệt PO, đóng PO); STAFF/QC/
 ACCOUNTANT chỉ Read.
 """
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 
 from django.contrib import messages
@@ -37,6 +38,7 @@ from .forms import (
 from .models import PurchaseOrder, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
+    build_po_from_allocations,
     cancel_pr_item_open_qty,
     close_po,
     decide_purchase_request,
@@ -449,6 +451,75 @@ def po_create(request):
         return redirect('purchasing:po_detail', pk=obj.pk)
     return render(request, 'purchasing/po_form.html', {
         'form': form, 'formset': formset, 'mode': 'create', 'source_pr': source_pr,
+    })
+
+
+@po_permission_required('create')
+def po_build_from_pr_lines(request):
+    """PUR-PR-05 — thay ``po_create?from_pr=<pk>``: chọn nhiều dòng PR (từ 1
+    hoặc nhiều PR) để gộp/tách vào 1 PO mới, qua ``build_po_from_allocations()``.
+    ``qty_open`` là property nên lọc bằng Python sau khi query, không lọc được
+    ở tầng ORM.
+    """
+    from_pr_id = request.GET.get('from_pr') or request.POST.get('from_pr')
+    eligible_items = [
+        item for item in PurchaseRequestItem.objects.filter(
+            product__isnull=False, purchase_request__status=PurchaseRequest.Status.APPROVED,
+        ).select_related('product', 'purchase_request').order_by('purchase_request_id', 'pk')
+        if item.qty_open > 0
+    ]
+    suppliers = Supplier.objects.filter(status=Supplier.Status.ACTIVE)
+    prefill_supplier_id = None
+    if from_pr_id:
+        first_item = next(
+            (item for item in eligible_items if str(item.purchase_request_id) == str(from_pr_id)), None)
+        if first_item and first_item.product.preferred_supplier_id:
+            prefill_supplier_id = first_item.product.preferred_supplier_id
+
+    if request.method == 'POST':
+        supplier = get_object_or_404(Supplier, pk=request.POST.get('supplier'))
+        selected_ids = set(request.POST.getlist('selected_items'))
+        allocation_requests = []
+        unit_price_by_product = {}
+        error = None
+        # `suppliers` ở GET (trên) đã lọc status=ACTIVE cho dropdown, nhưng đây
+        # là field POST thô (không phải ModelForm có queryset ràng buộc) nên vẫn
+        # phải tự re-validate ở POST — chặn cả tampering lẫn trường hợp supplier
+        # bị chuyển INACTIVE/SUSPENDED giữa lúc GET và lúc submit.
+        if supplier.status != Supplier.Status.ACTIVE:
+            error = 'Nhà cung cấp đã ngừng giao dịch hoặc bị tạm khóa, vui lòng chọn nhà cung cấp khác.'
+        else:
+            for item in eligible_items:
+                if str(item.pk) not in selected_ids:
+                    continue
+                try:
+                    qty = int(request.POST.get(f'qty_{item.pk}', ''))
+                except ValueError:
+                    error = f'Số lượng không hợp lệ cho dòng "{item}".'
+                    break
+                allocation_requests.append((item, qty))
+                if item.product_id not in unit_price_by_product:
+                    try:
+                        unit_price_by_product[item.product_id] = Decimal(
+                            request.POST.get(f'unit_price_{item.product_id}', ''))
+                    except (InvalidOperation, TypeError):
+                        error = f'Đơn giá không hợp lệ cho sản phẩm "{item.product.product_code}".'
+                        break
+        if error:
+            messages.error(request, error)
+        else:
+            try:
+                po = build_po_from_allocations(
+                    supplier, allocation_requests, unit_price_by_product, actor=request.user,
+                    ip_address=client_ip(request))
+                messages.success(request, f'Đã tạo PO "{po.po_no}".')
+                return redirect('purchasing:po_detail', pk=po.pk)
+            except ValidationError as exc:
+                messages.error(request, ' '.join(exc.messages))
+
+    return render(request, 'purchasing/po_build_from_pr_lines.html', {
+        'eligible_items': eligible_items, 'suppliers': suppliers,
+        'prefill_supplier_id': prefill_supplier_id, 'from_pr_id': from_pr_id,
     })
 
 

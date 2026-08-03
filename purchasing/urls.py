@@ -7,6 +7,7 @@ app_name = 'purchasing'
 urlpatterns = [
     path('', views.po_list, name='po_list'),
     path('new/', views.po_create, name='po_create'),
+    path('po/build-from-pr-lines/', views.po_build_from_pr_lines, name='po_build_from_pr_lines'),
     path('price-comparison/', views.po_price_comparison, name='po_price_comparison'),
     path('supplier-performance/', views.po_supplier_performance, name='po_supplier_performance'),
     path('requests/', views.pr_list, name='pr_list'),

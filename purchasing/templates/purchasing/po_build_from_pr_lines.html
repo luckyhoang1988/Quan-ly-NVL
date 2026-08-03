@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block title %}Tạo PO từ yêu cầu mua hàng — NVL/WMS{% endblock %}
+{% block breadcrumb %}
+  <a href="{% url 'reports:dashboard' %}">Trang chủ</a> <span class="mx-1">/</span>
+  <a href="{% url 'purchasing:po_list' %}">Đơn mua hàng</a> <span class="mx-1">/</span>
+  <span class="current">Tạo từ yêu cầu mua hàng</span>
+{% endblock %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-header panel-toolbar">
+    <h1 class="panel-title">Tạo PO từ yêu cầu mua hàng</h1>
+  </div>
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+      {% if from_pr_id %}<input type="hidden" name="from_pr" value="{{ from_pr_id }}">{% endif %}
+
+      <div class="mb-3 col-md-6">
+        <label class="form-label" for="id_supplier">Nhà cung cấp</label>
+        <select name="supplier" id="id_supplier" class="form-select" required>
+          <option value="">---------</option>
+          {% for supplier in suppliers %}
+          <option value="{{ supplier.pk }}" {% if supplier.pk == prefill_supplier_id %}selected{% endif %}>
+            {{ supplier.supplier_code }} — {{ supplier.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <h2 class="h5 mt-4 mb-2">Chọn dòng yêu cầu mua hàng</h2>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle table-accent">
+          <thead>
+            <tr>
+              <th>Chọn</th>
+              <th>Yêu cầu</th>
+              <th>Sản phẩm</th>
+              <th>Còn mở</th>
+              <th>Số lượng đặt</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in eligible_items %}
+            <tr>
+              <td>
+                <input type="checkbox" name="selected_items" value="{{ item.pk }}"
+                       class="form-check-input" {% if item.purchase_request_id|stringformat:"s" == from_pr_id|stringformat:"s" %}checked{% endif %}>
+              </td>
+              <td><a href="{% url 'purchasing:pr_detail' item.purchase_request_id %}">{{ item.purchase_request.request_no }}</a></td>
+              <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
+              <td>{{ item.qty_open }}</td>
+              <td>
+                <input type="number" name="qty_{{ item.pk }}" value="{{ item.qty_open }}" min="1"
+                       max="{{ item.qty_open }}" class="form-control form-control-sm" style="width: 6rem;">
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-center text-muted">Không có dòng yêu cầu mua hàng nào đủ điều kiện.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 class="h5 mt-4 mb-2">Đơn giá theo sản phẩm</h2>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle table-accent">
+          <thead>
+            <tr>
+              <th>Sản phẩm</th>
+              <th>Đơn giá</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% regroup eligible_items by product as product_groups %}
+            {% for group in product_groups %}
+            <tr>
+              <td>{{ group.grouper.product_code }} — {{ group.grouper.name }}</td>
+              <td>
+                <input type="number" step="0.01" name="unit_price_{{ group.grouper.pk }}"
+                       class="form-control form-control-sm" style="width: 8rem;" required>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        <button type="submit" class="btn btn-primary">Tạo PO</button>
+        <a class="btn btn-link" href="{% url 'purchasing:po_list' %}">Huỷ</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

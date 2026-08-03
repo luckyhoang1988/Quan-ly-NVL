@@ -3471,3 +3471,73 @@ class PrItemMapProductViewTest(TestCase):
         self.assertContains(response, 'Mã sản phẩm đã tồn tại')
         self.item.refresh_from_db()
         self.assertIsNone(self.item.product_id)
+
+
+class PoBuildFromPrLinesViewTest(TestCase):
+    """Task 3.6 — ``po_build_from_pr_lines`` thay ``po_create?from_pr=<pk>``: chọn
+    nhiều dòng PR (từ 1 hoặc nhiều PR) để gộp/tách vào 1 PO mới qua
+    ``build_po_from_allocations`` (Task 2.5)."""
+
+    def setUp(self):
+        self.pur_staff = User.objects.create_user(
+            username='pur1', password='pur-pass-123', role=User.Role.PURCHASING, department=User.Department.PURCHASING)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.pur_staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        self.pr_item_a = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        self.pr_item_b = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_post_creates_po_merging_two_lines_same_product(self):
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': self.supplier.pk,
+            'selected_items': [str(self.pr_item_a.pk), str(self.pr_item_b.pk)],
+            f'qty_{self.pr_item_a.pk}': '10',
+            f'qty_{self.pr_item_b.pk}': '5',
+            f'unit_price_{self.product.pk}': '1200',
+        })
+        self.assertEqual(response.status_code, 302)
+        po = PurchaseOrder.objects.get(source=PurchaseOrder.Source.FROM_PR)
+        self.assertEqual(po.items.count(), 1)
+        self.assertEqual(po.items.first().qty_ordered, 15)
+
+    def test_post_no_selection_shows_error_no_po_created(self):
+        self.client.login(username='pur1', password='pur-pass-123')
+        self.client.post(reverse('purchasing:po_build_from_pr_lines'), {'supplier': self.supplier.pk})
+        self.assertEqual(PurchaseOrder.objects.count(), 0)
+
+    def test_post_inactive_supplier_rejected_no_po_created(self):
+        from django.contrib.messages import get_messages
+        self.supplier.status = Supplier.Status.INACTIVE
+        self.supplier.save(update_fields=['status'])
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(reverse('purchasing:po_build_from_pr_lines'), {
+            'supplier': self.supplier.pk,
+            'selected_items': [str(self.pr_item_a.pk)],
+            f'qty_{self.pr_item_a.pk}': '10',
+            f'unit_price_{self.product.pk}': '1200',
+        })
+        self.assertEqual(PurchaseOrder.objects.count(), 0)
+        messages_list = list(get_messages(response.wsgi_request))
+        self.assertEqual(
+            str(messages_list[-1]),
+            'Nhà cung cấp đã ngừng giao dịch hoặc bị tạm khóa, vui lòng chọn nhà cung cấp khác.')
+
+    def test_get_renders_page_with_from_pr_prechecked(self):
+        """Không có trình duyệt để test thủ công (Bước 11 của kế hoạch) — thay
+        bằng render GET thật qua test client, xác nhận template (kể cả
+        {% regroup %} theo product) không lỗi và dòng của ``from_pr`` được
+        pre-check."""
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.get(
+            reverse('purchasing:po_build_from_pr_lines'), {'from_pr': self.pr.pk})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'checked')
+        self.assertContains(response, self.product.product_code)

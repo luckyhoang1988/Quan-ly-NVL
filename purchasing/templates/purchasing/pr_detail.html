@@ -42,7 +42,7 @@
         </form>
       {% endif %}
       {% if can_create_po %}
-        <a href="{% url 'purchasing:po_create' %}?from_pr={{ obj.pk }}" class="btn btn-primary btn-sm">
+        <a href="{% url 'purchasing:po_build_from_pr_lines' %}?from_pr={{ obj.pk }}" class="btn btn-primary btn-sm">
           <i class="bi bi-cart-plus"></i> Tạo PO từ yêu cầu này
         </a>
       {% endif %}
