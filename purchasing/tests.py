@@ -3199,3 +3199,28 @@ class QtyReceivedByAllocationTest(TestCase):
         pr_item_b.refresh_from_db()
         self.assertEqual(pr_item_a.qty_received, 6)
         self.assertEqual(pr_item_b.qty_received, 4)
+
+
+class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(
+            username='staff1', password='staff-pass-123', role=User.Role.STAFF, department=User.Department.WAREHOUSE)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001')
+        PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg'),
+            qty_requested=1, required_date=timezone.localdate(), currency='VND',
+            estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_02_001_submit_sets_department_snapshot(self):
+        submit_purchase_request(self.pr, actor=self.staff)
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)
+
+    def test_TC_PUR_PR_02_002_snapshot_immutable_after_requester_department_changes(self):
+        submit_purchase_request(self.pr, actor=self.staff)
+        self.staff.department = User.Department.QC
+        self.staff.save(update_fields=['department'])
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)  # không đọc lại

@@ -2098,7 +2098,7 @@ git commit -m "feat(pur): add qty_received_by_allocation() - proportional split 
 **Giao diện:**
 - Không đổi chữ ký hàm — chỉ thêm side-effect set `pr.department_snapshot`.
 
-- [ ] **Bước 1: Viết test đang FAIL (TC-PUR-PR-02-001/002)**
+- [x] **Bước 1: Viết test đang FAIL (TC-PUR-PR-02-001/002)**
 ```python
 class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
     def setUp(self):
@@ -2124,8 +2124,8 @@ class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
         self.pr.refresh_from_db()
         self.assertEqual(self.pr.department_snapshot, User.Department.WAREHOUSE)  # không đọc lại
 ```
-- [ ] **Bước 2: Chạy test, xác nhận FAIL** — `department_snapshot` vẫn rỗng sau submit.
-- [ ] **Bước 3: Viết code tối thiểu để PASS** — thêm 2 dòng vào `submit_purchase_request()` hiện
+- [x] **Bước 2: Chạy test, xác nhận FAIL** — `department_snapshot` vẫn rỗng sau submit.
+- [x] **Bước 3: Viết code tối thiểu để PASS** — thêm 2 dòng vào `submit_purchase_request()` hiện
   có, ngay sau khối `if origin_department and ...: ... else: ...` (trước
   `pr.save(update_fields=['status'])`):
 ```python
@@ -2134,8 +2134,8 @@ class SubmitPurchaseRequestDepartmentSnapshotTest(TestCase):
 ```
   (Thay dòng `pr.save(update_fields=['status'])` hiện có bằng dòng trên — gộp 2 field cùng 1 lần
   save, không thêm lệnh `save()` thứ hai.)
-- [ ] **Bước 4: Chạy test, xác nhận PASS**
-- [ ] **Bước 5: Commit**
+- [x] **Bước 4: Chạy test, xác nhận PASS**
+- [x] **Bước 5: Commit**
 ```bash
 git add purchasing/services.py purchasing/tests.py
 git commit -m "feat(pur): submit_purchase_request() sets department_snapshot (immutable after submit)"
