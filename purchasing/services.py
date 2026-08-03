@@ -373,6 +373,137 @@ def build_po_from_allocations(supplier, allocation_requests, unit_price_by_produ
     return po
 
 
+@transaction.atomic
+def reconcile_legacy_po_item_allocations(po_item, allocations, actor, ip_address=None):
+    """T9 (review lần 4/5): recovery procedure MỘT LẦN cho PO legacy backfill từ linked_po
+    (mục 9 migration 0018) không khớp allocation tự động được. TẠO THÊM allocation khớp CHÍNH
+    XÁC qty_ordered hiện có — KHÔNG cộng thêm (ngoại lệ duy nhất so với create_allocation()).
+    Chỉ gọi qua management command `reconcile_legacy_po_item_allocations` (Task 4.3), không lộ
+    ra UI/luồng tạo PO thông thường.
+
+    ``allocations``: list[(pr_item, qty)] — không rỗng, mỗi pr_item chỉ 1 lần.
+
+    Lock order (đặc biệt quan trọng — đường DUY NHẤT tạo allocation cho PO legacy đã APPROVED,
+    có thể chạy đồng thời với send_po() trên cùng PO):
+    PurchaseOrder -> PurchaseOrderItem -> PurchaseRequestItem (pk asc) -> ProcurementAllocation (pk asc).
+    ``select_for_update(of=('self',))`` khi kết hợp ``select_related(...)`` trên cả po_item
+    (join 'product') và trên batch pr_item (join 'purchase_request', 'product') — mẫu BUG-16
+    (xem CLAUDE.md): không giới hạn ``of`` sẽ khoá luôn các bảng join vào. Với batch pr_item,
+    đây không chỉ là dư thừa: ``PurchaseRequestItem.product`` là FK nullable (dòng non-catalog),
+    nên ``select_related('product')`` tạo LEFT OUTER JOIN — Postgres từ chối thẳng
+    ``FOR UPDATE`` không giới hạn ``of`` trên join đó (``NotSupportedError: FOR UPDATE cannot be
+    applied to the nullable side of an outer join``), không chỉ là nguy cơ khoá oan như các chỗ
+    BUG-16 khác trong file này.
+
+    Thiết kế 2 lượt (validate-toàn-bộ-trước, tạo-toàn-bộ-sau) — không tạo allocation nào trong
+    lượt validate, nên 1 dòng sai ở giữa batch không để lại allocation dở dang của các dòng hợp
+    lệ đứng trước nó (AC #30), không chỉ dựa vào rollback transaction.
+    """
+    # (1) actor — kiểm trước khi khoá gì (thuần thuộc tính actor, không cần DB lock).
+    if not (actor.role == User.Role.ADMIN or actor.is_superuser):
+        raise ValidationError('Chỉ Admin/superuser mới chạy được reconciliation.')
+    if not actor.is_active or actor.is_deleted:
+        raise ValidationError('Tài khoản actor phải đang hoạt động (không bị khoá/xoá mềm).')
+    # (4) batch không rỗng.
+    if not allocations:
+        raise ValidationError('Danh sách allocation không được rỗng.')
+    # (5) không trùng pr_item trong input — kiểm trước khi khoá, thuần trên list truyền vào.
+    pr_item_ids = [pr_item.pk for pr_item, _qty in allocations]
+    if len(pr_item_ids) != len(set(pr_item_ids)):
+        raise ValidationError('Một dòng yêu cầu mua hàng không được xuất hiện quá 1 lần trong batch.')
+
+    # Lock order: PurchaseOrder -> PurchaseOrderItem -> PurchaseRequestItem (pk asc) -> ProcurementAllocation (pk asc)
+    po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
+    po_item = (
+        PurchaseOrderItem.objects
+        .select_related('product')
+        .select_for_update(of=('self',))
+        .get(pk=po_item.pk)
+    )
+    locked_pr_items = {
+        item.pk: item
+        for item in PurchaseRequestItem.objects
+        .select_related('purchase_request', 'product')
+        .select_for_update(of=('self',))
+        .filter(pk__in=pr_item_ids).order_by('pk')
+    }
+    existing_allocations = list(
+        ProcurementAllocation.objects.select_for_update()
+        .filter(po_item=po_item, status=ProcurementAllocation.Status.ACTIVE).order_by('pk')
+    )
+
+    # (2)(3) PO nguồn + trạng thái.
+    if po.source != PurchaseOrder.Source.FROM_PR:
+        raise ValidationError('Chỉ reconcile được PO nguồn Từ yêu cầu mua hàng.')
+    if po.status not in (PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.APPROVED):
+        raise ValidationError(f'Không thể reconcile khi PO đang ở trạng thái {po.get_status_display()}.')
+
+    existing_total = sum(a.qty_allocated for a in existing_allocations)
+    existing_pr_item_ids = {a.pr_item_id for a in existing_allocations}
+    batch_total = 0
+    for pr_item, qty in allocations:
+        locked_pr_item = locked_pr_items[pr_item.pk]
+        # (6) PR đã duyệt.
+        if locked_pr_item.purchase_request.status != PurchaseRequest.Status.APPROVED:
+            raise ValidationError(f'Dòng PR "{locked_pr_item}" chưa ở trạng thái Đã duyệt.')
+        # (7) product khớp.
+        if locked_pr_item.product_id != po_item.product_id:
+            raise ValidationError(f'Sản phẩm của dòng PR "{locked_pr_item}" không khớp dòng PO.')
+        # (8) qty >= 1.
+        if qty < 1:
+            raise ValidationError(f'Số lượng của dòng "{locked_pr_item}" phải lớn hơn 0.')
+        # (9) linked_po BẮT BUỘC khớp — rỗng cũng reject (review lần 5 điểm 3).
+        if locked_pr_item.purchase_request.linked_po_id != po_item.purchase_order_id:
+            raise ValidationError(
+                f'Dòng PR "{locked_pr_item}" chưa từng liên kết đúng PO này qua linked_po — '
+                f'ngoài phạm vi recovery procedure này, cần điều tra riêng.')
+        # (11) không trùng allocation ACTIVE đã có cho đúng cặp.
+        if locked_pr_item.pk in existing_pr_item_ids:
+            raise ValidationError(f'Đã tồn tại allocation đang hiệu lực cho dòng PR "{locked_pr_item}".')
+        # (10) qty <= qty_open, tính SAU khi đã khoá toàn bộ pr_item trong batch (review lần 5 điểm 4).
+        if qty > locked_pr_item.qty_open:
+            raise ValidationError(
+                f'Số lượng ({qty}) vượt quá số lượng còn mở ({locked_pr_item.qty_open}) của dòng "{locked_pr_item}".')
+        batch_total += qty
+
+    # Rule tổng: existing + batch phải khớp CHÍNH XÁC qty_ordered (==, không phải <=).
+    if existing_total + batch_total != po_item.qty_ordered:
+        raise ValidationError(
+            f'Tổng allocation sau khi reconcile ({existing_total + batch_total}) không khớp chính xác '
+            f'qty_ordered ({po_item.qty_ordered}).')
+
+    # (12) tạo toàn bộ — chỉ chạy sau khi TOÀN BỘ batch đã validate sạch ở trên.
+    created = []
+    for pr_item, qty in allocations:
+        locked_pr_item = locked_pr_items[pr_item.pk]
+        created.append(ProcurementAllocation.objects.create(
+            pr_item=locked_pr_item, po_item=po_item, qty_allocated=qty,
+            po_no_snapshot=po.po_no, product_code_snapshot=po_item.product.product_code,
+            created_by=actor,
+        ))
+
+    # (14) re-assert lần cuối trước khi commit.
+    final_total = (
+        ProcurementAllocation.objects.filter(po_item=po_item, status=ProcurementAllocation.Status.ACTIVE)
+        .aggregate(total=Sum('qty_allocated'))['total'] or 0
+    )
+    if final_total != po_item.qty_ordered:
+        raise ValidationError('Re-assert thất bại: tổng allocation cuối cùng không khớp qty_ordered — rollback.')
+
+    # (13) 1 dòng AuditLog cho cả batch. `detail` nhúng str(pr_item) không giới hạn độ dài theo
+    # số dòng trong batch -> đưa vào `reason` (TextField, không giới hạn), không phải
+    # `description` (CharField(255) — tràn sẽ raise StringDataRightTruncation, rollback cả
+    # transaction, xem CLAUDE.md mục log_action).
+    detail = '; '.join(f'{locked_pr_items[pr_item.pk]}: {qty}' for pr_item, qty in allocations)
+    log_action(
+        actor, AuditLog.Action.CREATE, target=po,
+        description=f'Reconcile legacy allocation cho dòng PO-item #{po_item.pk} (PO {po.po_no}).',
+        reason=detail,
+        ip_address=ip_address,
+    )
+    return created
+
+
 def sync_po_status(po):
     """Đối chiếu qty_received lũy kế so với qty_ordered từng dòng PO.
 

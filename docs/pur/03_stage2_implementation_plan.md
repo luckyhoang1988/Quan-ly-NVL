@@ -1876,12 +1876,25 @@ def reconcile_legacy_po_item_allocations(po_item, allocations, actor, ip_address
         raise ValidationError('Một dòng yêu cầu mua hàng không được xuất hiện quá 1 lần trong batch.')
 
     # Lock order: PurchaseOrder -> PurchaseOrderItem -> PurchaseRequestItem (pk asc) -> ProcurementAllocation (pk asc)
+    # LƯU Ý (phát hiện khi thực thi Task 2.10): cả 2 select_for_update() bên dưới BẮT BUỘC
+    # of=('self',) — không chỉ vì mẫu BUG-16 (khoá oan bảng join), mà với batch pr_item còn vì lý
+    # do khác hẳn: PurchaseRequestItem.product là FK nullable (dòng non-catalog) nên
+    # select_related('product') tạo LEFT OUTER JOIN, và Postgres THẲNG THỪNG TỪ CHỐI FOR UPDATE
+    # không giới hạn of trên join đó (NotSupportedError: FOR UPDATE cannot be applied to the
+    # nullable side of an outer join) — không phải chỉ nguy cơ deadlock, mà lỗi ngay lập tức.
     po = PurchaseOrder.objects.select_for_update().get(pk=po_item.purchase_order_id)
-    po_item = PurchaseOrderItem.objects.select_for_update().select_related('product').get(pk=po_item.pk)
+    po_item = (
+        PurchaseOrderItem.objects
+        .select_related('product')
+        .select_for_update(of=('self',))
+        .get(pk=po_item.pk)
+    )
     locked_pr_items = {
         item.pk: item
-        for item in PurchaseRequestItem.objects.select_for_update()
-        .select_related('purchase_request', 'product').filter(pk__in=pr_item_ids).order_by('pk')
+        for item in PurchaseRequestItem.objects
+        .select_related('purchase_request', 'product')
+        .select_for_update(of=('self',))
+        .filter(pk__in=pr_item_ids).order_by('pk')
     }
     existing_allocations = list(
         ProcurementAllocation.objects.select_for_update()
@@ -1946,11 +1959,14 @@ def reconcile_legacy_po_item_allocations(po_item, allocations, actor, ip_address
     if final_total != po_item.qty_ordered:
         raise ValidationError('Re-assert thất bại: tổng allocation cuối cùng không khớp qty_ordered — rollback.')
 
-    # (13) 1 dòng AuditLog cho cả batch.
+    # (13) 1 dòng AuditLog cho cả batch. `detail` nhúng str(pr_item) không giới hạn theo số dòng
+    # trong batch -> đưa vào reason (TextField), KHÔNG đưa vào description (CharField(255) — tràn
+    # raise StringDataRightTruncation, rollback cả transaction, xem CLAUDE.md mục log_action).
     detail = '; '.join(f'{locked_pr_items[pr_item.pk]}: {qty}' for pr_item, qty in allocations)
     log_action(
         actor, AuditLog.Action.CREATE, target=po,
-        description=f'Reconcile legacy allocation cho dòng PO "{po_item}" (PO {po.po_no}) — {detail}.',
+        description=f'Reconcile legacy allocation cho dòng PO-item #{po_item.pk} (PO {po.po_no}).',
+        reason=detail,
         ip_address=ip_address,
     )
     return created

@@ -41,6 +41,7 @@ from .services import (
     forward_purchase_request,
     map_non_catalog_item,
     received_qty_by_product,
+    reconcile_legacy_po_item_allocations,
     release_allocation,
     reopen_purchase_request,
     retry_po_email,
@@ -3091,3 +3092,70 @@ class BuildPoFromAllocationsTest(TestCase):
                 self.supplier, [(self.pr_item_a, 10)],
                 {self.product.pk: Decimal('1000')}, actor=self.admin_user)
         self.assertFalse(PurchaseOrder.objects.filter(supplier_id=self.supplier.pk).exists())
+
+
+class ReconcileLegacyPoItemAllocationsTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        # PO legacy: qty_ordered=10, 0 allocation, source=FROM_PR, DRAFT (đủ điều kiện reconcile).
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+
+    def _pr_item(self, qty_requested, qty_approved, linked_po=None):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED, linked_po=linked_po)
+        return PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=qty_requested, qty_approved=qty_approved,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_05_014_single_pr_item_exact_match(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.qty_ordered, 10)  # KHÔNG cộng thêm
+        self.assertEqual(
+            ProcurementAllocation.objects.filter(po_item=self.po_item, status='ACTIVE').count(), 1)
+        pr_item_b = self._pr_item(1, 1, linked_po=self.po)
+        with self.assertRaises(ValidationError):  # đã khớp đủ, không còn chỗ
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item_b, 1)], actor=self.admin_user)
+
+    def test_TC_PUR_PR_05_018_two_pr_items_exact_match_in_one_call(self):
+        pr_item_1 = self._pr_item(4, 4, linked_po=self.po)
+        pr_item_2 = self._pr_item(6, 6, linked_po=self.po)
+        reconcile_legacy_po_item_allocations(
+            self.po_item, [(pr_item_1, 4), (pr_item_2, 6)], actor=self.admin_user)
+        self.assertEqual(
+            ProcurementAllocation.objects.filter(po_item=self.po_item, status='ACTIVE').count(), 2)
+
+    def test_TC_PUR_PR_05_019_batch_rolls_back_entirely_on_one_invalid_line(self):
+        pr_item_1 = self._pr_item(4, 4, linked_po=self.po)
+        pr_item_2 = self._pr_item(6, 3, linked_po=self.po)  # qty_open chỉ còn 3
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(
+                self.po_item, [(pr_item_1, 4), (pr_item_2, 6)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_024_duplicate_pr_item_in_same_batch_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(
+                self.po_item, [(pr_item, 4), (pr_item, 6)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_025_linked_po_none_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=None)  # chưa từng liên kết PO nào
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_026_empty_batch_rejected_no_audit_log(self):
+        audit_count_before = AuditLog.objects.count()
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [], actor=self.admin_user)
+        self.assertEqual(AuditLog.objects.count(), audit_count_before)
