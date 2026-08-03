@@ -3309,3 +3309,50 @@ class PurchaseRequestItemFormTest(TestCase):
             rendered = str(form['product'])
         self.assertIn('data-category="Nguyên liệu"', rendered)
         self.assertIn('data-category="Phụ gia"', rendered)
+
+
+class PrItemCancelOpenQtyViewTest(TestCase):
+    """Task 3.3 — nút/route huỷ phần còn mở của 1 dòng PR (PUR-PR-07). Quyền:
+    ``can_cancel_pr_item_open_qty`` (update trên 'pr' + (quản lý phòng Mua hàng
+    HOẶC đúng assigned_to của PR đó))."""
+
+    def setUp(self):
+        self.requester = User.objects.create_user(username='rq1', password='rq-pass-123', role=User.Role.STAFF)
+        self.pur_staff = User.objects.create_user(
+            username='pur1', password='pur-pass-123', role=User.Role.PURCHASING, department=User.Department.PURCHASING)
+        self.other_pur_staff = User.objects.create_user(
+            username='pur2', password='pur-pass-123', role=User.Role.PURCHASING, department=User.Department.PURCHASING)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.pr = PurchaseRequest.objects.create(
+            requested_by=self.requester, warehouse=self.warehouse, cost_center='CC-001',
+            assigned_to=self.pur_staff, status=PurchaseRequest.Status.APPROVED)
+        self.item = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_07_004_non_assigned_staff_forbidden(self):
+        self.client.login(username='pur2', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_cancel_open_qty', args=[self.item.pk]),
+            {'qty': 3, 'reason': 'test'})
+        self.assertEqual(response.status_code, 403)
+
+    def test_assigned_staff_allowed(self):
+        self.client.login(username='pur1', password='pur-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_cancel_open_qty', args=[self.item.pk]),
+            {'qty': 3, 'reason': 'test'})
+        self.assertEqual(response.status_code, 302)
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.qty_cancelled, 3)
+
+    def test_department_manager_purchasing_allowed_regardless_of_assigned_to(self):
+        self.client.login(username='purm', password='purm-pass-123')
+        response = self.client.post(
+            reverse('purchasing:pr_item_cancel_open_qty', args=[self.item.pk]),
+            {'qty': 2, 'reason': 'test'})
+        self.assertEqual(response.status_code, 302)

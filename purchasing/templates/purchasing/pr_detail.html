@@ -126,17 +126,49 @@
         <thead>
           <tr>
             <th>Sản phẩm</th>
-            <th>Số lượng yêu cầu</th>
+            <th>Yêu cầu</th>
+            <th>Đã duyệt</th>
+            <th>Đã phân bổ</th>
+            <th>Đã đặt</th>
+            <th>Đã nhận</th>
+            <th>Đã huỷ</th>
+            <th>Còn mở</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           {% for item in obj.items.all %}
           <tr>
-            <td>{{ item.product.product_code }} — {{ item.product.name }}</td>
+            <td>
+              {% if item.is_non_catalog %}
+                {{ item.non_catalog_name }} <span class="badge bg-warning text-dark">Chưa map Product</span>
+              {% else %}
+                {{ item.product.product_code }} — {{ item.product.name }}
+              {% endif %}
+            </td>
             <td>{{ item.qty_requested }}</td>
+            <td>{{ item.qty_approved|default:"—" }}</td>
+            <td>{{ item.qty_allocated }}</td>
+            <td>{{ item.qty_ordered }}</td>
+            <td>{{ item.qty_received }}</td>
+            <td>{{ item.qty_cancelled }}</td>
+            <td>{{ item.qty_open }}</td>
+            <td>
+              {% if item.is_non_catalog and can_map_non_catalog %}
+                <a href="{% url 'purchasing:pr_item_map_product' item.pk %}" class="btn btn-outline-secondary btn-sm">Map sang Product</a>
+              {% endif %}
+              {% if item.qty_open > 0 and obj.status == 'APPROVED' and can_cancel_pr_item %}
+                <form method="post" action="{% url 'purchasing:pr_item_cancel_open_qty' item.pk %}" class="d-inline">
+                  {% csrf_token %}
+                  <input type="hidden" name="qty" value="{{ item.qty_open }}">
+                  <input type="hidden" name="reason" value="Huỷ toàn bộ phần còn mở">
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Huỷ phần còn mở</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
           {% empty %}
-          <tr><td colspan="2" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted">Chưa có dòng hàng.</td></tr>
           {% endfor %}
         </tbody>
       </table>

@@ -33,9 +33,10 @@ from .forms import (
     PurchaseRequestItemFormSet,
     PurchaseRequestRejectForm,
 )
-from .models import PurchaseOrder, PurchaseRequest
+from .models import PurchaseOrder, PurchaseRequest, PurchaseRequestItem
 from .services import (
     approve_po,
+    cancel_pr_item_open_qty,
     close_po,
     decide_purchase_request,
     delete_purchase_request,
@@ -133,6 +134,30 @@ def can_manage_pur_pr(user):
     ``_pr_can_view_all``).
     """
     return user.is_department_manager(User.Department.PURCHASING) or user.can('approve', 'pr')
+
+
+def can_cancel_pr_item_open_qty(user, pr):
+    """Mục 1/mục 4 điểm 9: update trên 'pr' + (quản lý phòng Mua hàng HOẶC đúng
+    assigned_to của PR đó) — PUR Staff KHÁC (dù cùng phòng ban) không được, kể cả
+    có quyền update trên 'pr'.
+    """
+    if not user.can('update', 'pr'):
+        return False
+    return user.is_department_manager(User.Department.PURCHASING) or pr.assigned_to_id == user.id
+
+
+def can_map_non_catalog(user):
+    """Map non-catalog sang Product đi theo 2 quyền (mục 1 FSD Stage 2): update
+    trên 'pr' VÀ xem menu 'catalog'; "Manager" ở đây là PUR Manager
+    (``is_department_manager('PURCHASING')``), không phải bất kỳ Manager nào.
+    """
+    if not (user.can('update', 'pr') and user.can_view_menu('catalog')):
+        return False
+    if user.is_superuser or user.role == User.Role.ADMIN:
+        return True
+    if user.role == User.Role.MANAGER:
+        return user.is_department_manager(User.Department.PURCHASING)
+    return user.department == User.Department.PURCHASING
 
 
 def _po_can_view_all(user):
@@ -641,6 +666,8 @@ def pr_detail(request, pk):
             is_owner_editable and obj.status == PurchaseRequest.Status.DRAFT
             and request.user.can('delete', 'pr')
         ),
+        'can_map_non_catalog': can_map_non_catalog(request.user),
+        'can_cancel_pr_item': can_cancel_pr_item_open_qty(request.user, obj),
     })
 
 
@@ -809,6 +836,28 @@ def pr_delete(request, pk):
         except ValidationError as exc:
             messages.error(request, ' '.join(exc.messages))
     return redirect('purchasing:pr_detail', pk=obj.pk)
+
+
+@login_required
+def pr_item_cancel_open_qty(request, pk):
+    """POST-only: huỷ 1 phần qty_open của 1 dòng PR (PUR-PR-07). Quyền: mục 1/
+    mục 4 điểm 9 (``can_cancel_pr_item_open_qty``)."""
+    item = get_object_or_404(PurchaseRequestItem.objects.select_related('purchase_request'), pk=pk)
+    if not can_cancel_pr_item_open_qty(request.user, item.purchase_request):
+        raise PermissionDenied('Không có quyền huỷ phần còn mở của dòng yêu cầu mua hàng này.')
+    if request.method == 'POST':
+        try:
+            qty = int(request.POST.get('qty', ''))
+        except ValueError:
+            messages.error(request, 'Số lượng huỷ không hợp lệ.')
+            return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
+        reason = request.POST.get('reason', '')
+        try:
+            cancel_pr_item_open_qty(item, qty, reason, actor=request.user, ip_address=client_ip(request))
+            messages.success(request, f'Đã huỷ {qty} số lượng còn mở của dòng "{item}".')
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages))
+    return redirect('purchasing:pr_detail', pk=item.purchase_request_id)
 
 
 @login_required
