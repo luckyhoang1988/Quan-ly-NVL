@@ -83,8 +83,9 @@ def expiring_soon_batches(days=30, warehouse=None, warehouse_type=None):
 
 def stale_quarantine_batches(days=7, warehouse=None):
     """BACKLOG mục 2c "Quarantine batch": lô ``QUARANTINE`` (QC fail/partial,
-    nằm ở Kho phế) đã tạo quá ``days`` ngày mà chưa được xử lý — alert-only,
-    KHÔNG có thao tác scrap/return/rework tự động (phạm vi đã chốt với user).
+    nằm ở Kho phế) đã tạo quá ``days`` ngày mà chưa được xử lý — alert on-the-fly.
+    Thao tác đóng vòng: ``scrap_writeoff`` / ``return_quarantine_to_supplier`` /
+    ``release_quarantine_to_main`` (Wave 1 QC disposition).
     """
     threshold = timezone.now() - datetime.timedelta(days=days)
     qs = Batch.objects.filter(
@@ -93,6 +94,275 @@ def stale_quarantine_batches(days=7, warehouse=None):
     if warehouse is not None:
         qs = qs.filter(location__warehouse=warehouse)
     return qs.order_by('created_at')
+
+
+_OPEN_RETURN_STATUSES = ('PENDING', 'APPROVED')
+
+
+def _quarantine_blocked_by_open_return(batch):
+    """True nếu có GrnReturn mở gắn đúng batch, hoặc return legacy (batch null)
+    của cùng GRN — chặn disposition trùng.
+    """
+    from receiving.models import GrnReturn
+
+    if GrnReturn.objects.filter(batch=batch, status__in=_OPEN_RETURN_STATUSES).exists():
+        return True
+    if batch.grn_item_id is None:
+        return False
+    return GrnReturn.objects.filter(
+        grn_id=batch.grn_item.grn_id, batch__isnull=True, status__in=_OPEN_RETURN_STATUSES,
+    ).exists()
+
+
+def _assert_quarantine_scrap_batch(batch):
+    if batch.status != Batch.Status.QUARANTINE:
+        raise ValidationError(
+            f'Chỉ xử lý được lô Quarantine (hiện tại: {batch.get_status_display()}).'
+        )
+    if batch.location.warehouse.warehouse_type != Warehouse.WarehouseType.SCRAP:
+        raise ValidationError('Lô Quarantine phải nằm ở Kho phế.')
+
+
+def _deduct_quarantine_qty(*, batch, qty, actor, reference, skip_open_return_check=False):
+    """Trừ ``qty`` khỏi batch QUARANTINE @ SCRAP + ADJUSTMENT. Partial giữ
+    ``QUARANTINE`` (không promote ``PARTIAL_USED``); hết → ``CLOSED``.
+    Caller phải đã nằm trong ``transaction.atomic`` và đã khoá Inventory nếu cần.
+    """
+    if qty <= 0:
+        raise ValidationError('Số lượng phải lớn hơn 0.')
+    _assert_quarantine_scrap_batch(batch)
+    if not skip_open_return_check and _quarantine_blocked_by_open_return(batch):
+        raise ValidationError('Lô đang có phiếu trả hàng NCC chưa hoàn tất — không thể xử lý.')
+    if qty > batch.qty_available:
+        raise ValidationError(
+            f'Batch "{batch.batch_code}" chỉ còn {batch.qty_available}, không đủ {qty}.'
+        )
+
+    warehouse = batch.location.warehouse
+    inv = lock_inventories(batch.product, [warehouse])[warehouse.id]
+    batch = Batch.objects.select_for_update().get(pk=batch.pk)
+    _assert_quarantine_scrap_batch(batch)
+    if qty > batch.qty_available:
+        raise ValidationError(
+            f'Batch "{batch.batch_code}" chỉ còn {batch.qty_available}, không đủ {qty}.'
+        )
+
+    batch.qty_used += qty
+    if batch.qty_available <= 0:
+        batch.status = Batch.Status.CLOSED
+    # else: giữ QUARANTINE
+    batch.save(update_fields=['qty_used', 'status'])
+
+    inv.qty_on_hand -= qty
+    inv.save(update_fields=['qty_on_hand', 'updated_at'])
+    record_movement(
+        product=batch.product, warehouse=warehouse, batch=batch,
+        movement_type=StockMovement.MovementType.ADJUSTMENT, qty=-qty,
+        reference=reference, actor=actor,
+    )
+    return batch
+
+
+def _move_quarantine_to_main(*, source_batch, qty, to_location, new_batch_code, actor, reference):
+    """Tách qty từ QUARANTINE @ SCRAP → batch mới PENDING_RECEIPT @ MAIN.
+    Partial nguồn giữ QUARANTINE; hết → CLOSED.
+    """
+    _assert_quarantine_scrap_batch(source_batch)
+    if to_location.warehouse.warehouse_type != Warehouse.WarehouseType.MAIN:
+        raise ValidationError('Vị trí đích phải thuộc kho loại "Kho thành phẩm".')
+    if not to_location.is_active:
+        raise ValidationError(f'Vị trí "{to_location}" đã ngừng hoạt động.')
+    if not to_location.warehouse.is_active:
+        raise ValidationError(f'Kho "{to_location.warehouse}" đã ngừng hoạt động.')
+    if qty <= 0:
+        raise ValidationError('Số lượng phải lớn hơn 0.')
+
+    ref = Batch.objects.select_related('product', 'location__warehouse').get(pk=source_batch.pk)
+    locked_inv = lock_inventories(ref.product, [ref.location.warehouse, to_location.warehouse])
+    source_batch = Batch.objects.select_for_update().get(pk=source_batch.pk)
+    _assert_quarantine_scrap_batch(source_batch)
+    if qty > source_batch.qty_available:
+        raise ValidationError(
+            f'Batch "{source_batch.batch_code}" chỉ còn {source_batch.qty_available}, không đủ {qty}.'
+        )
+
+    new_batch = Batch.objects.create(
+        product=source_batch.product, batch_code=new_batch_code, supplier=source_batch.supplier,
+        location=to_location, grn_item=source_batch.grn_item,
+        mfg_date=source_batch.mfg_date, exp_date=source_batch.exp_date,
+        qty_received=qty, status=Batch.Status.PENDING_RECEIPT,
+    )
+    source_batch.qty_used += qty
+    source_batch.status = (
+        Batch.Status.CLOSED if source_batch.qty_available <= 0 else Batch.Status.QUARANTINE
+    )
+    source_batch.save(update_fields=['qty_used', 'status'])
+
+    src_inv = locked_inv[source_batch.location.warehouse_id]
+    src_inv.qty_on_hand -= qty
+    src_inv.save(update_fields=['qty_on_hand', 'updated_at'])
+    record_movement(
+        product=source_batch.product, warehouse=source_batch.location.warehouse, batch=source_batch,
+        movement_type=StockMovement.MovementType.TRANSFER_OUT, qty=-qty,
+        reference=reference, actor=actor,
+    )
+    dst_inv = locked_inv[to_location.warehouse_id]
+    dst_inv.qty_on_hand += qty
+    dst_inv.save(update_fields=['qty_on_hand', 'updated_at'])
+    record_movement(
+        product=source_batch.product, warehouse=to_location.warehouse, batch=new_batch,
+        movement_type=StockMovement.MovementType.TRANSFER_IN, qty=qty,
+        reference=reference, actor=actor,
+    )
+    return new_batch
+
+
+@transaction.atomic
+def scrap_writeoff(*, batch, qty, reason, actor, ip_address=None):
+    """Wave 1 disposition: huỷ tồn SCRAP (ADJUSTMENT) + đóng/giảm lô QUARANTINE."""
+    if not actor or not actor.can('approve', 'qc'):
+        raise ValidationError('Bạn không có quyền scrap write-off lô Quarantine.')
+    if not (reason or '').strip():
+        raise ValidationError({'reason': 'Lý do là bắt buộc.'})
+
+    batch = Batch.objects.select_related('product', 'location__warehouse', 'grn_item').get(pk=batch.pk)
+    batch = _deduct_quarantine_qty(
+        batch=batch, qty=qty, actor=actor, reference=batch.batch_code,
+    )
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=batch,
+        description=f'Scrap write-off lô {batch.batch_code} (qty={qty}).',
+        reason=reason.strip(), ip_address=ip_address,
+        changes={'qty_written_off': qty, 'status': batch.status},
+    )
+    return batch
+
+
+@transaction.atomic
+def return_quarantine_to_supplier(*, batch, qty, reason, actor, ip_address=None):
+    """Wave 1 disposition: tạo ``GrnReturn(batch, qty)`` PENDING — chưa trừ Inventory."""
+    from receiving.models import GrnReturn
+
+    if not actor or not actor.can('approve', 'qc'):
+        raise ValidationError('Bạn không có quyền tạo phiếu trả hàng từ lô Quarantine.')
+    if not (reason or '').strip():
+        raise ValidationError({'reason': 'Lý do là bắt buộc.'})
+
+    batch = Batch.objects.select_related(
+        'product', 'location__warehouse', 'grn_item__grn',
+    ).select_for_update(of=('self',)).get(pk=batch.pk)
+    _assert_quarantine_scrap_batch(batch)
+    if _quarantine_blocked_by_open_return(batch):
+        raise ValidationError('Lô đang có phiếu trả hàng NCC chưa hoàn tất — không thể tạo return mới.')
+    if batch.grn_item_id is None:
+        raise ValidationError('Lô không có nguồn GRN — không thể tạo phiếu trả NCC.')
+    if qty <= 0 or qty > batch.qty_available:
+        raise ValidationError(f'Số lượng trả phải trong khoảng 1..{batch.qty_available}.')
+
+    ret = GrnReturn.objects.create(
+        grn=batch.grn_item.grn, batch=batch, qty=qty, reason=reason.strip(),
+    )
+    log_action(
+        actor, AuditLog.Action.CREATE, target=ret,
+        description=f'Tạo trả hàng NCC từ lô {batch.batch_code} (qty={qty}).',
+        reason=reason.strip(), ip_address=ip_address,
+    )
+    notify(
+        User.objects.filter(department=User.Department.PURCHASING, is_active=True),
+        f'Có phiếu trả hàng RETURN-{ret.grn.grn_no} từ lô Quarantine {batch.batch_code}.',
+        target=ret,
+    )
+    return ret
+
+
+@transaction.atomic
+def consume_scrap_for_returned(grn_return, actor=None):
+    """Gọi từ ``mark_return_returned``: trừ tồn SCRAP khi hàng đã trả NCC."""
+    from receiving.models import GrnReturn
+
+    grn_return = GrnReturn.objects.select_related(
+        'batch__location__warehouse', 'batch__product', 'grn',
+    ).get(pk=grn_return.pk)
+
+    if grn_return.batch_id:
+        qty = grn_return.qty or grn_return.batch.qty_available
+        _deduct_quarantine_qty(
+            batch=grn_return.batch, qty=qty, actor=actor,
+            reference=f'RETURN-{grn_return.grn.grn_no}',
+            skip_open_return_check=True,
+        )
+        return
+
+    batches = (
+        Batch.objects.filter(
+            status=Batch.Status.QUARANTINE,
+            grn_item__grn_id=grn_return.grn_id,
+        )
+        .select_related('product', 'location__warehouse')
+        .order_by('product_id', 'pk')
+    )
+    for batch in batches:
+        if batch.qty_available <= 0:
+            continue
+        _deduct_quarantine_qty(
+            batch=batch, qty=batch.qty_available, actor=actor,
+            reference=f'RETURN-{grn_return.grn.grn_no}',
+            skip_open_return_check=True,
+        )
+
+
+@transaction.atomic
+def release_quarantine_to_main(
+    *, batch, qty, location, reason, actor, assigned_to=None, ip_address=None,
+):
+    """Wave 1 disposition: Use-as-is có kiểm soát — SCRAP → MAIN PENDING_RECEIPT + handoff."""
+    from quality.models import QcInspection
+
+    if not actor or not actor.can('override', 'qc'):
+        raise ValidationError('Bạn không có quyền phóng thích lô Quarantine về kho chính.')
+    if not (reason or '').strip():
+        raise ValidationError({'reason': 'Lý do là bắt buộc.'})
+
+    batch = Batch.objects.select_related(
+        'product', 'location__warehouse', 'grn_item__grn',
+    ).get(pk=batch.pk)
+    if _quarantine_blocked_by_open_return(batch):
+        raise ValidationError('Lô đang có phiếu trả hàng NCC chưa hoàn tất — không thể phóng thích.')
+    if batch.grn_item_id is None:
+        raise ValidationError('Lô không có nguồn GRN — không xác định được đợt QC để bàn giao.')
+
+    inspection = (
+        QcInspection.objects.filter(grn_id=batch.grn_item.grn_id)
+        .exclude(status=QcInspection.Result.CANCELLED)
+        .exclude(status=QcInspection.Result.PENDING_QC)
+        .order_by('-completed_at', '-pk')
+        .first()
+    )
+    if inspection is None:
+        raise ValidationError('Không tìm thấy đợt QC đã hoàn tất cho GRN của lô này.')
+
+    new_code = f'{batch.batch_code}-REL'
+    # uniqueness: append short suffix if collision
+    if Batch.objects.filter(batch_code=new_code).exists():
+        new_code = f'{batch.batch_code}-REL{batch.pk}'
+
+    new_batch = _move_quarantine_to_main(
+        source_batch=batch, qty=qty, to_location=location, new_batch_code=new_code,
+        actor=actor, reference=batch.batch_code,
+    )
+    create_handoff(
+        batch=new_batch, qc_inspection=inspection,
+        destination_warehouse=location.warehouse, assigned_to=assigned_to,
+    )
+    log_action(
+        actor, AuditLog.Action.UPDATE, target=new_batch,
+        description=(
+            f'Phóng thích Quarantine {batch.batch_code} -> {new_batch.batch_code} '
+            f'@ {location} (qty={qty}).'
+        ),
+        reason=reason.strip(), ip_address=ip_address,
+    )
+    return new_batch
 
 
 def suggest_fifo_batches(product, warehouse, qty_needed):

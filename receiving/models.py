@@ -161,7 +161,14 @@ class GrnItem(models.Model):
 
 
 class GrnReturn(models.Model):
-    """Phiếu trả hàng NCC (mục 2c) — tự động tạo khi QC FAIL, KHÔNG đụng Inventory."""
+    """Phiếu trả hàng NCC (mục 2c) — tạo khi QC FAIL đầy đủ, hoặc từ disposition
+    ``RETURN_SUPPLIER`` trên lô QUARANTINE (Wave 1 QC).
+
+    Hàng FAIL đã nằm thật ở Inventory Kho phế (SCRAP). Khi phiếu chuyển
+    ``RETURNED``, ``receiving.services.mark_return_returned`` trừ tồn SCRAP
+    (qua ``inventory.services.consume_scrap_for_returned``) — không còn là
+    phiếu “chỉ đổi status”.
+    """
 
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Chờ xử lý'
@@ -170,6 +177,16 @@ class GrnReturn(models.Model):
         CLOSED = 'CLOSED', 'Đã đóng'
 
     grn = models.ForeignKey(Grn, on_delete=models.PROTECT, related_name='returns', verbose_name='Phiếu GRN')
+    batch = models.ForeignKey(
+        'inventory.Batch', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='returns', verbose_name='Lô Quarantine',
+        help_text='Null = return legacy FULL-fail (bao phủ mọi lô SCRAP của GRN). '
+                  'Non-null = return gắn đúng 1 lô QUARANTINE (disposition / PARTIAL).',
+    )
+    qty = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name='Số lượng trả',
+        help_text='Bắt buộc khi có batch; null khi return legacy không gắn lô.',
+    )
     reason = models.TextField(default='QC Fail', verbose_name='Lý do trả hàng')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, verbose_name='Trạng thái')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Ngày tạo')

@@ -171,6 +171,28 @@ class GrnReturnModelTest(TestCase):
         ret = GrnReturn.objects.create(grn=self.grn)
         self.assertEqual(ret.get_absolute_url(), reverse('receiving:grn_detail', args=[self.grn.pk]))
 
+    def test_TC_QC_DISP_000_grn_return_accepts_optional_batch_and_qty(self):
+        """Wave 1: GrnReturn.batch/qty nullable (legacy) hoặc gắn lô QUARANTINE."""
+        from catalog.models import Product
+        from inventory.models import Batch
+        from partners.models import Supplier
+        from warehouse.models import Location, Warehouse
+
+        product = Product.objects.create(product_code='NVL-R1', name='NVL R1', uom='kg')
+        supplier = Supplier.objects.create(supplier_code='NCC-R1', name='NCC R1')
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE-R', name='Kho phế R', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        loc = Location.objects.create(warehouse=scrap, code='A-01')
+        batch = Batch.objects.create(
+            product=product, batch_code='LOT-RET-1', supplier=supplier, location=loc,
+            qty_received=5, status=Batch.Status.QUARANTINE,
+        )
+        legacy = GrnReturn.objects.create(grn=self.grn)
+        self.assertIsNone(legacy.batch)
+        self.assertIsNone(legacy.qty)
+        linked = GrnReturn.objects.create(grn=self.grn, batch=batch, qty=5, reason='Trả NCC')
+        self.assertEqual(linked.batch_id, batch.pk)
+        self.assertEqual(linked.qty, 5)
 
 class GrnCloseServiceTest(TestCase):
     """State CLOSED (mục 2a Workflow States) — ``close_grn``. ``TC-GRN-CLOSE-<seq>``."""

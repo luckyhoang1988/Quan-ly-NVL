@@ -1,4 +1,5 @@
 import datetime
+from decimal import Decimal
 from unittest import mock
 
 from django.contrib import admin
@@ -15,7 +16,7 @@ from catalog.models import Product
 from partners.models import Supplier
 from purchasing.models import PurchaseOrder, PurchaseOrderItem
 from quality.models import QcInspection
-from receiving.models import Grn
+from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Location, Warehouse
 
 from .admin import BatchAdmin, InventoryAdmin, StockMovementAdmin, StockTransferAdmin
@@ -23,6 +24,7 @@ from .forms import StockTransferForm
 from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
 from .services import (
     accept_handoff, calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, reject_handoff,
+    release_quarantine_to_main, return_quarantine_to_supplier, scrap_writeoff,
     stale_quarantine_batches, suggest_fifo_batches, sync_expired_batches, transfer_stock,
 )
 
@@ -1519,3 +1521,156 @@ class InventoryAdminReadOnlyTest(TestCase):
         self.assertFalse(model_admin.has_add_permission(None))
         self.assertFalse(model_admin.has_change_permission(None))
         self.assertFalse(model_admin.has_delete_permission(None))
+
+
+class QuarantineDispositionServiceTest(TestCase):
+    """Wave 1 QC disposition — ``TC-QC-DISP-*``."""
+
+    def setUp(self):
+        self.qc = User.objects.create_user(username='qc-disp', password='x', role=User.Role.QC)
+        self.manager = User.objects.create_user(
+            username='mgr-disp', password='x', role=User.Role.MANAGER)
+        self.staff = User.objects.create_user(username='staff-disp', password='x', role=User.Role.STAFF)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-D1', name='NCC Disp')
+        self.product = Product.objects.create(product_code='NVL-D1', name='NVL Disp', uom='kg')
+        self.main = Warehouse.objects.create(
+            code='KHO-MAIN-D', name='Main D', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.main_loc = Location.objects.create(warehouse=self.main, code='A-01')
+        self.scrap = Warehouse.objects.create(
+            code='KHO-PHE-D', name='Scrap D', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        self.scrap_loc = Location.objects.create(warehouse=self.scrap, code='A-01')
+        self.po = PurchaseOrder.objects.create(po_no='PO-DISP-1', supplier=self.supplier)
+        self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.manager)
+        self.grn_item = GrnItem.objects.create(
+            grn=self.grn, product=self.product, qty_ordered=10, qty_received=10,
+            unit_price=Decimal('1000.00'),
+        )
+        self.inspection = QcInspection.objects.create(
+            grn=self.grn, inspector=self.qc, status=QcInspection.Result.FAIL,
+            completed_at=timezone.now(),
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.scrap, qty_on_hand=10)
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-DISP-1', supplier=self.supplier,
+            location=self.scrap_loc, grn_item=self.grn_item, qty_received=10,
+            status=Batch.Status.QUARANTINE,
+        )
+
+    def test_TC_QC_DISP_001_scrap_writeoff_full_closes_batch(self):
+        scrap_writeoff(batch=self.batch, qty=10, reason='Hủy phế', actor=self.qc)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.CLOSED)
+        self.assertEqual(self.batch.qty_available, 0)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.scrap)
+        self.assertEqual(inv.qty_on_hand, 0)
+        self.assertTrue(StockMovement.objects.filter(
+            movement_type=StockMovement.MovementType.ADJUSTMENT, qty=-10,
+        ).exists())
+        self.assertTrue(AuditLog.objects.filter(description__contains='Scrap write-off').exists())
+
+    def test_TC_QC_DISP_002_scrap_writeoff_partial_keeps_quarantine(self):
+        scrap_writeoff(batch=self.batch, qty=4, reason='Hủy một phần', actor=self.qc)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.QUARANTINE)
+        self.assertEqual(self.batch.qty_available, 6)
+
+    def test_TC_QC_DISP_010_writeoff_rejects_non_quarantine(self):
+        self.batch.status = Batch.Status.ACTIVE
+        self.batch.save(update_fields=['status'])
+        with self.assertRaises(ValidationError):
+            scrap_writeoff(batch=self.batch, qty=1, reason='x', actor=self.qc)
+
+    def test_TC_QC_DISP_004_return_creates_grn_return_without_inv_change(self):
+        ret = return_quarantine_to_supplier(
+            batch=self.batch, qty=10, reason='Trả NCC', actor=self.qc)
+        self.assertEqual(ret.batch_id, self.batch.pk)
+        self.assertEqual(ret.qty, 10)
+        self.assertEqual(ret.status, GrnReturn.Status.PENDING)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.scrap)
+        self.assertEqual(inv.qty_on_hand, 10)
+
+    def test_TC_QC_DISP_005_mark_returned_deducts_linked_batch(self):
+        from receiving.services import approve_return, mark_return_returned
+        ret = return_quarantine_to_supplier(
+            batch=self.batch, qty=10, reason='Trả NCC', actor=self.qc)
+        approve_return(ret, actor=self.manager)
+        mark_return_returned(ret, actor=self.manager)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.CLOSED)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.scrap)
+        self.assertEqual(inv.qty_on_hand, 0)
+
+    def test_TC_QC_DISP_006_legacy_return_deducts_all_quarantine_of_grn(self):
+        from receiving.services import approve_return, mark_return_returned
+        ret = GrnReturn.objects.create(grn=self.grn, reason='QC Fail')  # batch null
+        approve_return(ret, actor=self.manager)
+        mark_return_returned(ret, actor=self.manager)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.CLOSED)
+        inv = Inventory.objects.get(product=self.product, warehouse=self.scrap)
+        self.assertEqual(inv.qty_on_hand, 0)
+
+    def test_TC_QC_DISP_007_release_to_main_creates_handoff(self):
+        new_batch = release_quarantine_to_main(
+            batch=self.batch, qty=10, location=self.main_loc,
+            reason='Use as is sau kiểm tra lại', actor=self.manager,
+        )
+        self.assertEqual(new_batch.status, Batch.Status.PENDING_RECEIPT)
+        self.assertEqual(new_batch.location_id, self.main_loc.pk)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.CLOSED)
+        handoff = WarehouseHandoff.objects.get(batch=new_batch)
+        self.assertEqual(handoff.status, WarehouseHandoff.Status.PENDING)
+        scrap_inv = Inventory.objects.get(product=self.product, warehouse=self.scrap)
+        main_inv = Inventory.objects.get(product=self.product, warehouse=self.main)
+        self.assertEqual(scrap_inv.qty_on_hand, 0)
+        self.assertEqual(main_inv.qty_on_hand, 10)
+
+    def test_TC_QC_DISP_008_qc_cannot_release(self):
+        with self.assertRaises(ValidationError):
+            release_quarantine_to_main(
+                batch=self.batch, qty=10, location=self.main_loc,
+                reason='x', actor=self.qc,
+            )
+
+    def test_TC_QC_DISP_009_open_return_blocks_writeoff(self):
+        return_quarantine_to_supplier(
+            batch=self.batch, qty=5, reason='Trả một phần', actor=self.qc)
+        with self.assertRaises(ValidationError):
+            scrap_writeoff(batch=self.batch, qty=5, reason='hủy', actor=self.qc)
+
+
+class QuarantineDispositionViewTest(TestCase):
+    """TC-QC-DISP-003 view permissions."""
+
+    def setUp(self):
+        self.qc = User.objects.create_user(username='qc-v', password='pass', role=User.Role.QC)
+        self.staff = User.objects.create_user(username='st-v', password='pass', role=User.Role.STAFF)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-DV', name='NCC DV')
+        self.product = Product.objects.create(product_code='NVL-DV', name='NVL DV', uom='kg')
+        self.scrap = Warehouse.objects.create(
+            code='KHO-PHE-V', name='Scrap V', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        self.scrap_loc = Location.objects.create(warehouse=self.scrap, code='A-01')
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-DISP-V', supplier=self.supplier,
+            location=self.scrap_loc, qty_received=5, status=Batch.Status.QUARANTINE,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.scrap, qty_on_hand=5)
+
+    def test_TC_QC_DISP_003_staff_forbidden(self):
+        self.client.login(username='st-v', password='pass')
+        url = reverse('inventory:batch_dispose', args=[self.batch.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 403)
+
+    def test_TC_QC_DISP_003_qc_can_get_form(self):
+        self.client.login(username='qc-v', password='pass')
+        url = reverse('inventory:batch_dispose', args=[self.batch.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        response = self.client.post(url, {
+            'disposition': 'writeoff', 'qty': 5, 'reason': 'Hủy kiểm tra',
+        })
+        self.assertEqual(response.status_code, 302)
+        self.batch.refresh_from_db()
+        self.assertEqual(self.batch.status, Batch.Status.CLOSED)

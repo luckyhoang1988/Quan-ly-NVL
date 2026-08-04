@@ -244,6 +244,10 @@ def mark_return_returned(grn_return, actor=None, ip_address=None):
 
     grn_return.status = GrnReturn.Status.RETURNED
     grn_return.save(update_fields=['status'])
+
+    from inventory.services import consume_scrap_for_returned
+    consume_scrap_for_returned(grn_return, actor=actor)
+
     log_action(
         actor, AuditLog.Action.UPDATE, target=grn_return,
         description=f'Phiếu trả hàng RETURN-{grn_return.grn.grn_no}: APPROVED -> RETURNED.',

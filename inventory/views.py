@@ -24,11 +24,12 @@ from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from warehouse.models import Warehouse
 
-from .forms import StockTransferForm
+from .forms import QuarantineDisposeForm, StockTransferForm
 from .models import Batch, Inventory, StockTransfer, WarehouseHandoff
 from .services import (
-    accept_handoff, calculate_eoq, expiring_soon_batches, reject_handoff, stale_quarantine_batches,
-    sync_expired_batches, transfer_stock,
+    accept_handoff, calculate_eoq, expiring_soon_batches, reject_handoff,
+    release_quarantine_to_main, return_quarantine_to_supplier, scrap_writeoff,
+    stale_quarantine_batches, sync_expired_batches, transfer_stock,
 )
 
 
@@ -233,12 +234,80 @@ def batch_detail(request, pk):
     )
     is_expiring_soon = expiring_soon_batches().filter(pk=batch.pk).exists()
     is_stale_quarantine = stale_quarantine_batches().filter(pk=batch.pk).exists()
+    can_approve_qc = request.user.can('approve', 'qc')
+    can_override_qc = request.user.can('override', 'qc')
+    can_dispose = (
+        batch.status == Batch.Status.QUARANTINE
+        and (can_approve_qc or can_override_qc)
+    )
     return render(request, 'inventory/batch_detail.html', {
         'batch': batch,
         'movements': batch.movements.select_related('created_by').all(),
         'is_expiring_soon': is_expiring_soon,
         'is_stale_quarantine': is_stale_quarantine,
         'can_transfer_inventory': can_transfer_inventory(request.user),
+        'can_dispose_quarantine': can_dispose,
+    })
+
+
+@login_required
+def batch_dispose(request, pk):
+    """Wave 1 QC: disposition lô QUARANTINE (writeoff / return / release)."""
+    if not request.user.can_view_menu('inventory'):
+        raise PermissionDenied('Bạn không có quyền truy cập mục "Tồn kho".')
+    batch = get_object_or_404(
+        Batch.objects.select_related('product', 'supplier', 'location__warehouse', 'grn_item'),
+        pk=pk,
+    )
+    if batch.status != Batch.Status.QUARANTINE:
+        raise PermissionDenied('Chỉ xử lý được lô đang Quarantine.')
+    if not (request.user.can('approve', 'qc') or request.user.can('override', 'qc')):
+        raise PermissionDenied('Bạn không có quyền xử lý lô Quarantine.')
+
+    form = QuarantineDisposeForm(
+        request.POST or None, batch=batch, user=request.user,
+    )
+    if not form.fields['disposition'].choices:
+        raise PermissionDenied('Bạn không có quyền xử lý lô Quarantine.')
+
+    if request.method == 'POST' and form.is_valid():
+        disp = form.cleaned_data['disposition']
+        qty = form.cleaned_data['qty']
+        reason = form.cleaned_data['reason']
+        try:
+            if disp == QuarantineDisposeForm.Disposition.WRITEOFF:
+                scrap_writeoff(
+                    batch=batch, qty=qty, reason=reason, actor=request.user,
+                    ip_address=client_ip(request),
+                )
+                messages.success(request, f'Đã huỷ tồn lô "{batch.batch_code}" (qty={qty}).')
+            elif disp == QuarantineDisposeForm.Disposition.RETURN:
+                ret = return_quarantine_to_supplier(
+                    batch=batch, qty=qty, reason=reason, actor=request.user,
+                    ip_address=client_ip(request),
+                )
+                messages.success(
+                    request,
+                    f'Đã tạo phiếu trả hàng RETURN-{ret.grn.grn_no} từ lô "{batch.batch_code}".',
+                )
+                return redirect('receiving:grn_detail', pk=ret.grn_id)
+            else:
+                release_quarantine_to_main(
+                    batch=batch, qty=qty, location=form.cleaned_data['location'],
+                    reason=reason, actor=request.user,
+                    assigned_to=form.cleaned_data.get('assigned_to'),
+                    ip_address=client_ip(request),
+                )
+                messages.success(
+                    request,
+                    f'Đã phóng thích lô "{batch.batch_code}" về kho chính (chờ bàn giao).',
+                )
+            return redirect('inventory:batch_detail', pk=batch.pk)
+        except ValidationError as exc:
+            messages.error(request, ' '.join(exc.messages) if hasattr(exc, 'messages') else str(exc))
+
+    return render(request, 'inventory/batch_dispose.html', {
+        'batch': batch, 'form': form,
     })
 
 
