@@ -11,6 +11,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import IntegrityError, connection, transaction
 from django.db.utils import OperationalError
 from django.test import TestCase, TransactionTestCase
@@ -3999,3 +4000,50 @@ class CheckNonCatalogSlaCommandTest(TestCase):
         with patch('purchasing.services.timezone.localdate', return_value=REFERENCE_DATE):
             call_command('check_non_catalog_sla', stdout=StringIO())
         self.assertTrue(Notification.objects.filter(recipient=self.pur_manager).exists())
+
+
+class ReconcileLegacyCommandTest(TestCase):
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        self.po_item = PurchaseOrderItem.objects.create(
+            purchase_order=self.po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED, linked_po=self.po)
+        self.pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+    def test_TC_PUR_PR_05_022_dry_run_does_not_commit(self):
+        out = StringIO()
+        call_command(
+            'reconcile_legacy_po_item_allocations', po_item=self.po_item.pk,
+            allocation=[f'{self.pr_item.pk}:10'], actor='admin1', dry_run=True, stdout=out,
+        )
+        self.assertEqual(ProcurementAllocation.objects.count(), 0)
+        self.assertIn('DRY-RUN', out.getvalue())
+
+    def test_TC_PUR_PR_05_022_real_run_commits(self):
+        call_command(
+            'reconcile_legacy_po_item_allocations', po_item=self.po_item.pk,
+            allocation=[f'{self.pr_item.pk}:10'], actor='admin1', dry_run=False, stdout=StringIO(),
+        )
+        self.assertEqual(ProcurementAllocation.objects.count(), 1)
+
+    def test_TC_PUR_PR_05_022_invalid_pr_item_id_aborts_no_partial(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                'reconcile_legacy_po_item_allocations', po_item=self.po_item.pk,
+                allocation=['999999:10'], actor='admin1', dry_run=False)
+        self.assertEqual(ProcurementAllocation.objects.count(), 0)
+
+    def test_actor_username_not_found_raises_clear_error(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                'reconcile_legacy_po_item_allocations', po_item=self.po_item.pk,
+                allocation=[f'{self.pr_item.pk}:10'], actor='khong_ton_tai', dry_run=False)
