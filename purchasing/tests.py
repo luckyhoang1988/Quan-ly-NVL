@@ -43,6 +43,7 @@ from .services import (
     create_allocation,
     decide_purchase_request,
     delete_draft_po_item_with_allocations,
+    delete_purchase_request,
     find_duplicate_po_products,
     forward_purchase_request,
     map_non_catalog_item,
@@ -1299,6 +1300,7 @@ class PrCreatePrefillTest(TestCase):
             'items-0-product': self.product.pk,
             'items-0-qty_requested': 50,
             'items-0-currency': 'VND',
+            'items-0-required_date': timezone.localdate().isoformat(),
         }
         payload.update(overrides)
         return payload
@@ -1427,6 +1429,7 @@ class PurchaseRequestCrudTest(TestCase):
             'items-0-product': self.product.pk,
             'items-0-qty_requested': 20,
             'items-0-currency': 'VND',
+            'items-0-required_date': timezone.localdate().isoformat(),
         }
         payload.update(overrides)
         return payload
@@ -2754,6 +2757,13 @@ class CancelPrItemOpenQtyTest(TestCase):
         log = AuditLog.objects.filter(target_id=str(pr.pk), action=AuditLog.Action.CANCEL).latest('id')
         self.assertEqual(log.reason, 'Huỷ toàn bộ phần còn mở')
 
+    def test_TC_PUR_PR_07_003_delete_draft_pr_unaffected_by_stage2(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.user, warehouse=self.warehouse, cost_center='CC-001')
+        request_no = delete_purchase_request(pr, actor=self.user)
+        self.assertEqual(request_no, pr.request_no)
+        self.assertFalse(PurchaseRequest.objects.filter(pk=pr.pk).exists())
+
 
 class ExchangeRateModelTest(TestCase):
     def test_TC_PUR_XR_unique_currency_rate_date(self):
@@ -3152,6 +3162,16 @@ class BuildPoFromAllocationsTest(TestCase):
                 self.supplier, [(self.pr_item_a, 10)],
                 {self.product.pk: Decimal('1000')}, actor=self.admin_user)
         self.assertFalse(PurchaseOrder.objects.filter(supplier_id=self.supplier.pk).exists())
+
+    def test_TC_PUR_PR_05_002_different_products_create_separate_po_items(self):
+        other_product = Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg')
+        pr_item_c = PurchaseRequestItem.objects.create(
+            purchase_request=self.pr, product=other_product, qty_requested=3, qty_approved=3,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('2000'), budget_category='NL')
+        po = build_po_from_allocations(
+            self.supplier, [(self.pr_item_a, 10), (pr_item_c, 3)],
+            {self.product.pk: Decimal('1200'), other_product.pk: Decimal('2500')}, actor=self.admin_user)
+        self.assertEqual(po.items.count(), 2)
 
 
 class ReconcileLegacyPoItemAllocationsTest(TestCase):
@@ -3594,6 +3614,13 @@ class PurchaseRequestItemFormTest(TestCase):
             rendered = str(form['product'])
         self.assertIn('data-category="Nguyên liệu"', rendered)
         self.assertIn('data-category="Phụ gia"', rendered)
+
+    def test_TC_PUR_PR_01_001_missing_required_date_invalid(self):
+        data = self._base_data(product=self.product.pk)
+        data['required_date'] = ''
+        form = PurchaseRequestItemForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('required_date', form.errors)
 
 
 class PrItemCancelOpenQtyViewTest(TestCase):

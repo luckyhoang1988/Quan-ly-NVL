@@ -161,6 +161,9 @@ class PurchaseRequestItemForm(forms.ModelForm):
         if self.instance.pk and self.instance.product_id:
             queryset |= Q(pk=self.instance.product_id)
         self.fields['product'].queryset = Product.objects.filter(queryset).distinct()
+        # required_date để null=True/blank=True ở model chỉ vì lý do backfill dữ liệu cũ (mục 8,
+        # docs/pur/02_stage2_fsd.md) — bắt buộc ở tầng form cho mọi dòng tạo/sửa từ Stage 2 trở đi.
+        self.fields['required_date'].required = True
         _bootstrapify(self.fields)
 
 
