@@ -47,7 +47,16 @@ leads to unfocused code.
 the two source docs it merged, kept only for reference — not source of truth). `docs/pur/0X_*.md` holds the
 per-stage FSD + technical backlog derived from that roadmap (`00_business_decisions.md`,
 `01_foundation_fsd.md`, ...), written one stage at a time as each is reached — don't write ahead of the
-stage currently being planned.
+stage currently being planned. **Once a stage's `0X_stageN_implementation_plan.md` is fully implemented**
+(every Phase done, tests passing — checkboxes stay unticked per the file's own convention, so check its
+status blockquote and `git log` instead), its per-task RED/GREEN code snippets become pure duplication of
+the real code and are pure context-window cost with no ongoing value — move the full file as-is into
+`docs/pur/archive/` (preserves 100% detail for the rare deep-dive) and replace the live path with a
+condensed version: keep the header/global-constraints/file-map sections, each Task's `**File:**`/
+`**Giao diện:**`/design-rationale prose and AC/TC references, drop the fenced code blocks. See
+`docs/pur/archive/03_stage2_implementation_plan.md` vs `docs/pur/03_stage2_implementation_plan.md` as the
+reference example (4640 → ~1460 lines). Don't apply this to the FSD (`0X_stageN_fsd.md`) files — those
+stay as the live spec/AC-TC reference, not a duplicated-code tutorial, so they aren't bloated the same way.
 
 ## Working with BACKLOG.md
 
@@ -718,3 +727,25 @@ rather than rediscovering the failure.
   base class and overriding `validate_unique()` to a no-op — safe specifically when every row in the formset
   is guaranteed to reference a pre-existing, already-unique DB row (no `extra` slots, disabled identity
   fields), so the check was never protecting a real "two new rows collide" scenario in the first place.
+- **A model field marked `null=True, blank=True` purely for legacy-data-backfill reasons still needs its
+  paired `ModelForm` field set `required=True` explicitly — the model-level nullability alone does not
+  enforce it** (PUR-PR-01, Stage 2 Task 5.4): `purchasing/models.py::PurchaseRequestItem.required_date` is
+  nullable only so a historical backfill migration can leave old rows without one; `docs/pur/02_stage2_fsd.md`
+  §8 explicitly says the form layer must require it on every DRAFT create/edit from Stage 2 onward, but
+  `PurchaseRequestItemForm` never set `self.fields['required_date'].required = True`, so every create/edit
+  view silently accepted a blank `required_date`. Caught by a RED test the implementation plan's own final
+  cross-check task had already scripted (`test_TC_PUR_PR_01_001_missing_required_date_invalid`) — not by an
+  earlier phase that should have implemented it. Apply generally: whenever a model field's nullability is
+  annotated as being for backfill/legacy-data reasons, grep the paired form's `__init__`/`Meta` for an
+  explicit `required=True` (or an equivalent `clean_<field>` check) before assuming the constraint is
+  enforced end-to-end — a "nullable for backfill" comment on the model is a flag to go verify the form layer
+  specifically, never proof that it already does.
+- **A manual Acceptance-Criteria/Test-Case cross-check (grep every documented `TC-*`/AC ID in the FSD against
+  actual `test_*` method names in the test file) belongs at the end of every FSD-driven implementation phase,
+  not just as an optional nice-to-have** — it is not merely a coverage audit. It can surface a real,
+  previously-unimplemented spec requirement (the `required_date` bug above was found exactly this way), so
+  any gap this pass turns up must be root-caused and fixed via TDD like any other bug, never written off as
+  "just add the missing test." Do this even when the implementation plan already appears to enumerate every
+  task — a plan can under-specify a requirement its own author already flagged elsewhere in the FSD, and the
+  only way to catch that is to re-read the FSD's AC/TC list against the code that actually exists, not
+  against the plan's own checklist.

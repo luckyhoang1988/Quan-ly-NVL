@@ -1,9 +1,12 @@
 # PUR Expansion — 02. FSD Stage 2: PR 2.0 và Allocation (Epic B, PUR-PR-01..07)
 
 > Trạng thái: **Approved — v6, đã xử lý review lần 5 (xem mục 13)**
-> Trạng thái triển khai: **Chưa viết code** — chuyển sang viết implementation plan chi tiết
-> (migration → service → form/view → management command → tests) trước khi vào TDD, giống quy
-> trình đã áp dụng cho `01_foundation_fsd.md`.
+> Trạng thái triển khai: **Implemented** — toàn bộ 5 phase của
+> `docs/pur/03_stage2_implementation_plan.md` đã triển khai theo TDD trên nhánh
+> `feature/pur-stage2-phase1` (chưa merge `main`), 938/938 test toàn dự án pass (không chỉ
+> `purchasing`). Phase 5 (rà soát chéo AC/TC + test bổ sung) phát hiện và vá 1 khoảng trống thật:
+> `required_date` chưa bắt buộc ở tầng form dù mục 8 đã ghi rõ — xem CLAUDE.md mục "Established
+> patterns to apply proactively".
 > Người duyệt: luckyhoang1988 (Trường Hoàng) | Ngày duyệt: 03/08/2026
 > Phụ thuộc: **có** phụ thuộc `00_business_decisions.md` — khác Stage 1 Foundation (không đụng
 > RFQ/Budget/currency nên miễn 19 quyết định), Stage 2 đụng trực tiếp quyết định #2 (budget key:
