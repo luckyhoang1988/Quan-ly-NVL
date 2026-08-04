@@ -304,6 +304,11 @@ pattern nhẹ hơn — xem `inventory.models.WarehouseHandoff` + `inventory.serv
    để phục vụ nhánh từ chối ở bước 4, mở rộng guard ngay tại primitive đó (không viết lại logic tách batch
    riêng) — xem `move_batch_qty`'s status-nguồn guard được mở rộng thêm `PENDING_RECEIPT` cho
    `reject_handoff(..., destination=TO_SCRAP)`.
+   **Ngoại lệ Quarantine disposition (Wave 1 QC)**: nguồn `QUARANTINE` **không** mở rộng `move_batch_qty`
+   (tránh `transfer_stock` tay dùng được SCRAP) — dùng helper riêng `_move_quarantine_to_main` /
+   `_deduct_quarantine_qty` trong `inventory.services`; partial nguồn giữ `QUARANTINE` (không
+   `PARTIAL_USED`). Gate: `can('approve','qc')` cho writeoff/return, `can('override','qc')` cho release,
+   + `can_view_menu('inventory')` trên UI `batch_dispose`.
 6. **Trạng thái thứ 4, `CANCELLED`** (BUG-13, 2026-07-29, xem `inventory.models.WarehouseHandoff`): khác
    `ACCEPTED`/`REJECTED` (luôn do người quyết định chủ động bấm), `CANCELLED` là do HỆ THỐNG tự chuyển khi
    batch `PENDING_RECEIPT` mà handoff đang trỏ vào bị 1 nghiệp vụ KHÁC đóng hẳn (`CLOSED`) trước khi ai kịp
@@ -535,3 +540,29 @@ prefill khi thực sự chỉ có đúng 1 lựa chọn (đếm bằng `Count('w
 để trống và để form đích (vd `PurchaseRequestForm.warehouse`, vốn đã required) bắt người dùng tự chọn. Áp dụng
 chung: bất kỳ lúc nào thêm 1 nút hành động gắn theo 1 KPI đã tổng hợp theo khoá nào đó, tự hỏi "nút này có nên
 hiện N lần hay chỉ 1 lần cho khoá đó" VÀ "field nào đang bị điền tự động có thực sự chỉ có 1 lựa chọn không".
+
+## 10. Kỷ luật vận hành test khi triển khai TDD dài hơi (nhiều task/nhiều phase, vd PUR Expansion)
+
+Rút ra từ Stage 2 Phase 5 (`docs/pur/03_stage2_implementation_plan.md`) — cả 2 bài học sau đã gây tốn thời
+gian điều tra thật, không phải giả định lý thuyết.
+
+**10.1 — Rà soát chéo AC/TC với FSD là bước bắt buộc cuối mỗi phase, không phải tuỳ chọn**: dù đã theo đúng
+plan từng Task một, vẫn phải làm riêng 1 lượt "đối chiếu tay" — grep từng mã `TC-*`/AC được liệt kê trong FSD
+(vd mục 10/11 của `docs/pur/02_stage2_fsd.md`) với tên method `test_TC_*` thật đang có trong `purchasing/tests.py`,
+KHÔNG chỉ tin vào checklist Task của bản plan (bản plan cũng do Claude Code viết, có thể tự nó thiếu 1 yêu cầu
+mà chính FSD gốc đã ghi rõ). Bước này từng phát hiện 1 lỗ hổng thật (không phải chỉ thiếu test) — xem
+`PurchaseRequestItemForm.required_date` trong CLAUDE.md mục "Established patterns to apply proactively": model
+nullable vì lý do backfill dữ liệu cũ, nhưng form quên bắt buộc field này dù FSD đã ghi rõ "bắt buộc ở tầng
+form từ Stage 2". Bất kỳ RED nào phát hiện qua bước rà soát này phải sửa code sản phẩm thật (TDD đầy đủ), không
+được coi là "chỉ thiếu test nên thêm test là xong".
+
+**10.2 — Vận hành `manage.py test` khi chạy dài/chạy nền**:
+- Luôn thêm `--keepdb` khi chạy trong shell không tương tác (background task) — thiếu cờ này, Django hỏi
+  "xoá test DB cũ?" và gặp ngay `EOFError` vì không có TTY để trả lời, không phải lỗi code.
+- KHÔNG BAO GIỜ pipe 1 lần chạy test (đặc biệt chạy nền) qua `tail -N` — việc này cắt bớt output đã LƯU LẠI
+  vĩnh viễn, không chỉ cắt phần hiển thị, khiến sau này không thể đọc lại toàn bộ traceback khi cần điều tra
+  lỗi. Luôn redirect toàn bộ ra file log (`> file.log 2>&1`), đọc file đó bằng `Read`/`Grep` khi cần.
+- KHÔNG chạy 2 lần `manage.py test` (full suite) đồng thời ở nền, cùng nhắm vào 1 test DB `--keepdb` đang giữ
+  — từng gặp 1 lần lỗi giả (`IntegrityError` FK `django_content_type` + lệch số đếm concurrency test) không
+  lặp lại ở 3 lần chạy lại kế tiếp, nhiều khả năng do 2 tiến trình test chồng lấn ghi/đọc cùng DB. Chạy tuần
+  tự, đừng dựa vào `--keepdb` để tưởng 2 tiến trình test độc lập với nhau.

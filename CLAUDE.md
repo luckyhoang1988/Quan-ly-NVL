@@ -230,6 +230,14 @@ names, exact dates) live in `git log`, not here.
   reverses the Batch/Inventory that PASS/FAIL/PARTIAL_PASS already created. The same boundary applies to
   `reject_handoff(..., BACK_TO_QC)` above — once QC/Batch effects exist, only manual follow-up (e.g. a
   manual `transfer_stock`) unwinds them; nothing auto-reverses a completed transaction.
+- **Quarantine disposition (Wave 1 QC)**: lô `QUARANTINE` @ SCRAP đóng vòng qua
+  `inventory.services.scrap_writeoff` / `return_quarantine_to_supplier` / `release_quarantine_to_main`
+  (UI `inventory:batch_dispose`). Gate tái dùng RBAC `qc`: writeoff/return = `can('approve','qc')`;
+  release = `can('override','qc')`; luôn kèm `can_view_menu('inventory')`. Partial trừ QUARANTINE **giữ**
+  status `QUARANTINE` (không promote `PARTIAL_USED`). `GrnReturn` có optional `batch`/`qty`;
+  `mark_return_returned` gọi `consume_scrap_for_returned` để trừ Inventory SCRAP (legacy FULL-fail:
+  `batch=null` trừ mọi QUARANTINE còn lại của cùng GRN). `REWORK` chưa làm. Spec:
+  `docs/qc/01_quarantine_disposition_fsd.md`.
 - **`cancel_x`/`reject_x` at an intermediate workflow status must reverse any side effect already created to
   reach that status** — e.g. cancelling a GRN mid-`QC_IN_PROGRESS` must also reverse the staging
   `Batch`/`Inventory` that `start_qc()` created (`quality.services.cancel_qc_inspection()`), not just flip

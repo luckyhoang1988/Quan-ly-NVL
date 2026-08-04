@@ -228,7 +228,7 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 - [x] `qc_pass`/`qc_partial_pass` chỉ nhận vị trí đích thuộc kho `warehouse_type=MAIN` (`ValidationError` nếu không), `inventory.services.transfer_stock` chặn điều chuyển thủ công có nguồn là Kho chờ (phải qua QC) — 2 hàng rào giữ đúng ý nghĩa "phải qua QC"
 - [x] **Quarantine batch — không thể xuất**: GIN chỉ FIFO chọn batch `status=ACTIVE` tại kho `MAIN`, `GinForm`/`Gin.clean()` chặn kho STAGING/SCRAP — QUARANTINE (luôn nằm ở Kho phế/SCRAP) tự động bị loại (test riêng, xem mục Phase 3 GIN)
 - [x] **Quarantine batch — alert > 7 ngày**: `inventory.services.stale_quarantine_batches()`, ⏸️ tính on-the-fly khi load trang `inventory:batch_list` (banner + badge từng dòng) và `inventory:batch_detail`, chưa cần Celery
-- [ ] **Quarantine batch — disposition scrap/return/rework**: admin thao tác xử lý lô Quarantine (scrap hẳn/trả NCC/tái chế) — **chưa làm, ngoài phạm vi round này** (đã chốt với user: chỉ làm alert trước)
+- [x] **Quarantine batch — disposition scrap/return/release**: admin/QC xử lý lô Quarantine (`scrap_writeoff` / `return_quarantine_to_supplier` / `release_quarantine_to_main` trong `inventory.services`, UI `inventory:batch_dispose` trên `batch_detail`) — `REWORK` vẫn ngoài phạm vi; xem `docs/qc/01_quarantine_disposition_fsd.md`
 
 #### GRN_RETURN Workflow (tự động tạo từ QC FAIL)
 - [x] State: PENDING → APPROVED → RETURNED → CLOSED — `approve_return`/`mark_return_returned`/`close_return` (`receiving/services.py`), view + nút "Duyệt"/"Xác nhận đã trả"/"Đóng" ở `grn_detail.html` (duyệt/đóng cần quyền `approve`; xác nhận đã trả chỉ cần `update` — STAFF làm được)
