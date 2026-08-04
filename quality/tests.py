@@ -20,7 +20,7 @@ from purchasing.models import PurchaseOrder
 from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Location, Warehouse
 
-from .forms import QcResultForm
+from .forms import QcInspectionItemForm, QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem, validate_image_upload
 from .services import (
     _get_staging_batch,
@@ -583,6 +583,19 @@ class QcResultFormTest(QcServiceTestBase):
         self.assertIn(self.location, locations)
         self.assertNotIn(self.staging_location, locations)
         self.assertNotIn(self.scrap_location, locations)
+
+
+class QcInspectionItemFormWidgetTest(QcServiceTestBase):
+    """TC-QC-CRIT-009 (nửa đầu — data-category). Nửa sau (context criteria_by_category)
+    ở Task 3.2, `test_TC_QC_CRIT_009_02_...` — FSD gộp 2 test này chung 1 dòng TC-009 (AC 06,07),
+    tách thành 2 method riêng cho rõ ràng khi implement, giữ chung tiền tố ID."""
+
+    def test_TC_QC_CRIT_009_01_grn_item_option_has_data_category(self):
+        self.product.category = 'Bột mì'
+        self.product.save(update_fields=['category'])
+        form = QcInspectionItemForm(grn=self.grn)
+        rendered = str(form['grn_item'])
+        self.assertIn('data-category="Bột mì"', rendered)
 
 
 class QcResultViewTest(QcServiceTestBase):

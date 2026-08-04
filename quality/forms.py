@@ -79,6 +79,21 @@ QcItemResultFormSet = inlineformset_factory(
 )
 
 
+class GrnItemSelectWithCategory(forms.Select):
+    """Gắn ``data-category`` lên mỗi ``<option>`` để JS ở ``qc_result.html`` gợi ý tên tiêu chuẩn
+    theo category — mirror ``purchasing.forms.ProductSelectWithCategory``. ``value`` là
+    ``ModelChoiceIteratorValue`` (Django ≥3.1), đã bọc sẵn ``.instance`` (``GrnItem``), lấy category
+    qua ``instance.product.category``.
+    """
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(name, value, label, selected, index, subindex, attrs)
+        instance = getattr(value, 'instance', None)
+        if instance is not None:
+            option['attrs']['data-category'] = instance.product.category
+        return option
+
+
 class QcInspectionItemForm(forms.ModelForm):
     """Kết quả PASS/FAIL của 1 tiêu chuẩn QC trên 1 GrnItem (FR-QC-03).
 
@@ -90,6 +105,7 @@ class QcInspectionItemForm(forms.ModelForm):
     class Meta:
         model = QcInspectionItem
         fields = ['grn_item', 'criteria_name', 'expected_value', 'actual_value', 'result', 'notes', 'image']
+        widgets = {'grn_item': GrnItemSelectWithCategory}
 
     def __init__(self, *args, grn=None, **kwargs):
         super().__init__(*args, **kwargs)
