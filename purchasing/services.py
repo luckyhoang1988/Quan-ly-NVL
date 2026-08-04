@@ -15,7 +15,9 @@ duyệt thủ công (quyết định nghiệp vụ, xem PHÂN quyền ở view: 
 chỉ gọi được bởi actor có quyền ``approve`` trên module 'po').
 """
 import logging
+from datetime import timedelta
 
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.db import transaction
@@ -24,7 +26,7 @@ from django.utils import timezone
 
 from accounts.approvals import create_approval, decide_approval
 from accounts.audit import log_action
-from accounts.models import AuditLog, User
+from accounts.models import Approval, AuditLog, User
 from accounts.notifications import notify
 from catalog.models import Product
 from partners.models import Supplier
@@ -101,6 +103,40 @@ def find_allocation_migration_exceptions():
         .select_related('purchase_request', 'purchase_request__linked_po', 'product')
         .distinct()
     )
+
+
+def _business_days_before(reference_date, business_days):
+    """Trừ lùi N ngày làm việc (bỏ qua Thứ 7/CN, chưa tính lịch nghỉ lễ — đủ cho MVP theo pattern
+    ⏸️ đơn giản hoá, mục 6 FSD Stage 2)."""
+    current = reference_date
+    counted = 0
+    while counted < business_days:
+        current -= timedelta(days=1)
+        if current.weekday() < 5:  # 0=Thứ 2 .. 4=Thứ 6
+            counted += 1
+    return current
+
+
+def overdue_non_catalog_items(reference_date=None, business_days=3):
+    """Mục 6: dòng non-catalog (product__isnull=True) mà PR đã có Approval(department=
+    PURCHASING) — mốc "PUR tiếp nhận" — quá ``business_days`` ngày làm việc mà vẫn chưa map.
+    """
+    reference_date = reference_date or timezone.localdate()
+    threshold = _business_days_before(reference_date, business_days)
+    pr_content_type = ContentType.objects.get_for_model(PurchaseRequest)
+    overdue = []
+    for item in PurchaseRequestItem.objects.filter(product__isnull=True).select_related('purchase_request'):
+        first_pur_approval = (
+            Approval.objects.filter(
+                target_type=pr_content_type, target_id=str(item.purchase_request_id),
+                department=User.Department.PURCHASING,
+            ).order_by('submitted_at').first()
+        )
+        # timezone.localtime(...).date() — KHÔNG bare .date() trên datetime UTC aware (CLAUDE.md:
+        # so sánh ngày nghiệp vụ phải quy đổi VN-local trước, .date() trần luôn là ngày UTC).
+        if first_pur_approval and timezone.localtime(first_pur_approval.submitted_at).date() <= threshold:
+            overdue.append(item)
+    return overdue
 
 
 def find_duplicate_po_products():

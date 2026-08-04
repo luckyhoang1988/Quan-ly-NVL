@@ -1,5 +1,5 @@
 import threading
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from importlib import import_module
 from io import StringIO
@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -43,6 +44,7 @@ from .services import (
     find_duplicate_po_products,
     forward_purchase_request,
     map_non_catalog_item,
+    overdue_non_catalog_items,
     qty_received_by_allocation,
     received_qty_by_product,
     reconcile_legacy_po_item_allocations,
@@ -3937,3 +3939,63 @@ class ReportAllocationMigrationExceptionsCommandTest(TestCase):
         out = StringIO()
         call_command('report_allocation_migration_exceptions', stdout=out)
         self.assertIn(pr.request_no, out.getvalue())
+
+
+REFERENCE_DATE = date(2026, 8, 10)  # Thứ Hai cố định — KHÔNG dùng timezone.localdate() (ngày chạy
+                                     # test thật), để kết quả PASS/FAIL không phụ thuộc thứ trong
+                                     # tuần lúc test được chạy.
+
+
+class CheckNonCatalogSlaCommandTest(TestCase):
+    def setUp(self):
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.pur_manager = User.objects.create_user(
+            username='purm', password='purm-pass-123', role=User.Role.MANAGER,
+            department=User.Department.PURCHASING, is_manager=True)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+
+    def _make_pr_with_non_catalog_item(self, submitted_date, mapped=False):
+        """``submitted_date``: 1 đối tượng ``date`` VN-local cụ thể (không phải "N ngày trước") —
+        hàm tự dựng datetime 10:00 sáng VN-local rồi backdate qua ``.update()`` (auto_now_add
+        không cho set qua ``.create()``, xem lỗi #2 ở trên)."""
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.PENDING_PUR)
+        product = None
+        if mapped:
+            product = Product.objects.create(product_code=f'NVL-{pr.pk:04d}', name='Ống nhựa', uom='cây')
+        item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=product, qty_requested=3,
+            non_catalog_name='Ống nhựa PVC', non_catalog_uom='cây',
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('5000'), budget_category='VT')
+        approval = Approval.objects.create(
+            target_type=ContentType.objects.get_for_model(PurchaseRequest), target_id=str(pr.pk),
+            department=User.Department.PURCHASING, status=Approval.Status.APPROVED, submitted_by=self.staff,
+        )
+        aware_submitted_at = timezone.make_aware(
+            datetime(submitted_date.year, submitted_date.month, submitted_date.day, 10, 0))
+        Approval.objects.filter(pk=approval.pk).update(submitted_at=aware_submitted_at)
+        return item
+
+    def test_TC_PUR_SLA_001_overdue_4_business_days_included(self):
+        # Nộp Thứ 3 04/08/2026, mốc kiểm tra Thứ 2 10/08/2026 -> 4 ngày LÀM VIỆC đã qua
+        # (05, 06, 07/08, 10/08 — cuối tuần 08-09/08 bị bỏ qua đúng), vượt ngưỡng 3.
+        item = self._make_pr_with_non_catalog_item(submitted_date=date(2026, 8, 4))
+        self.assertIn(item, overdue_non_catalog_items(reference_date=REFERENCE_DATE))
+
+    def test_TC_PUR_SLA_002_only_1_business_day_across_weekend_not_overdue(self):
+        # Nộp Thứ 6 07/08/2026, mốc kiểm tra Thứ 2 10/08/2026 -> chỉ 1 ngày LÀM VIỆC đã qua (10/08),
+        # dù cách 3 ngày LỊCH (bắc qua trọn 1 cuối tuần) -> KHÔNG quá hạn. Ca này cố tình bắc qua
+        # cuối tuần thật để chứng minh _business_days_before không đếm nhầm Thứ 7/CN thành ngày làm việc.
+        item = self._make_pr_with_non_catalog_item(submitted_date=date(2026, 8, 7))
+        self.assertNotIn(item, overdue_non_catalog_items(reference_date=REFERENCE_DATE))
+
+    def test_TC_PUR_SLA_003_already_mapped_excluded(self):
+        item = self._make_pr_with_non_catalog_item(submitted_date=date(2026, 7, 20), mapped=True)
+        self.assertNotIn(item, overdue_non_catalog_items(reference_date=REFERENCE_DATE))
+
+    def test_command_notifies_pur_manager(self):
+        self._make_pr_with_non_catalog_item(submitted_date=date(2026, 8, 4))
+        with patch('purchasing.services.timezone.localdate', return_value=REFERENCE_DATE):
+            call_command('check_non_catalog_sla', stdout=StringIO())
+        self.assertTrue(Notification.objects.filter(recipient=self.pur_manager).exists())
