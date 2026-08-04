@@ -2,12 +2,14 @@ import threading
 from datetime import timedelta
 from decimal import Decimal
 from importlib import import_module
+from io import StringIO
 from unittest.mock import patch
 
 from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.db import IntegrityError, connection, transaction
 from django.db.utils import OperationalError
 from django.test import TestCase, TransactionTestCase
@@ -3915,3 +3917,23 @@ class Phase3FullFlowIntegrationTest(TestCase):
         po.refresh_from_db()
         self.assertEqual(po.status, PurchaseOrder.Status.SENT)
         self.assertEqual(po.email_status, PurchaseOrder.EmailStatus.SKIPPED_NO_EMAIL)
+
+
+class ReportAllocationMigrationExceptionsCommandTest(TestCase):
+    def test_command_lists_pr_items_with_linked_po_but_no_allocation(self):
+        staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=supplier, source=PurchaseOrder.Source.FROM_PR)
+        PurchaseOrderItem.objects.create(purchase_order=po, product=product, qty_ordered=10, unit_price=Decimal('1000'))
+        pr = PurchaseRequest.objects.create(
+            requested_by=staff, warehouse=warehouse, cost_center='CC-001', linked_po=po,
+            status=PurchaseRequest.Status.APPROVED)
+        PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+        out = StringIO()
+        call_command('report_allocation_migration_exceptions', stdout=out)
+        self.assertIn(pr.request_no, out.getvalue())

@@ -90,6 +90,19 @@ def qty_received_by_allocation(po_item):
     return result
 
 
+def find_allocation_migration_exceptions():
+    """Đọc lại (bất kỳ lúc nào, không chỉ lúc migrate) danh sách PurchaseRequestItem có
+    linked_po nhưng CHƯA có ProcurementAllocation nào — dùng model thật (không phải
+    apps.get_model(), vì đây không phải RunPython bên trong migration).
+    """
+    return list(
+        PurchaseRequestItem.objects
+        .filter(purchase_request__linked_po__isnull=False, allocations__isnull=True)
+        .select_related('purchase_request', 'purchase_request__linked_po', 'product')
+        .distinct()
+    )
+
+
 def find_duplicate_po_products():
     """PUR-FND-06 Bước 1 — báo cáo read-only các PO đang có ≥2 dòng cùng Product,
     chạy thủ công (``manage.py shell``/management command tạm) TRƯỚC KHI migrate
