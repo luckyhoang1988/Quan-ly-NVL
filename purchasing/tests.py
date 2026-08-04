@@ -13,6 +13,7 @@ from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Sum
 from django.db.utils import OperationalError
 from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
@@ -3218,6 +3219,147 @@ class ReconcileLegacyPoItemAllocationsTest(TestCase):
         with self.assertRaises(ValidationError):
             reconcile_legacy_po_item_allocations(self.po_item, [], actor=self.admin_user)
         self.assertEqual(AuditLog.objects.count(), audit_count_before)
+
+
+class AllocationConcurrencyDeadlockTests(TransactionTestCase):
+    """TC-PUR-PR-04-002/003, TC-PUR-PR-05-027 — regression cho lock order mục 4 điểm 2/mục 4
+    điểm 4 (nhóm Allocation): PurchaseOrder -> PurchaseOrderItem -> PurchaseRequestItem ->
+    ProcurementAllocation. Cùng kỹ thuật threading.Barrier + TransactionTestCase với
+    stocktake.tests (CLAUDE.md).
+    """
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(username='admin1', password='admin-pass-123', role=User.Role.ADMIN)
+        self.staff = User.objects.create_user(username='staff1', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+
+    def _run_concurrently(self, fn_a, fn_b):
+        barrier = threading.Barrier(2)
+        errors = {}
+
+        def wrap(name, fn):
+            try:
+                barrier.wait(timeout=5)
+                fn()
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                errors[name] = exc
+            finally:
+                connection.close()
+
+        t1 = threading.Thread(target=wrap, args=('a', fn_a))
+        t2 = threading.Thread(target=wrap, args=('b', fn_b))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        self.assertFalse(t1.is_alive(), 'thread a bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t2.is_alive(), 'thread b bị treo quá 10s (nghi deadlock)')
+        for name, exc in errors.items():
+            self.assertNotIsInstance(exc, OperationalError, f'{name} raised {exc!r} — nghi deadlock')
+        return errors
+
+    def test_TC_PUR_PR_04_002_concurrent_create_allocation_exceeding_qty_open(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        po_a = PurchaseOrder.objects.create(po_no='PO-A', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        po_item_a = PurchaseOrderItem.objects.create(
+            purchase_order=po_a, product=self.product, qty_ordered=0, unit_price=Decimal('1000'))
+        po_b = PurchaseOrder.objects.create(po_no='PO-B', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        po_item_b = PurchaseOrderItem.objects.create(
+            purchase_order=po_b, product=self.product, qty_ordered=0, unit_price=Decimal('1000'))
+
+        errors = self._run_concurrently(
+            lambda: create_allocation(pr_item, po_item_a, qty=6, actor=self.admin_user),
+            lambda: create_allocation(pr_item, po_item_b, qty=6, actor=self.admin_user),
+        )
+        self.assertEqual(len(errors), 1, 'đúng 1 trong 2 lần gọi phải thất bại (tổng 6+6=12 > qty_open=10)')
+        self.assertIsInstance(next(iter(errors.values())), ValidationError)
+        pr_item.refresh_from_db()
+        self.assertLessEqual(pr_item.qty_allocated, 10)
+
+    def test_TC_PUR_PR_04_003_concurrent_delete_po_item_and_create_allocation(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED)
+        pr_item_existing = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        pr_item_new = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=5, qty_approved=5,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        po = PurchaseOrder.objects.create(po_no='PO-9001', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        po_item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=0, unit_price=Decimal('1000'))
+        create_allocation(pr_item_existing, po_item, qty=5, actor=self.admin_user)
+
+        errors = self._run_concurrently(
+            lambda: delete_draft_po_item_with_allocations(po_item, actor=self.admin_user),
+            lambda: create_allocation(pr_item_new, po_item, qty=5, actor=self.admin_user),
+        )
+        # Lỗi đã sửa so với v1 (review phát hiện): 2 nhánh thắng-thua khác nhau tạo ra 2 LOẠI lỗi
+        # khác nhau, không chỉ 1. Cả 2 hàm đều khoá PurchaseOrder (cùng po_item.purchase_order_id)
+        # TRƯỚC TIÊN — ai thắng lock PO chạy trọn transaction, commit, rồi bên thua mới được chạy
+        # tiếp: (a) delete_draft_po_item_with_allocations() thắng trước -> xoá hẳn po_item -> khi
+        # create_allocation() (thua, chạy sau) tới lượt `PurchaseOrderItem.objects
+        # .select_for_update().get(pk=po_item.pk)`, row đã KHÔNG CÒN tồn tại -> raise
+        # `PurchaseOrderItem.DoesNotExist`, KHÔNG PHẢI `ValidationError`; (b) create_allocation()
+        # thắng trước -> tạo allocation thành công, po_item.qty_ordered tăng lên -> khi
+        # delete_draft_po_item_with_allocations() (thua, chạy sau) tới lượt, nó thấy CẢ 2 allocation
+        # (kể cả cái vừa tạo) và release/xoá sạch bình thường -> KHÔNG raise gì cả (`errors` rỗng ở
+        # nhánh này). Assertion phải chấp nhận cả 2 loại lỗi khả dĩ, không chỉ `ValidationError`
+        # (v1 chỉ assert `ValidationError`, flaky theo thứ tự thắng-thua thật của OS scheduler).
+        for exc in errors.values():
+            self.assertIsInstance(exc, (ValidationError, PurchaseOrderItem.DoesNotExist))
+        # Không assert cụ thể bên nào thắng — chỉ cần bất biến mục 4 điểm 4 vẫn đúng nếu po_item
+        # còn tồn tại sau cùng.
+        if PurchaseOrderItem.objects.filter(pk=po_item.pk).exists():
+            po_item.refresh_from_db()
+            total_active = ProcurementAllocation.objects.filter(
+                po_item=po_item, status=ProcurementAllocation.Status.ACTIVE,
+            ).aggregate(total=Sum('qty_allocated'))['total'] or 0
+            self.assertEqual(total_active, po_item.qty_ordered)
+
+    def test_TC_PUR_PR_05_027_concurrent_reconcile_and_send_po(self):
+        po = PurchaseOrder.objects.create(
+            po_no='PO-9002', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR,
+            status=PurchaseOrder.Status.APPROVED)
+        po_item = PurchaseOrderItem.objects.create(
+            purchase_order=po, product=self.product, qty_ordered=10, unit_price=Decimal('1000'))
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED, linked_po=po)
+        pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+
+        # Cả 2 hàm đều khoá PurchaseOrder TRƯỚC (đúng lock order mục 4 điểm 4) — chỉ có 1 resource
+        # tranh chấp thật (chính row PurchaseOrder), send_po() không tự khoá PurchaseOrderItem nên
+        # không đọc được dữ liệu "đang chờ" của reconcile — vì vậy reconcile ('a') KHÔNG BAO GIỜ
+        # được phép lỗi ở kịch bản này; chỉ send_po ('b') có thể lỗi, khi nó thắng lock PO trước
+        # lúc allocation chưa tồn tại (existing_total=0 != qty_ordered=10).
+        errors = self._run_concurrently(
+            lambda: reconcile_legacy_po_item_allocations(po_item, [(pr_item, 10)], actor=self.admin_user),
+            lambda: send_po(po, actor=self.admin_user),
+        )
+        self.assertNotIn('a', errors, 'reconcile không được lỗi trong kịch bản này')
+        if errors:
+            self.assertEqual(set(errors.keys()), {'b'})
+            self.assertIsInstance(errors['b'], ValidationError)
+        self.assertEqual(
+            ProcurementAllocation.objects.filter(
+                po_item=po_item, status=ProcurementAllocation.Status.ACTIVE).count(),
+            1, 'reconcile phải luôn thành công dù thắng hay thua tranh chấp khoá PurchaseOrder')
+        po.refresh_from_db()
+        if errors:
+            self.assertEqual(po.status, PurchaseOrder.Status.APPROVED)
+        else:
+            self.assertEqual(po.status, PurchaseOrder.Status.SENT)
 
 
 class QtyReceivedByAllocationTest(TestCase):
