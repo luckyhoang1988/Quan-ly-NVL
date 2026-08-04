@@ -2809,6 +2809,54 @@ class ProcurementAllocationModelTest(TestCase):
                     po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
                 )
 
+    def test_TC_PUR_PR_05_012_snapshot_fields_cannot_be_empty(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=5,
+                    po_no_snapshot='', product_code_snapshot=self.product.product_code,
+                )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=5,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot='',
+                )
+
+    def test_TC_PUR_PR_05_013_release_fields_match_status_constraint(self):
+        # (a) ACTIVE nhưng released_at khác None -> IntegrityError.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=5,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+                    status=ProcurementAllocation.Status.ACTIVE, released_at=timezone.now(),
+                )
+        # (b) RELEASED nhưng released_at=None -> IntegrityError.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=5,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+                    status=ProcurementAllocation.Status.RELEASED, released_reason='huỷ',
+                )
+        # (c) RELEASED nhưng released_reason='' -> IntegrityError.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ProcurementAllocation.objects.create(
+                    pr_item=self.pr_item, po_item=self.po_item, qty_allocated=5,
+                    po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+                    status=ProcurementAllocation.Status.RELEASED, released_at=timezone.now(), released_reason='',
+                )
+        # (d) RELEASED, po_item=None, released_at/released_reason hợp lệ, released_by=None -> tạo được
+        #     (released_by rỗng vẫn hợp lệ cho ca release tự động do hệ thống, mục 2.4).
+        ProcurementAllocation.objects.create(
+            pr_item=self.pr_item, po_item=None, qty_allocated=5,
+            po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+            status=ProcurementAllocation.Status.RELEASED, released_at=timezone.now(),
+            released_reason='huỷ', released_by=None,
+        )
+
 
 class AllocationBackfillMigrationTest(TestCase):
     """TC-PUR-MIG-001/002/003: backfill dùng hàm thuần tách khỏi RunPython (import trực tiếp
