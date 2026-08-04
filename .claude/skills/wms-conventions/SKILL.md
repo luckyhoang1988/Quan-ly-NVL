@@ -566,3 +566,28 @@ form từ Stage 2". Bất kỳ RED nào phát hiện qua bước rà soát này 
   — từng gặp 1 lần lỗi giả (`IntegrityError` FK `django_content_type` + lệch số đếm concurrency test) không
   lặp lại ở 3 lần chạy lại kế tiếp, nhiều khả năng do 2 tiến trình test chồng lấn ghi/đọc cùng DB. Chạy tuần
   tự, đừng dựa vào `--keepdb` để tưởng 2 tiến trình test độc lập với nhau.
+
+## 11. Widget `Select` gắn `data-category` lên `<option>` — prefill/gợi ý theo category qua JS thuần
+
+Pattern đã lặp lại ở 2 app độc lập (`purchasing.forms.ProductSelectWithCategory` — Stage 2 PR form, tự điền
+`budget_category`; `quality.forms.GrnItemSelectWithCategory` — QC Wave 2, gợi ý tên tiêu chuẩn qua
+`<datalist>` + tự điền `expected_value`) — đủ để khái quát hoá thành quy ước dùng chung thay vì côi trọng từng
+lần phát minh lại.
+
+- **Subclass `forms.Select`, override `create_option`**: `value` Django truyền vào (từ Django ≥3.1) là
+  `ModelChoiceIteratorValue`, đã bọc sẵn `.instance` (object model gốc, fetch lúc dựng choices) — dùng thẳng
+  `value.instance`, KHÔNG query lại theo pk (`ModelChoiceIteratorValue` không định nghĩa `__int__`, query lại
+  sẽ crash). Gán `option['attrs']['data-category'] = instance.<field>` rồi trả `option`.
+- **Truyền dữ liệu gợi ý đầy đủ (không chỉ tên) xuống JS qua `json_script`**: `{{ some_dict|json_script:"id"
+  }}` ở cuối template + `JSON.parse(document.getElementById('id').textContent)` ở đầu `<script>` — không tự
+  build JSON bằng string interpolation trong Django template (dễ lỗi escape). Context view gom dữ liệu theo
+  cùng field mà widget dùng làm khoá (`category`) thành `{category: [ {...}, ... ]}` trước khi truyền.
+- **JS thuần, không dependency ngoài, delegate qua 1 listener `change` ở `document`** — đúng pattern
+  event-delegation đã dùng cho formset `extra` rows (form mới thêm sau khi trang load vẫn bắt được sự kiện,
+  không cần re-bind). Chọn field theo `select[id$="-<field>"]`/`input[id$="-<field>"]` (hậu tố `-<field>`,
+  không phải `id_<field>` cứng) để hoạt động đúng bên trong `inlineformset_factory` (prefix động theo từng
+  dòng: `id_qcitems-0-grn_item`, `id_qcitems-1-grn_item`, ...).
+- **Test HTML render, không cần chạy JS thật**: dự án chưa có harness test JS (Selenium/Playwright) — test
+  Python chỉ cần `assertIn('data-category="X"', str(form['field']))` cho widget, và
+  `response.context['...']`/`assertContains` cho context/data island. Xác nhận JS thật hoạt động qua verify
+  thủ công 1 lần (`manage.py runserver` + trình duyệt) khi triển khai, không viết test tự động cho phần này.

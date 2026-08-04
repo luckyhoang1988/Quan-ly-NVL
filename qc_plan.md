@@ -5,7 +5,7 @@
 ## Todos theo dõi
 
 - [x] Wave 1 — FSD + triển khai Quarantine Disposition (**3** action: `SCRAP_WRITEOFF` / `RETURN_SUPPLIER` / `RELEASE_TO_MAIN`; **không** gồm `REWORK`)
-- [x] Wave 2 — Spec criteria gate nhẹ (bắt buộc criteria + cảnh báo mismatch + prefill theo category) — FSD xong, **triển khai chưa làm**, xem [`docs/qc/03_criteria_gate_fsd.md`](docs/qc/03_criteria_gate_fsd.md)
+- [x] Wave 2 — Criteria gate nhẹ (bắt buộc criteria + cảnh báo mismatch + prefill theo category) — FSD + triển khai xong, xem [`docs/qc/03_criteria_gate_fsd.md`](docs/qc/03_criteria_gate_fsd.md) / [`docs/qc/04_criteria_gate_implementation_plan.md`](docs/qc/04_criteria_gate_implementation_plan.md)
 - [ ] Wave 3 — Đồng bộ BACKLOG/docstring/test names + `qc_no` IntegrityError retry
 - [ ] Wave 4 — Chỉ khi cần: `Supplier`/`Product.qc_required` + audit skip QC
 - [ ] Wave 5 — KPI QC theo NCC/SKU + email FAIL (sau reports/Celery)
