@@ -150,6 +150,12 @@ class QcServiceTestBase(TestCase):
     def _start_qc(self):
         return start_qc(self.grn, self.qc_user, actor=self.qc_user)
 
+    def _add_criteria_item(self, inspection, result=QcInspectionItem.Result.PASS, grn_item=None):
+        return QcInspectionItem.objects.create(
+            inspection=inspection, grn_item=grn_item or self.grn_item,
+            criteria_name='Ngoại hình', result=result,
+        )
+
 
 class StartQcTest(QcServiceTestBase):
     """``TC-QC-START-<seq>``."""
@@ -216,6 +222,7 @@ class OverdueInspectionsTest(QcServiceTestBase):
         inspection = self._start_qc()
         QcInspection.objects.filter(pk=inspection.pk).update(
             started_at=timezone.now() - datetime.timedelta(hours=25))
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         self.assertEqual(overdue_inspections().count(), 0)
 
@@ -226,6 +233,7 @@ class QcPassTransactionTest(QcServiceTestBase):
     def test_TC_QC_PASS_001_001_consumes_staging_batch_and_credits_main_inventory(self):
         inspection = self._start_qc()
         staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
+        self._add_criteria_item(inspection)
         grn = qc_pass(inspection, actor=self.qc_user, location=self.location)
 
         self.assertEqual(grn.status, Grn.Status.RECEIVED)
@@ -258,6 +266,7 @@ class QcPassTransactionTest(QcServiceTestBase):
 
     def test_TC_QC_PASS_001_002_raises_when_inspection_already_resolved(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         with self.assertRaises(ValidationError):
             qc_pass(inspection, actor=self.qc_user, location=self.location)
@@ -277,6 +286,7 @@ class QcFailTransactionTest(QcServiceTestBase):
     def test_TC_QC_FAIL_001_001_creates_return_rejects_grn_moves_to_scrap(self):
         inspection = self._start_qc()
         staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
+        self._add_criteria_item(inspection)
         ret = qc_fail(inspection, actor=self.qc_user, reason='Ngoại hình không đạt')
 
         self.assertEqual(ret.grn, self.grn)
@@ -303,6 +313,7 @@ class QcFailTransactionTest(QcServiceTestBase):
 
     def test_TC_QC_FAIL_001_002_raises_when_inspection_already_resolved(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_fail(inspection, actor=self.qc_user)
         with self.assertRaises(ValidationError):
             qc_fail(inspection, actor=self.qc_user)
@@ -314,6 +325,7 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
     def test_TC_QC_PARTIAL_001_001_splits_batch_and_credits_only_passed_qty(self):
         inspection = self._start_qc()
         staging_batch = Batch.objects.get(grn_item=self.grn_item, status=Batch.Status.ACTIVE)
+        self._add_criteria_item(inspection)
         grn = qc_partial_pass(
             inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.location)
 
@@ -344,11 +356,13 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
 
     def test_TC_QC_PARTIAL_002_001_missing_item_result_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         with self.assertRaises(ValidationError):
             qc_partial_pass(inspection, {}, actor=self.qc_user, location=self.location)
 
     def test_TC_QC_PARTIAL_003_001_qty_pass_greater_than_qty_received_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         with self.assertRaises(ValidationError):
             qc_partial_pass(
                 inspection, {self.grn_item.pk: 11}, actor=self.qc_user, location=self.location)
@@ -361,9 +375,45 @@ class QcPartialPassTransactionTest(QcServiceTestBase):
 
     def test_TC_QC_PARTIAL_005_001_all_zero_qty_pass_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         with self.assertRaises(ValidationError):
             qc_partial_pass(
                 inspection, {self.grn_item.pk: 0}, actor=self.qc_user, location=self.location)
+
+
+class QcCriteriaGateTest(QcServiceTestBase):
+    """Wave 2 — gate ≥1 dòng criteria trước khi PASS/FAIL/PARTIAL. TC-QC-CRIT-001..004."""
+
+    def test_TC_QC_CRIT_001_qc_pass_rejects_when_no_items(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_pass(inspection, actor=self.qc_user, location=self.location)
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, QcInspection.Result.PENDING_QC)
+        self.grn.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
+
+    def test_TC_QC_CRIT_002_qc_fail_rejects_when_no_items(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_fail(inspection, actor=self.qc_user, reason='x')
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, QcInspection.Result.PENDING_QC)
+
+    def test_TC_QC_CRIT_003_qc_partial_pass_rejects_when_no_items(self):
+        inspection = self._start_qc()
+        with self.assertRaises(ValidationError):
+            qc_partial_pass(
+                inspection, {self.grn_item.pk: 5}, actor=self.qc_user, location=self.location)
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, QcInspection.Result.PENDING_QC)
+
+    def test_TC_QC_CRIT_004_qc_pass_succeeds_with_one_item(self):
+        inspection = self._start_qc()
+        self._add_criteria_item(inspection)
+        qc_pass(inspection, actor=self.qc_user, location=self.location)
+        inspection.refresh_from_db()
+        self.assertEqual(inspection.status, QcInspection.Result.PASS)
 
 
 class WarehouseHandoffTest(QcServiceTestBase):
@@ -386,6 +436,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_001_001_no_assigned_to_notifies_department_fallback(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         handoff = WarehouseHandoff.objects.get(batch=batch)
@@ -398,6 +449,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_001_002_assigned_to_specific_staff_only_notifies_them(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location, assigned_to=self.warehouse_staff)
         batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         handoff = WarehouseHandoff.objects.get(batch=batch)
@@ -409,6 +461,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_002_001_accept_transitions_batch_to_active_and_notifies_inspector(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         handoff = WarehouseHandoff.objects.get(batch=batch)
@@ -424,6 +477,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_002_002_accept_already_decided_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
         accept_handoff(handoff, actor=self.warehouse_staff)
@@ -432,6 +486,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_003_001_reject_to_scrap_moves_batch_and_updates_inventory(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         handoff = WarehouseHandoff.objects.get(batch=batch)
@@ -457,6 +512,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_003_002_reject_back_to_qc_leaves_batch_untouched(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         batch = Batch.objects.get(status=Batch.Status.PENDING_RECEIPT)
         handoff = WarehouseHandoff.objects.get(batch=batch)
@@ -477,6 +533,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_003_003_reject_without_reason_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
         with self.assertRaises(ValidationError):
@@ -487,6 +544,7 @@ class WarehouseHandoffTest(QcServiceTestBase):
 
     def test_TC_QC_HANDOFF_003_004_reject_already_decided_raises(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         handoff = WarehouseHandoff.objects.get(batch__status=Batch.Status.PENDING_RECEIPT)
         accept_handoff(handoff, actor=self.warehouse_staff)
@@ -508,6 +566,7 @@ class GetStagingBatchTest(QcServiceTestBase):
 
     def test_TC_QC_STG_002_raises_after_batch_already_consumed(self):
         inspection = self._start_qc()
+        self._add_criteria_item(inspection)
         qc_pass(inspection, actor=self.qc_user, location=self.location)
         with self.assertRaises(ValidationError):
             _get_staging_batch(self.grn_item)
@@ -536,7 +595,8 @@ class QcResultViewTest(QcServiceTestBase):
         super().setUp()
         self.manager = User.objects.create_user(
             username='qlk', password='qlk-pass-123', role=User.Role.MANAGER)
-        self._start_qc()
+        self.inspection = self._start_qc()
+        self._add_criteria_item(self.inspection)
         self.client.force_login(self.qc_user)
 
     def _url(self):
@@ -613,6 +673,7 @@ class QcOverrideViewTest(QcServiceTestBase):
         self.manager = User.objects.create_user(
             username='qlk', password='qlk-pass-123', role=User.Role.MANAGER)
         self.inspection = self._start_qc()
+        self._add_criteria_item(self.inspection)
         qc_pass(self.inspection, actor=self.qc_user, location=self.location)
         self.client.force_login(self.manager)
 

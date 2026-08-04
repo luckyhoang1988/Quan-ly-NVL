@@ -284,6 +284,10 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     if not location.warehouse.is_active:
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
+    if not inspection.items.exists():
+        raise ValidationError(
+            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
+        )
     grn, inspection = _lock_pending_inspection(inspection)
     staging_warehouse = get_staging_warehouse()
 
@@ -334,6 +338,10 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
     dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17, 2026-07-29,
     xem CLAUDE.md).
     """
+    if not inspection.items.exists():
+        raise ValidationError(
+            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
+        )
     grn, inspection = _lock_pending_inspection(inspection)
     staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
@@ -393,6 +401,10 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     if not location.warehouse.is_active:
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
+    if not inspection.items.exists():
+        raise ValidationError(
+            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
+        )
     grn, inspection = _lock_pending_inspection(inspection)
     items = list(grn.items.select_for_update().order_by('product_id', 'pk'))
 

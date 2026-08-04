@@ -415,6 +415,10 @@ class Command(BaseCommand):
             )
             submit_to_pending_qc(grn, actor=purchasing_staff)
             inspection = start_qc(grn, qc_user, actor=qc_user)
+            QcInspectionItem.objects.create(
+                inspection=inspection, grn_item=grn_item, criteria_name='Ngoại hình',
+                result=QcInspectionItem.Result.FAIL if group == 'FAIL' else QcInspectionItem.Result.PASS,
+            )
 
             if group == 'FAIL':
                 qc_fail(inspection, actor=qc_user, reason='Ngoại hình không đạt tiêu chuẩn QC.')
