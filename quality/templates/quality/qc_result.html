@@ -185,4 +185,50 @@
   </div>
 </div>
 {{ criteria_by_category|json_script:"qc-criteria-by-category" }}
+<script>
+(function () {
+  var dataEl = document.getElementById('qc-criteria-by-category');
+  var criteriaByCategory = dataEl ? JSON.parse(dataEl.textContent) : {};
+
+  function buildDatalist(row, category) {
+    var nameInput = row.querySelector('input[id$="-criteria_name"]');
+    if (!nameInput) return;
+    var listId = nameInput.id + '-list';
+    var existing = document.getElementById(listId);
+    if (existing) existing.remove();
+    var datalist = document.createElement('datalist');
+    datalist.id = listId;
+    (criteriaByCategory[category] || []).forEach(function (c) {
+      var opt = document.createElement('option');
+      opt.value = c.name;
+      datalist.appendChild(opt);
+    });
+    row.appendChild(datalist);
+    nameInput.setAttribute('list', listId);
+    nameInput.dataset.category = category;
+  }
+
+  document.addEventListener('change', function (event) {
+    var select = event.target.closest('select[id$="-grn_item"]');
+    if (select) {
+      var opt = select.options[select.selectedIndex];
+      var category = opt.getAttribute('data-category');
+      var row = select.closest('tr');
+      if (row && category) buildDatalist(row, category);
+      return;
+    }
+    var nameInput = event.target.closest('input[id$="-criteria_name"]');
+    if (nameInput && nameInput.dataset.category) {
+      var row2 = nameInput.closest('tr');
+      var expectedInput = row2 ? row2.querySelector('input[id$="-expected_value"]') : null;
+      if (expectedInput && !expectedInput.value) {
+        var match = (criteriaByCategory[nameInput.dataset.category] || []).find(function (c) {
+          return c.name === nameInput.value;
+        });
+        if (match && match.pass_rule) expectedInput.value = match.pass_rule;
+      }
+    }
+  });
+})();
+</script>
 {% endblock %}
