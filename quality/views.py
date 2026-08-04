@@ -128,11 +128,15 @@ def qc_result(request, grn_pk):
     has_any_item = inspection.items.exists()
     has_fail_item = inspection.items.filter(result=QcInspectionItem.Result.FAIL).exists()
     has_pass_item = inspection.items.filter(result=QcInspectionItem.Result.PASS).exists()
+    criteria_by_category = {}
+    for c in QcCriteria.objects.filter(is_active=True).order_by('category', 'name'):
+        criteria_by_category.setdefault(c.category, []).append(
+            {'name': c.name, 'pass_rule': c.pass_rule, 'fail_rule': c.fail_rule})
     return render(request, 'quality/qc_result.html', {
         'grn': grn, 'inspection': inspection, 'result_form': result_form, 'formset': formset,
         'item_formset': item_formset, 'criteria_ref': QcCriteria.objects.filter(is_active=True),
         'is_overdue': is_overdue, 'has_any_item': has_any_item, 'has_fail_item': has_fail_item,
-        'has_pass_item': has_pass_item,
+        'has_pass_item': has_pass_item, 'criteria_by_category': criteria_by_category,
     })
 
 

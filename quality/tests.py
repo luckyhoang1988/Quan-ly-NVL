@@ -694,6 +694,13 @@ class QcResultViewTest(QcServiceTestBase):
         response = self.client.get(self._url())
         self.assertNotContains(response, 'Đã có dòng tiêu chuẩn Không đạt')
 
+    def test_TC_QC_CRIT_009_02_context_criteria_by_category_only_active(self):
+        QcCriteria.objects.create(category='Bột mì', name='Trọng lượng', pass_rule='1000g ± 10g')
+        QcCriteria.objects.create(category='Bột mì', name='Cũ', is_active=False)
+        response = self.client.get(self._url())
+        self.assertIn('Trọng lượng', response.context['criteria_by_category']['Bột mì'][0]['name'])
+        self.assertEqual(len(response.context['criteria_by_category']['Bột mì']), 1)
+
 
 class QcOverrideViewTest(QcServiceTestBase):
     """QC approval override (BACKLOG mục 2b) — ``TC-QC-OVERRIDE-<seq>``.
