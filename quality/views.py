@@ -25,7 +25,7 @@ from accounts.pagination import paginate_queryset
 from receiving.models import Grn
 
 from .forms import QcCriteriaForm, QcInspectionItemFormSet, QcItemResultFormSet, QcOverrideForm, QcResultForm
-from .models import QcCriteria, QcInspection
+from .models import QcCriteria, QcInspection, QcInspectionItem
 from .services import overdue_inspections, qc_fail, qc_partial_pass, qc_pass, suggested_sample_qty
 
 
@@ -125,10 +125,14 @@ def qc_result(request, grn_pk):
                 messages.error(request, ' '.join(exc.messages))
 
     is_overdue = overdue_inspections().filter(pk=inspection.pk).exists()
+    has_any_item = inspection.items.exists()
+    has_fail_item = inspection.items.filter(result=QcInspectionItem.Result.FAIL).exists()
+    has_pass_item = inspection.items.filter(result=QcInspectionItem.Result.PASS).exists()
     return render(request, 'quality/qc_result.html', {
         'grn': grn, 'inspection': inspection, 'result_form': result_form, 'formset': formset,
         'item_formset': item_formset, 'criteria_ref': QcCriteria.objects.filter(is_active=True),
-        'is_overdue': is_overdue,
+        'is_overdue': is_overdue, 'has_any_item': has_any_item, 'has_fail_item': has_fail_item,
+        'has_pass_item': has_pass_item,
     })
 
 

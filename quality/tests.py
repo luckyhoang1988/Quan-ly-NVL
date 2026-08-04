@@ -657,6 +657,30 @@ class QcResultViewTest(QcServiceTestBase):
         self.grn.refresh_from_db()
         self.assertEqual(self.grn.status, Grn.Status.RECEIVED)
 
+    def test_TC_QC_CRIT_005_view_disables_actions_when_no_items(self):
+        empty_grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        empty_item = GrnItem.objects.create(
+            grn=empty_grn, product=self.product, qty_ordered=5, qty_received=5,
+            unit_price=Decimal('15000.00'),
+        )
+        start_qc(empty_grn, self.qc_user, actor=self.qc_user)
+        response = self.client.get(reverse('quality:qc_result', args=[empty_grn.pk]))
+        self.assertContains(response, 'disabled', count=3)
+        self.assertContains(response, 'Chưa có dòng kết quả tiêu chuẩn nào')
+
+    def test_TC_QC_CRIT_006_fail_item_warns_near_pass_partial_buttons(self):
+        self._add_criteria_item(self.inspection, result=QcInspectionItem.Result.FAIL)
+        response = self.client.get(self._url())
+        self.assertContains(response, 'Đã có dòng tiêu chuẩn Không đạt', count=2)
+
+    def test_TC_QC_CRIT_007_pass_item_warns_near_fail_button(self):
+        response = self.client.get(self._url())
+        self.assertContains(response, 'Đã có dòng tiêu chuẩn Đạt', count=1)
+
+    def test_TC_QC_CRIT_008_no_mismatch_when_only_pass_items(self):
+        response = self.client.get(self._url())
+        self.assertNotContains(response, 'Đã có dòng tiêu chuẩn Không đạt')
+
 
 class QcOverrideViewTest(QcServiceTestBase):
     """QC approval override (BACKLOG mục 2b) — ``TC-QC-OVERRIDE-<seq>``.

@@ -73,12 +73,24 @@
             </table>
           </div>
 
-          <div class="d-flex gap-2 mt-4">
-            <button type="submit" name="action" value="pass" class="btn btn-success">QC Đạt</button>
-            <button type="submit" name="action" value="partial" class="btn btn-warning">QC Đạt một phần</button>
-            <button type="submit" name="action" value="fail" class="btn btn-danger">QC Không đạt</button>
+          <div class="d-flex gap-2 mt-4 flex-wrap align-items-start">
+            <div>
+              <button type="submit" name="action" value="pass" class="btn btn-success"{% if not has_any_item %} disabled{% endif %}>QC Đạt</button>
+              {% if has_fail_item %}<div class="text-warning small mt-1">⚠ Đã có dòng tiêu chuẩn Không đạt.</div>{% endif %}
+            </div>
+            <div>
+              <button type="submit" name="action" value="partial" class="btn btn-warning"{% if not has_any_item %} disabled{% endif %}>QC Đạt một phần</button>
+              {% if has_fail_item %}<div class="text-warning small mt-1">⚠ Đã có dòng tiêu chuẩn Không đạt.</div>{% endif %}
+            </div>
+            <div>
+              <button type="submit" name="action" value="fail" class="btn btn-danger"{% if not has_any_item %} disabled{% endif %}>QC Không đạt</button>
+              {% if has_pass_item %}<div class="text-warning small mt-1">⚠ Đã có dòng tiêu chuẩn Đạt.</div>{% endif %}
+            </div>
             <a class="btn btn-link" href="{% url 'receiving:grn_detail' grn.pk %}">Huỷ</a>
           </div>
+          {% if not has_any_item %}
+            <div class="text-danger small mt-2">Chưa có dòng kết quả tiêu chuẩn nào — hãy lưu ít nhất 1 dòng ở bảng "Kết quả PASS/FAIL từng tiêu chuẩn" bên dưới trước khi ghi nhận kết quả QC tổng.</div>
+          {% endif %}
         </form>
       </div>
     </div>
