@@ -3220,6 +3220,96 @@ class ReconcileLegacyPoItemAllocationsTest(TestCase):
             reconcile_legacy_po_item_allocations(self.po_item, [], actor=self.admin_user)
         self.assertEqual(AuditLog.objects.count(), audit_count_before)
 
+    def test_TC_PUR_PR_05_020_a_actor_not_admin_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.staff)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_b_actor_inactive_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        self.admin_user.is_active = False
+        self.admin_user.save(update_fields=['is_active'])
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_c_po_source_manual_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        self.po.source = PurchaseOrder.Source.MANUAL
+        self.po.save(update_fields=['source'])
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_d_pr_item_not_approved_rejected(self):
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.PENDING_PUR, linked_po=self.po)
+        pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=self.product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_e_product_mismatch_rejected(self):
+        other_product = Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg')
+        pr = PurchaseRequest.objects.create(
+            requested_by=self.staff, warehouse=self.warehouse, cost_center='CC-001',
+            status=PurchaseRequest.Status.APPROVED, linked_po=self.po)
+        pr_item = PurchaseRequestItem.objects.create(
+            purchase_request=pr, product=other_product, qty_requested=10, qty_approved=10,
+            required_date=timezone.localdate(), currency='VND', estimated_unit_price=Decimal('1000'), budget_category='NL')
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_f_qty_below_one_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 0)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_g_qty_exceeds_qty_open_rejected(self):
+        pr_item = self._pr_item(qty_requested=10, qty_approved=3, linked_po=self.po)  # qty_open=3
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_h_linked_po_mismatch_rejected(self):
+        other_po = PurchaseOrder.objects.create(
+            po_no='PO-OTHER', supplier=self.supplier, source=PurchaseOrder.Source.FROM_PR)
+        pr_item = self._pr_item(10, 10, linked_po=other_po)  # trỏ PO KHÁC, không phải None
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 0)
+
+    def test_TC_PUR_PR_05_020_i_existing_active_allocation_rejected(self):
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        ProcurementAllocation.objects.create(
+            pr_item=pr_item, po_item=self.po_item, qty_allocated=10,
+            po_no_snapshot=self.po.po_no, product_code_snapshot=self.product.product_code,
+        )
+        with self.assertRaises(ValidationError):
+            reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.assertEqual(ProcurementAllocation.objects.filter(po_item=self.po_item).count(), 1)  # không tăng thêm
+
+    def test_TC_PUR_PR_05_021_po_approved_not_draft_allowed_then_send_po_succeeds(self):
+        self.po.status = PurchaseOrder.Status.APPROVED
+        self.po.save(update_fields=['status'])
+        pr_item = self._pr_item(10, 10, linked_po=self.po)
+        reconcile_legacy_po_item_allocations(self.po_item, [(pr_item, 10)], actor=self.admin_user)
+        self.po_item.refresh_from_db()
+        self.assertEqual(self.po_item.qty_ordered, 10)
+        self.assertEqual(self.po_item.product_id, self.product.pk)
+        self.assertEqual(self.po_item.unit_price, Decimal('1000'))
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.APPROVED)  # chưa đổi gì khác
+        send_po(self.po, actor=self.admin_user)  # không còn bị guard Task 2.4 chặn
+        self.po.refresh_from_db()
+        self.assertEqual(self.po.status, PurchaseOrder.Status.SENT)
+
 
 class AllocationConcurrencyDeadlockTests(TransactionTestCase):
     """TC-PUR-PR-04-002/003, TC-PUR-PR-05-027 — regression cho lock order mục 4 điểm 2/mục 4
