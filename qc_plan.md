@@ -5,7 +5,7 @@
 ## Todos theo dõi
 
 - [x] Wave 1 — FSD + triển khai Quarantine Disposition (**3** action: `SCRAP_WRITEOFF` / `RETURN_SUPPLIER` / `RELEASE_TO_MAIN`; **không** gồm `REWORK`)
-- [ ] Wave 2 — Spec criteria gate nhẹ (bắt buộc criteria + cảnh báo mismatch + prefill theo category)
+- [x] Wave 2 — Spec criteria gate nhẹ (bắt buộc criteria + cảnh báo mismatch + prefill theo category) — FSD xong, **triển khai chưa làm**, xem [`docs/qc/03_criteria_gate_fsd.md`](docs/qc/03_criteria_gate_fsd.md)
 - [ ] Wave 3 — Đồng bộ BACKLOG/docstring/test names + `qc_no` IntegrityError retry
 - [ ] Wave 4 — Chỉ khi cần: `Supplier`/`Product.qc_required` + audit skip QC
 - [ ] Wave 5 — KPI QC theo NCC/SKU + email FAIL (sau reports/Celery)
@@ -130,18 +130,30 @@ View/template: check đúng action theo disposition + `can_view_menu('inventory'
 
 ---
 
-### P1 — Đóng vòng Criteria ↔ Quyết định QC
+### P1 — Đóng vòng Criteria ↔ Quyết định QC (Wave 2)
 
 **Hiện tại:** `QcInspectionItem` ghi PASS/FAIL từng tiêu chuẩn; **không gate** quyết định tổng. Sampling chỉ gợi ý.
 
 **Thực tiễn:** FLEX inbound checklist, Hopstack, QSC — checklist có cấu trúc; kết quả criteria là bằng chứng kiểm toán, không nhất thiết auto-fail lot (đúng với lựa chọn hiện tại).
 
-**Đề xuất nhẹ (không AQL đầy đủ):**
-1. Trên form `qc_result`: bắt buộc ≥1 dòng criteria đã nhập trước khi PASS/FAIL/PARTIAL (audit trail đủ)
-2. Cảnh báo (không chặn) nếu có criteria FAIL nhưng chọn PASS overall — hoặc ngược lại
-3. Prefill criteria theo `Product.category` từ `QcCriteria` active (giảm nhập tay)
+#### Vị trí gate ≥1 dòng criteria — **đã chốt Phương án 1**
 
-Tránh AQL/ANSI Z1.4 full ở giai đoạn này — quá nặng cho solo và ngoài 60-FR.
+`qc_pass` / `qc_fail` / `qc_partial_pass` **raise `ValidationError`** nếu inspection chưa có dòng `QcInspectionItem` nào. View/form chỉ disable nút Pass/Fail/Partial cho UX — **không** là lớp bảo vệ duy nhất.
+
+**Lý do:** khớp convention CLAUDE.md *"form filter, service phải re-validate độc lập"* — chặn bypass qua script/shell/`manage.py`/test gọi thẳng service. Không chọn “chỉ chặn ở view/form”.
+
+**Phạm vi tối thiểu Wave 2 (đã chốt đủ 3, xem FSD chi tiết):**
+1. Gate service ≥1 criteria (đã chốt vị trí ở trên)
+2. Cảnh báo (không chặn) nếu criteria FAIL nhưng chọn PASS overall — hoặc ngược lại. **Đã chốt**: banner
+   nhỏ ngay trên trang `qc_result`, cạnh từng nút quyết định liên quan, tính từ dòng `QcInspectionItem`
+   đã lưu — không chặn submit, không thêm state/double-confirm
+3. Prefill criteria theo `Product.category` từ `QcCriteria` active. **Đã chốt**: tái dùng pattern JS
+   `data-category` đã có ở `purchasing/forms.py` (`ProductSelectWithCategory`) — gợi ý qua `<datalist>`,
+   tự điền `expected_value` chỉ khi đang trống, không đổi `criteria_name`/`expected_value` thành FK
+
+Tránh AQL/ANSI Z1.4 full — quá nặng cho solo và ngoài 60-FR.
+
+FSD đầy đủ: [`docs/qc/03_criteria_gate_fsd.md`](docs/qc/03_criteria_gate_fsd.md).
 
 ---
 
