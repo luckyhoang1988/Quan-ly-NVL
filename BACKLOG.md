@@ -116,8 +116,8 @@ Sau khi rà lại BRD/SRS/FSD + kế hoạch solo + phân tích chi tiết quy t
 #### Business Rules
 - [x] BR-WM-001: `qty_on_hand >= 0` (không cho âm) — thuộc model Inventory, chưa tồn tại (mục 1f)
 - [x] BR-WM-002: `qty_available = qty_on_hand - qty_reserved` (auto calculate) — thuộc model Inventory, chưa tồn tại (mục 1f)
-- [ ] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm — thuộc Phase 3 (GIN)
-- [ ] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng — thuộc Phase 2 (GRN)
+- [x] BR-WM-003: Khi GIN issue → `qty_on_hand` giảm, `qty_available` giảm — `shipping.services.issue_gin`, test `TC_GIN_ISSUE_001` (`shipping/tests.py`)
+- [x] BR-WM-004: Khi GRN receive → `qty_on_hand` tăng, `qty_available` tăng — `quality.services.start_qc` (QC nhận vào Kho chờ), test `TC_QC_START_002_001` (`quality/tests.py`)
 - [x] BR-WM-005: Tạo warehouse → min 10 vị trí (tự sinh 10 vị trí mặc định A-01..A-10 khi tạo kho)
 - [x] BR-WM-006: Không thể xóa warehouse nếu `qty_on_hand > 0` — `warehouse.services.deactivate_warehouse()` kiểm tra `Inventory.qty_on_hand > 0` trước khi khoá (soft), raise `ValidationError` nếu còn tồn; `warehouse/views.py::warehouse_deactivate` gọi hàm này trong try/except
 - [x] BR-WM-007: `Warehouse.warehouse_type` (MAIN/STAGING/SCRAP) — MAIN là kho thường (duy nhất loại được GIN/FIFO chọn xuất hàng); tối đa 1 kho STAGING (Kho chờ QC) và 1 kho SCRAP (Kho phế) đang hoạt động cho toàn công ty, enforce ở tầng DB (`UniqueConstraint` có điều kiện `warehouse_type IN (STAGING, SCRAP) AND is_active`) lẫn tầng form (`WarehouseForm.clean_warehouse_type`); `warehouse_type` khoá (disabled) sau khi tạo — đổi loại phải tạo kho mới + khoá kho cũ, không sửa tại chỗ
