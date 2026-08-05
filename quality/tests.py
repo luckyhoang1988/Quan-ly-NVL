@@ -1,14 +1,17 @@
 import datetime
 import shutil
 import tempfile
+import threading
+import time
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.db import IntegrityError, connection, transaction
+from django.db.utils import OperationalError
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -20,6 +23,7 @@ from partners.models import Supplier
 from purchasing.models import PurchaseOrder
 from receiving.models import Grn, GrnItem, GrnReturn
 from warehouse.models import Location, Warehouse
+from warehouse.services import get_staging_warehouse
 
 from .forms import QcInspectionItemForm, QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem, validate_image_upload
@@ -471,6 +475,126 @@ class QcCriteriaGateToctouTest(QcServiceTestBase):
         self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
         self.assertFalse(Batch.objects.filter(status=Batch.Status.PENDING_RECEIPT).exists())
         self.assertFalse(Batch.objects.filter(status=Batch.Status.QUARANTINE).exists())
+
+
+class QcCriteriaItemPostLockRaceTest(TransactionTestCase):
+    """Residual TOCTOU tìm thấy ở vòng re-review sau bản vá đầu (P2 gốc): lần
+    check ``_require_criteria_items`` NGAY SAU ``_lock_pending_inspection``
+    ban đầu chỉ đọc lại (``inspection.items.exists()``, không khoá) — đóng
+    đúng khe hở "xoá TRƯỚC lần đọc lại thứ 2" (``QcCriteriaGateToctouTest`` ở
+    trên), nhưng KHÔNG khoá được ``QcInspectionItem`` nên vẫn còn khe hở "xoá
+    SAU lần đọc lại, TRƯỚC khi Batch/Inventory được tạo".
+
+    Khe hở này chỉ tái hiện được bằng 2 transaction/2 kết nối DB THẬT chạy
+    đồng thời — trong 1 transaction/1 luồng duy nhất (như
+    ``QcCriteriaGateToctouTest`` dùng qua ``side_effect``) không có "khe hở"
+    thật giữa 2 câu lệnh SQL kế tiếp để mô phỏng. Dùng ``TransactionTestCase``
+    + 2 thread, cùng kỹ thuật các lớp Deadlock ở ``stocktake.tests``
+    (BUG-15/16/17, xem CLAUDE.md).
+
+    Fix (``quality.services._require_criteria_items(inspection, lock=True)``):
+    lần kiểm thứ 2 giờ khoá thật từng dòng ``QcInspectionItem`` qua
+    ``select_for_update()`` — 1 DELETE đồng thời đúng lúc này phải CHỜ tới khi
+    transaction QC (PASS/FAIL/PARTIAL) commit/rollback.
+    """
+
+    def setUp(self):
+        self.purchasing_user = User.objects.create_user(
+            username='mua', password='mua-pass-123', role=User.Role.PURCHASING)
+        self.qc_user = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC)
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.warehouse = Warehouse.objects.create(
+            code='KHO-HN', name='Kho Hà Nội', warehouse_type=Warehouse.WarehouseType.MAIN)
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.staging_warehouse = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        Location.objects.create(warehouse=self.staging_warehouse, code='A-01')
+        self.scrap_warehouse = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        Location.objects.create(warehouse=self.scrap_warehouse, code='A-01')
+        self.grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        self.grn_item = GrnItem.objects.create(
+            grn=self.grn, product=self.product, qty_ordered=10, qty_received=10,
+            unit_price=Decimal('15000.00'),
+        )
+        self.inspection = start_qc(self.grn, self.qc_user, actor=self.qc_user)
+        self.criteria_item = QcInspectionItem.objects.create(
+            inspection=self.inspection, grn_item=self.grn_item,
+            criteria_name='Ngoại hình', result=QcInspectionItem.Result.PASS,
+        )
+
+    def test_TC_QC_CRIT_010_concurrent_delete_of_criteria_item_blocks_until_qc_pass_commits(self):
+        """A (``qc_pass``): khoá ``QcInspectionItem`` ở lần kiểm thứ 2 rồi bị
+        giữ lại (patch ``get_staging_warehouse`` — gọi ngay sau lần kiểm đó —
+        để sleep, mô phỏng transaction còn đang mở). B: DELETE đúng dòng
+        criteria đó qua transaction/kết nối riêng, chỉ bắt đầu SAU khi chắc
+        chắn A đã khoá xong (``reached_lock`` event). Kỳ vọng: không deadlock
+        (không ``OperationalError``), và DELETE của B phải chờ hết thời gian A
+        giữ khoá mới hoàn tất — chứng minh khe hở đã được đóng bằng khoá thật,
+        không chỉ đọc lại.
+        """
+        reached_lock = threading.Event()
+        results = {}
+        hold_seconds = 0.6
+
+        def slow_get_staging_warehouse():
+            reached_lock.set()
+            time.sleep(hold_seconds)
+            return get_staging_warehouse()
+
+        def run_qc_pass():
+            try:
+                with patch('quality.services.get_staging_warehouse', side_effect=slow_get_staging_warehouse):
+                    qc_pass(self.inspection, actor=self.qc_user, location=self.location)
+                results['qc_pass'] = 'ok'
+            except Exception as exc:  # noqa: BLE001 - ghi lại để assert bên ngoài thread
+                results['qc_pass'] = exc
+            finally:
+                connection.close()
+
+        def run_delete():
+            try:
+                if not reached_lock.wait(timeout=5):
+                    results['delete'] = TimeoutError('reached_lock không được set trong 5s')
+                    return
+                start = time.monotonic()
+                with transaction.atomic():
+                    QcInspectionItem.objects.filter(pk=self.criteria_item.pk).delete()
+                results['delete_elapsed'] = time.monotonic() - start
+            except Exception as exc:  # noqa: BLE001
+                results['delete'] = exc
+            finally:
+                connection.close()
+
+        t_pass = threading.Thread(target=run_qc_pass)
+        t_delete = threading.Thread(target=run_delete)
+        t_pass.start()
+        t_delete.start()
+        t_pass.join(timeout=10)
+        t_delete.join(timeout=10)
+
+        self.assertFalse(t_pass.is_alive(), 'qc_pass bị treo quá 10s (nghi deadlock)')
+        self.assertFalse(t_delete.is_alive(), 'DELETE bị treo quá 10s (nghi deadlock)')
+
+        for name in ('qc_pass', 'delete'):
+            exc = results.get(name)
+            if isinstance(exc, Exception):
+                self.assertNotIsInstance(
+                    exc, OperationalError,
+                    f'{name} raised {exc!r} — nghi deadlock (residual TOCTOU regression)',
+                )
+                if name == 'delete':
+                    self.fail(f'DELETE raised unexpected exception: {exc!r}')
+
+        self.assertEqual(results.get('qc_pass'), 'ok')
+        self.assertGreaterEqual(
+            results.get('delete_elapsed', 0), hold_seconds * 0.7,
+            'DELETE trên QcInspectionItem không bị chặn bởi khoá select_for_update của qc_pass — '
+            'residual TOCTOU chưa được đóng.',
+        )
 
 
 class WarehouseHandoffTest(QcServiceTestBase):

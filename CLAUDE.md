@@ -436,21 +436,41 @@ rather than rediscovering the failure.
   (`override_allocation` itself only needs `GIN → Allocation → Batch`, since it never touches
   `Inventory`) — and re-reading `gin.status`/`allocation`/`new_batch` fresh from the DB under those locks
   before repeating every existing check, rather than trusting the caller's objects at all.
-- **A gate check on a related/child queryset needs to run again after the lock, not just before it** — a
-  pre-lock check is only a fail-fast UX shortcut; it does not itself close the race, because
-  `select_for_update()` on the parent row does not lock a separate child table. `quality.services.qc_pass`/
-  `qc_fail`/`qc_partial_pass` (Wave 2 criteria gate) originally checked `inspection.items.exists()` once,
-  before `_lock_pending_inspection()` — but `quality.views.qc_result` has a second, independent `<form>`
-  (`QcInspectionItemFormSet`, `can_delete=True`) that saves in its own request/transaction, so a concurrent
-  submit deleting every `QcInspectionItem` could commit in the gap between the pre-lock check and the lock,
-  leaving the first transaction to proceed on stale information. Fixed via `_require_criteria_items()`
-  called twice — once before `_lock_pending_inspection()` (fail fast) and again immediately after, before
-  any Batch/Inventory side-effect. Regression-tested deterministically (no threading needed) by patching
+- **A gate check on a related/child queryset needs to run again after the lock, not just before it — and
+  the re-check itself must lock the child rows, not merely re-read them** — a pre-lock check is only a
+  fail-fast UX shortcut; it does not itself close the race, because `select_for_update()` on the parent row
+  does not lock a separate child table. `quality.services.qc_pass`/`qc_fail`/`qc_partial_pass` (Wave 2
+  criteria gate) originally checked `inspection.items.exists()` once, before `_lock_pending_inspection()` —
+  but `quality.views.qc_result` has a second, independent `<form>` (`QcInspectionItemFormSet`,
+  `can_delete=True`) that saves in its own request/transaction, so a concurrent submit deleting every
+  `QcInspectionItem` could commit in the gap between the pre-lock check and the lock, leaving the first
+  transaction to proceed on stale information. First fix: `_require_criteria_items()` called twice — once
+  before `_lock_pending_inspection()` (fail fast) and again immediately after, before any Batch/Inventory
+  side-effect. Regression-tested deterministically (no threading needed) by patching
   `_lock_pending_inspection` with a `side_effect` that deletes the child rows before delegating to the real
   function — the established substitute pattern for this class of bug, same shape as the `get_object_or_404`
-  side_effect patch used for the `*_update` TOCTOU bullet above. Apply generally: whenever two independent
-  forms/views can both act on state a service function gates on, a pre-lock check alone is not sufficient — it
-  must be repeated after the lock, right before the first mutation.
+  side_effect patch used for the `*_update` TOCTOU bullet above. **This closed only the pre-lock→lock gap,
+  not the whole race**: the post-lock re-check was still a plain read (`.exists()`), so a genuinely
+  concurrent transaction could still delete every `QcInspectionItem` in the gap between that re-check and
+  the Batch/Inventory mutation right after it — found on re-review, since the deterministic single-transaction
+  `side_effect` test can't exercise a gap between two statements *within* one transaction (there isn't one).
+  Closed by giving `_require_criteria_items()` a `lock=True` mode for the post-lock call — it locks the
+  child rows themselves (`list(inspection.items.select_for_update())`, not `.exists()` chained onto
+  `select_for_update()`, to avoid depending on whether `QuerySet.exists()` reliably preserves a `FOR UPDATE`
+  clause) — so a concurrent `DELETE` on those exact rows now blocks until the QC decision's transaction
+  commits or rolls back, instead of being able to slip in. **This half of the fix is unverifiable by the
+  deterministic `side_effect` technique** (there's no real inter-statement gap to inject into within one
+  transaction/thread) — it requires an actual second DB connection genuinely blocking on the row lock, proven
+  with `TransactionTestCase` + 2 threads (`quality.tests.QcCriteriaItemPostLockRaceTest`): thread A holds the
+  lock open via a `time.sleep()` patched into the next function call after the lock (`get_staging_warehouse`),
+  thread B attempts the `DELETE` and is asserted to take at least as long as the sleep before completing
+  (proving it blocked) rather than returning near-instantly (proving it didn't) — same threading precedent as
+  the lock-order deadlock tests below, but proving "blocked as intended" rather than "no deadlock". Apply
+  generally: whenever two independent forms/views can both act on state a service function gates on, (1) a
+  pre-lock check alone is not sufficient — it must be repeated after the lock, right before the first
+  mutation, and (2) that post-lock repeat must itself acquire a lock on the exact rows it just read, or a
+  genuinely concurrent transaction (unreachable by any single-transaction `side_effect` test) can still land
+  in the gap between the re-read and the mutation that depends on it.
 - **A per-target quantity check must sum every existing claim on that target, not just the one being
   changed** — `override_allocation` originally checked `new_batch.qty_available` against only the
   allocation being overridden, so two allocations from the same GIN (e.g. one `GinItem` FIFO-split across

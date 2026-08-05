@@ -92,19 +92,41 @@ def _credit_inventory(product, warehouse, qty, batch=None, reference='', actor=N
     return inv
 
 
-def _require_criteria_items(inspection):
+def _require_criteria_items(inspection, lock=False):
     """Chặn PASS/FAIL/PARTIAL khi phiếu QC chưa có dòng kết quả tiêu chuẩn nào
     (Wave 2 — AC-QC-CRIT-01). Gọi 2 lần trong mỗi hàm ``qc_pass``/``qc_fail``/
-    ``qc_partial_pass``: TRƯỚC ``_lock_pending_inspection`` (fail nhanh, không
-    tốn khoá khi rõ ràng chưa có item) và NGAY SAU (``_lock_pending_inspection``
-    chỉ khoá ``Grn``/``QcInspection``, không khoá được bảng ``QcInspectionItem``
-    — form riêng "Lưu kết quả từng tiêu chuẩn" (``QcInspectionItemFormSet``,
-    ``quality.views.qc_result``) xoá hết dòng criteria qua 1 request/transaction
-    độc lập vẫn commit được giữa 2 lần gọi này, nên phải đọc lại NGAY SAU khi đã
-    khoá, TRƯỚC khi đụng Batch/Inventory — cùng dạng TOCTOU đã chốt cho các
-    view ``*_update`` DRAFT-only, xem CLAUDE.md).
+    ``qc_partial_pass``: TRƯỚC ``_lock_pending_inspection`` (``lock=False``,
+    fail nhanh, không tốn khoá khi rõ ràng chưa có item) và NGAY SAU
+    (``lock=True``).
+
+    ``_lock_pending_inspection`` chỉ khoá ``Grn``/``QcInspection``, không khoá
+    được bảng ``QcInspectionItem`` — form riêng "Lưu kết quả từng tiêu chuẩn"
+    (``QcInspectionItemFormSet``, ``quality.views.qc_result``) xoá hết dòng
+    criteria qua 1 request/transaction độc lập vẫn commit được giữa 2 lần gọi
+    này, nên phải kiểm lại NGAY SAU khi đã khoá Grn/QcInspection, TRƯỚC khi
+    đụng Batch/Inventory — cùng dạng TOCTOU đã chốt cho các view ``*_update``
+    DRAFT-only, xem CLAUDE.md.
+
+    Residual sau lần vá đầu (re-review): lần gọi thứ 2 ban đầu chỉ ĐỌC LẠI
+    (``exists()``, không khoá) — đóng đúng khe hở "xoá TRƯỚC lần đọc lại" (test
+    ``QcCriteriaGateToctouTest``), nhưng KHÔNG khoá được ``QcInspectionItem``
+    nên vẫn còn khe hở "xoá SAU lần đọc lại, TRƯỚC khi Batch/Inventory được
+    tạo" — 1 transaction khác xoá đúng lúc này vẫn commit được vì không có gì
+    chặn nó. ``lock=True`` dùng ``select_for_update()`` thật trên chính các
+    dòng ``QcInspectionItem`` — một DELETE đồng thời trên đúng những dòng đó
+    giờ phải CHỜ tới khi transaction QC này commit/rollback, không còn xen
+    được vào giữa lần kiểm và bước tạo Batch/Inventory nữa (chỉ kiểm chứng
+    được bằng ``TransactionTestCase`` + 2 thread/2 kết nối DB thật — xem
+    ``QcCriteriaItemPostLockRaceTest`` — vì trong 1 transaction/1 luồng duy
+    nhất không có "khe hở" thật giữa 2 câu lệnh SQL kế tiếp để side_effect mô
+    phỏng).
     """
-    if not inspection.items.exists():
+    qs = inspection.items.all()
+    if lock:
+        exists = bool(list(qs.select_for_update()))
+    else:
+        exists = qs.exists()
+    if not exists:
         raise ValidationError(
             'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
         )
@@ -304,7 +326,7 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
     _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
-    _require_criteria_items(inspection)
+    _require_criteria_items(inspection, lock=True)
     staging_warehouse = get_staging_warehouse()
 
     for item in grn.items.select_for_update().order_by('product_id', 'pk'):
@@ -356,7 +378,7 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
     """
     _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
-    _require_criteria_items(inspection)
+    _require_criteria_items(inspection, lock=True)
     staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
@@ -417,7 +439,7 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
     _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
-    _require_criteria_items(inspection)
+    _require_criteria_items(inspection, lock=True)
     items = list(grn.items.select_for_update().order_by('product_id', 'pk'))
 
     missing = {item.pk for item in items} - set(item_results)
