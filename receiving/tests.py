@@ -772,6 +772,21 @@ class GrnViewTest(TestCase):
         self.po.refresh_from_db()
         self.assertEqual(self.po.status, PurchaseOrder.Status.RECEIVED)
 
+    def test_TC_WH_CAP_007_receive_qty_over_staging_capacity_warns(self):
+        grn = self._create_grn(status=Grn.Status.PENDING_QC)
+        item = grn.items.first()
+        staging_location = Location.objects.get(warehouse=self.staging_warehouse, code='A-01')
+        staging_location.capacity = 5
+        staging_location.save(update_fields=['capacity'])
+        response = self.client.post(reverse('receiving:grn_receive_qty', args=[grn.pk]), {
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1',
+            'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': item.pk, 'items-0-qty_received': 10,
+            'inspector': self.qc_user.pk,
+        }, follow=True)
+        warning_messages = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
+
 
 class GrnPoQtyValidationTest(TestCase):
     """BR mục 2a "Qty validation" (FR-GRN-07 hard cap) + FR-GRN-04 (nhận nhiều

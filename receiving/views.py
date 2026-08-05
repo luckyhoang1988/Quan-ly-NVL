@@ -22,6 +22,7 @@ from accounts.pagination import paginate_queryset
 from partners.models import Supplier
 from purchasing.services import sync_po_status
 from quality.services import overdue_inspections, start_qc
+from warehouse.services import get_default_location, get_staging_warehouse, location_capacity_alerts
 
 from .forms import GrnForm, GrnItemFormSet, ReceiveQtyFormSet, SubmitToQcForm
 from .models import Grn, GrnReturn
@@ -336,6 +337,9 @@ def grn_receive_qty(request, pk):
             messages.error(request, ' '.join(exc.messages))
         else:
             for alert in tolerance_alerts(obj):
+                messages.warning(request, alert)
+            staging_location = get_default_location(get_staging_warehouse())
+            for alert in location_capacity_alerts(staging_location):
                 messages.warning(request, alert)
             messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang QC ({inspection.qc_no}).')
             return redirect('receiving:grn_detail', pk=obj.pk)
