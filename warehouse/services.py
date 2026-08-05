@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
-from inventory.models import Inventory
+from inventory.models import Batch, Inventory, PHYSICAL_BATCH_STATUSES
 
 from .models import Warehouse
 
@@ -81,3 +81,15 @@ def activate_warehouse(warehouse, actor=None, ip_address=None):
     log_action(actor, AuditLog.Action.UPDATE, target=warehouse,
                description=f'Mở lại hoạt động kho {warehouse.code}', ip_address=ip_address)
     return warehouse
+
+
+def location_occupancy(warehouse):
+    """A1: tồn kho theo vị trí, mọi status vật lý, mọi loại kho (MAIN/STAGING/
+    SCRAP). Không lọc thêm qty_received > qty_used — CLOSED đã loại hết batch
+    qty=0 khỏi PHYSICAL_BATCH_STATUSES (xem FSD 2.2)."""
+    return (
+        Batch.objects
+        .filter(location__warehouse=warehouse, status__in=PHYSICAL_BATCH_STATUSES)
+        .select_related('product', 'location')
+        .order_by('location__code', 'batch_code')
+    )

@@ -6,13 +6,66 @@ from django.test import TestCase
 from django.urls import reverse
 
 from accounts.models import AuditLog
+from catalog.models import Product
+from inventory.models import Batch, Inventory
+from inventory.services import transfer_stock
+from partners.models import Supplier
 
 from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
 from .services import (
     activate_warehouse, deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse,
+    location_occupancy,
 )
 
 User = get_user_model()
+
+
+class LocationOccupancyServiceTest(TestCase):
+    """``location_occupancy`` (A1). TC-WH-LOC-001, 002, 004."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.other_warehouse = Warehouse.objects.create(code='KHO-HCM', name='Kho HCM')
+        self.other_location = Location.objects.create(warehouse=self.other_warehouse, code='A-01')
+
+    def _batch(self, code, location, status, qty_received=10, qty_used=0):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier,
+            location=location, qty_received=qty_received, qty_used=qty_used, status=status,
+        )
+
+    def test_TC_WH_LOC_001_excludes_closed_and_other_warehouse(self):
+        active = self._batch('LOT-01', self.location, Batch.Status.ACTIVE)
+        self._batch('LOT-02', self.location, Batch.Status.CLOSED, qty_used=10)
+        self._batch('LOT-03', self.other_location, Batch.Status.ACTIVE)
+        result = list(location_occupancy(self.warehouse))
+        self.assertEqual(result, [active])
+
+    def test_TC_WH_LOC_002_includes_every_physical_status(self):
+        statuses = [
+            Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
+            Batch.Status.EXPIRED, Batch.Status.QUARANTINE,
+        ]
+        expected_codes = set()
+        for i, status in enumerate(statuses):
+            code = f'LOT-{i:02d}'
+            self._batch(code, self.location, status, qty_used=1 if status == Batch.Status.PARTIAL_USED else 0)
+            expected_codes.add(code)
+        result_codes = {b.batch_code for b in location_occupancy(self.warehouse)}
+        self.assertEqual(result_codes, expected_codes)
+
+    def test_TC_WH_LOC_004_batch_closed_by_transfer_is_excluded(self):
+        location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        batch = self._batch('LOT-01', self.location, Batch.Status.ACTIVE, qty_received=10)
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=10)
+        transfer_stock(batch=batch, to_location=location2, qty=10, actor=None)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        result_ids = {b.pk for b in location_occupancy(self.warehouse)}
+        self.assertNotIn(batch.pk, result_ids)
 
 
 class WarehouseCrudTest(TestCase):
