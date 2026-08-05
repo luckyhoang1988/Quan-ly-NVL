@@ -526,6 +526,51 @@ class LocationCrudTest(TestCase):
         self.assertEqual(response.status_code, 403)
 
 
+class LocationUpdateViewTest(TestCase):
+    """``location_update`` (A4 test gap) — sửa mã/dung tích 1 vị trí."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01', capacity=100)
+        self.client.force_login(self.manager)
+
+    def test_update_changes_code_and_capacity_and_audits(self):
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-01-B', 'capacity': 200},
+        )
+        self.location.refresh_from_db()
+        self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        self.assertEqual(self.location.code, 'A-01-B')
+        self.assertEqual(self.location.capacity, 200)
+        self.assertTrue(AuditLog.objects.filter(
+            action=AuditLog.Action.UPDATE, target_id=str(self.location.pk)).exists())
+
+    def test_update_duplicate_code_in_same_warehouse_rejected(self):
+        Location.objects.create(warehouse=self.warehouse, code='A-02')
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-02', 'capacity': ''},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.location.refresh_from_db()
+        self.assertEqual(self.location.code, 'A-01')
+
+    def test_non_manager_forbidden(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-01-B', 'capacity': ''},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.location.refresh_from_db()
+        self.assertEqual(self.location.code, 'A-01')
+
+
 class WarehouseListPaginationFilterTest(TestCase):
     """Phân trang + bộ lọc (status/tìm kiếm) trên warehouse_list."""
 
