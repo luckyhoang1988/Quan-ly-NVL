@@ -164,6 +164,25 @@
   </div>
 </div>
 
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Snapshot vận hành</h2>
+  </div>
+  <div class="card-body">
+    {% if obj.warehouse_type == 'STAGING' %}
+      <p class="mb-1">Số lô đang hoạt động: <strong>{{ ops_snapshot.active_count }}</strong> (tổng số lượng {{ ops_snapshot.active_qty }})</p>
+      <p class="mb-0">Số lô tồn quá {{ staging_aging_days }} ngày: <strong>{{ ops_snapshot.aged_count }}</strong></p>
+    {% elif obj.warehouse_type == 'MAIN' %}
+      <p class="mb-0">
+        Phiếu chờ nhận hàng đang chờ: <strong>{{ ops_snapshot.pending_handoff_count }}</strong>
+        <a href="{% url 'inventory:handoff_list' %}" class="btn btn-sm btn-outline-secondary ms-2">Xem</a>
+      </p>
+    {% else %}
+      <p class="mb-0">Tổng số lượng đang Quarantine: <strong>{{ ops_snapshot.quarantine_qty }}</strong></p>
+    {% endif %}
+  </div>
+</div>
+
 {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
 <div class="card shadow-sm mt-3">
   <div class="card-header panel-toolbar">

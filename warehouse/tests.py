@@ -224,6 +224,37 @@ class OpsSnapshotServiceTest(TestCase):
         self.assertEqual(snapshot['quarantine_qty'], 13)
 
 
+class WarehouseDetailOpsSnapshotCardTest(TestCase):
+    """Card "Snapshot vận hành" (A3) — chỉ hiện đúng 1 khối theo warehouse_type. TC-WH-OPS-004."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_OPS_004_staging_page_shows_only_staging_block(self):
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[staging.pk]))
+        self.assertContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Phiếu chờ nhận hàng đang chờ')
+        self.assertNotContains(response, 'Tổng số lượng đang Quarantine')
+
+    def test_TC_WH_OPS_004_main_page_shows_only_main_block(self):
+        main = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[main.pk]))
+        self.assertContains(response, 'Phiếu chờ nhận hàng đang chờ')
+        self.assertNotContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Tổng số lượng đang Quarantine')
+
+    def test_TC_WH_OPS_004_scrap_page_shows_only_scrap_block(self):
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[scrap.pk]))
+        self.assertContains(response, 'Tổng số lượng đang Quarantine')
+        self.assertNotContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Phiếu chờ nhận hàng đang chờ')
+
+
 class LocationCapacityAlertsServiceTest(TestCase):
     """``location_capacity_alerts`` (A2). TC-WH-CAP-001, 002, 003, 009."""
 

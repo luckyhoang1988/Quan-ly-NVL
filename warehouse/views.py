@@ -22,10 +22,10 @@ from accounts.models import AuditLog
 from accounts.pagination import paginate_queryset
 
 from .forms import LocationForm, WarehouseForm
-from .models import MIN_LOCATIONS_PER_WAREHOUSE, Location, Warehouse
+from .models import MIN_LOCATIONS_PER_WAREHOUSE, STAGING_AGING_DAYS, Location, Warehouse
 from .services import (
     activate_warehouse, capacity_badge, deactivate_warehouse, location_occupancy,
-    location_occupied_qty_map, warehouse_occupied_qty,
+    location_occupied_qty_map, ops_snapshot, warehouse_occupied_qty,
 )
 
 User = get_user_model()
@@ -97,6 +97,7 @@ def warehouse_detail(request, pk):
         'page_obj': page_obj, 'page_size': page_size,
         'warehouse_badge': capacity_badge(warehouse_occupied, obj.capacity),
         'warehouse_occupied': warehouse_occupied,
+        'ops_snapshot': ops_snapshot(obj), 'staging_aging_days': STAGING_AGING_DAYS,
     })
 
 
