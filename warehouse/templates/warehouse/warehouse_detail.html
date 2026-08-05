@@ -47,6 +47,12 @@
           <th class="text-nowrap">Dung tích</th>
           <td>{{ obj.capacity|default:"—" }}</td>
         </tr>
+        {% if warehouse_badge %}
+        <tr>
+          <th class="text-nowrap">Dung tích sử dụng</th>
+          <td><span class="badge {{ warehouse_badge.css }}">{{ warehouse_badge.label }} ({{ warehouse_occupied }}/{{ obj.capacity }})</span></td>
+        </tr>
+        {% endif %}
         <tr>
           <th class="text-nowrap">Trạng thái</th>
           <td>
@@ -91,7 +97,10 @@
           {% for loc in locations %}
           <tr class="{% if not loc.is_active %}table-secondary text-muted{% endif %}">
             <td>{{ loc.code }}</td>
-            <td>{{ loc.capacity|default:"—" }}</td>
+            <td>
+              {{ loc.capacity|default:"—" }}
+              {% if loc.capacity_badge %}<span class="badge {{ loc.capacity_badge.css }}">{{ loc.capacity_badge.label }}</span>{% endif %}
+            </td>
             <td>
               {% if loc.is_active %}
                 <span class="badge bg-success">Hoạt động</span>

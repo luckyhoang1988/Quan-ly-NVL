@@ -113,6 +113,40 @@ class WarehouseDetailOccupancyCardTest(TestCase):
         self.assertEqual(len(ctx_many.captured_queries), len(ctx_few.captured_queries))
 
 
+class WarehouseDetailCapacityBadgeTest(TestCase):
+    """Badge OK/Gần đầy/Vượt trên warehouse_detail (A2.a). TC-WH-CAP-008."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội', capacity=1000)
+        self.loc_ok = Location.objects.create(warehouse=self.warehouse, code='A-01', capacity=100)
+        self.loc_warn = Location.objects.create(warehouse=self.warehouse, code='A-02', capacity=100)
+        self.loc_over = Location.objects.create(warehouse=self.warehouse, code='A-03', capacity=100)
+        self.loc_none = Location.objects.create(warehouse=self.warehouse, code='A-04')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-OK', supplier=self.supplier,
+            location=self.loc_ok, qty_received=10, status=Batch.Status.ACTIVE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-WARN', supplier=self.supplier,
+            location=self.loc_warn, qty_received=95, status=Batch.Status.ACTIVE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-OVER', supplier=self.supplier,
+            location=self.loc_over, qty_received=150, status=Batch.Status.ACTIVE)
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_CAP_008_badges_match_ratio_thresholds(self):
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        badges = {loc.code: loc.capacity_badge for loc in response.context['locations']}
+        self.assertEqual(badges['A-01']['css'], 'bg-success')
+        self.assertEqual(badges['A-02']['css'], 'bg-warning text-dark')
+        self.assertEqual(badges['A-03']['css'], 'bg-danger')
+        self.assertIsNone(badges['A-04'])
+        # tổng occupied kho = 10+95+150 = 255 / capacity 1000 = 0.255 -> OK
+        self.assertEqual(response.context['warehouse_badge']['css'], 'bg-success')
+
+
 class LocationCapacityAlertsServiceTest(TestCase):
     """``location_capacity_alerts`` (A2). TC-WH-CAP-001, 002, 003, 009."""
 

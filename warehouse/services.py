@@ -139,3 +139,24 @@ def location_capacity_alerts(location):
         elif level == 'WARN':
             alerts.append(f'Kho "{warehouse.code}" gần đầy dung tích.')
     return alerts
+
+
+def location_occupied_qty_map(warehouse):
+    """{location_id: occupied_qty} — 1 query cho toàn bộ vị trí của kho, tránh
+    N+1 khi warehouse_detail tính badge dung tích cho mỗi dòng bảng "Vị trí
+    lưu trữ"."""
+    rows = (
+        Batch.objects.filter(location__warehouse=warehouse, status__in=PHYSICAL_BATCH_STATUSES)
+        .values('location_id')
+        .annotate(total=Sum(F('qty_received') - F('qty_used')))
+    )
+    return {row['location_id']: row['total'] for row in rows}
+
+
+def capacity_badge(occupied, capacity):
+    """UI badge OK/Gần đầy/Vượt (3.3.a) — None nếu capacity chưa khai (None/0)."""
+    if not capacity:
+        return None
+    level, css = _capacity_level(occupied / capacity)
+    label = {'OVER': 'Vượt dung tích', 'WARN': 'Gần đầy', 'OK': 'Bình thường'}[level]
+    return {'css': css, 'label': label}
