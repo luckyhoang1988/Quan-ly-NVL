@@ -414,6 +414,55 @@ class WarehouseCrudTest(TestCase):
         self.assertTrue(warehouse.is_active)
 
 
+class WarehouseStaffAssignmentTest(TestCase):
+    """``Warehouse.staff`` M2M qua ``WarehouseForm`` (A4 test gap)."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff1 = User.objects.create_user(
+            username='nv1', password='nv-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.staff2 = User.objects.create_user(
+            username='nv2', password='nv-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.client.force_login(self.manager)
+
+    def test_create_assigns_staff(self):
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.MAIN,
+            'staff': [self.staff1.pk, self.staff2.pk],
+        })
+        warehouse = Warehouse.objects.get(code='KHO-HN')
+        self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[warehouse.pk]))
+        self.assertEqual(set(warehouse.staff.all()), {self.staff1, self.staff2})
+
+    def test_update_replaces_staff(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        warehouse.staff.add(self.staff1)
+        self.client.post(reverse('warehouse:warehouse_update', args=[warehouse.pk]), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'staff': [self.staff2.pk],
+        })
+        warehouse.refresh_from_db()
+        self.assertEqual(set(warehouse.staff.all()), {self.staff2})
+
+    def test_non_warehouse_department_user_not_selectable_as_staff(self):
+        """WarehouseForm.__init__ giới hạn queryset staff chỉ department=WAREHOUSE,
+        is_active=True — user phòng khác POST được cũng phải bị từ chối, không chỉ
+        ẩn khỏi dropdown."""
+        outsider = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC, department=User.Department.QC)
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.MAIN,
+            'staff': [outsider.pk],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Warehouse.objects.filter(code='KHO-HN').exists())
+
+
 class LocationCrudTest(TestCase):
     """FR-WM-02: CRUD vị trí lưu trữ (TC-WM-02-*)."""
 
