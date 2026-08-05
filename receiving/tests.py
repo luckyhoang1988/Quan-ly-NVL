@@ -787,7 +787,7 @@ class GrnViewTest(TestCase):
         warning_messages = [str(m) for m in response.context['messages']]
         self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
 
-    def test_TC_WH_CAP_008_receive_qty_survives_staging_location_deactivated_after_start_qc(self):
+    def test_receive_qty_survives_staging_location_deactivated_after_start_qc(self):
         """start_qc() da commit that (GRN -> QC_IN_PROGRESS) khi vi tri Kho cho
         bi vo hieu hoa ngay sau do (gia lap race) -> view khong duoc van 500,
         chi bo qua canh bao dung tich (best-effort, khong chan luong chinh)."""

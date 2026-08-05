@@ -19,7 +19,7 @@
 |---|---|
 | FR-WM-01..06 | Đã tick — CRUD kho/vị trí; tồn/Min-Max/transfer ở `inventory` |
 | Singleton STAGING/SCRAP + type lock | Đã có (DB + form + activate service) |
-| `Warehouse.staff` M2M | Có UI — test còn mỏng |
+| `Warehouse.staff` M2M | Có UI + test (`WarehouseStaffAssignmentTest`, Task 11) |
 | Capacity kho/vị trí | Wave A: soft-warn 3 điểm (detail badge, transfer/QC đích, GRN→STAGING) — hard-block vẫn Wave B |
 | Inventory theo vị trí | Wave A: card "Tồn kho theo vị trí" trên `warehouse_detail`, phân trang 30/trang |
 | Auto-PO khi dưới Min | Còn `⏸️` (Phase 5 / Celery) — **ngoài phạm vi** roadmap này |
