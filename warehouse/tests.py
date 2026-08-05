@@ -731,6 +731,10 @@ class WarehouseSingletonHelpersTest(TestCase):
         with self.assertRaises(ValidationError):
             get_staging_warehouse()
 
+    def test_get_scrap_warehouse_raises_when_missing(self):
+        with self.assertRaises(ValidationError):
+            get_scrap_warehouse()
+
     def test_get_staging_warehouse_returns_active_singleton(self):
         warehouse = Warehouse.objects.create(
             code='KHO-STG', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
