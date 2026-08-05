@@ -1,8 +1,9 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from accounts.models import AuditLog
@@ -66,6 +67,50 @@ class LocationOccupancyServiceTest(TestCase):
         self.assertEqual(batch.status, Batch.Status.CLOSED)
         result_ids = {b.pk for b in location_occupancy(self.warehouse)}
         self.assertNotIn(batch.pk, result_ids)
+
+
+class WarehouseDetailOccupancyCardTest(TestCase):
+    """Card "Tồn kho theo vị trí" (A1) trên warehouse_detail. TC-WH-LOC-003."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        Batch.objects.bulk_create([
+            Batch(
+                product=self.product, batch_code=f'LOT-{i:03d}', supplier=self.supplier,
+                location=self.location, qty_received=1, status=Batch.Status.ACTIVE,
+            )
+            for i in range(35)
+        ])
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_LOC_003_card_paginates_default_30_and_shows_ui_text(self):
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Tồn kho theo vị trí')
+        self.assertEqual(len(response.context['page_obj']), 30)
+        self.assertEqual(response.context['page_obj'].paginator.count, 35)
+
+    def test_query_count_does_not_grow_with_batch_count(self):
+        """N+1 guard (AC-WH-LOC-02): không dùng ngưỡng tuyệt đối (giòn khi Task 8/10
+        thêm query sau này) — so query count khi 35 batch vs 5 batch, phải BẰNG NHAU vì
+        select_related đã gộp join và trang chỉ đọc tối đa page_size=30 dòng bất kể
+        tổng số batch thật có bao nhiêu. Warmup request trước mỗi lần đo để tránh sai
+        lệch do cache nguội (ContentType/session...) — request đầu tiên trong test luôn
+        tốn thêm vài query so với các request sau, không liên quan gì đến N+1."""
+        url = reverse('warehouse:warehouse_detail', args=[self.warehouse.pk])
+        self.client.get(url)  # warmup — bỏ kết quả, không đo
+        with CaptureQueriesContext(connection) as ctx_many:
+            self.client.get(url)
+        Batch.objects.filter(location=self.location).exclude(
+            batch_code__in=[f'LOT-{i:03d}' for i in range(5)]).delete()
+        self.client.get(url)  # warmup lại sau khi đổi dữ liệu
+        with CaptureQueriesContext(connection) as ctx_few:
+            self.client.get(url)
+        self.assertEqual(len(ctx_many.captured_queries), len(ctx_few.captured_queries))
 
 
 class WarehouseCrudTest(TestCase):

@@ -120,6 +120,41 @@
   </div>
 </div>
 
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Tồn kho theo vị trí ({{ page_obj.paginator.count }})</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Vị trí</th>
+            <th>SKU</th>
+            <th>Mã lô</th>
+            <th>Trạng thái</th>
+            <th>Số lượng khả dụng</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in page_obj %}
+          <tr>
+            <td>{{ batch.location.code }}</td>
+            <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
+            <td><a href="{% url 'inventory:batch_detail' batch.pk %}">{{ batch.batch_code }}</a></td>
+            <td><span class="badge bg-secondary">{{ batch.get_status_display }}</span></td>
+            <td>{{ batch.qty_available }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-muted">Không có tồn kho tại vị trí nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
+</div>
+
 {% if user.is_superuser or user.role == 'MANAGER' or user.role == 'ADMIN' %}
 <div class="card shadow-sm mt-3">
   <div class="card-header panel-toolbar">
