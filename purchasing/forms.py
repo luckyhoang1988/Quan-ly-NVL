@@ -164,7 +164,26 @@ class PurchaseRequestItemForm(forms.ModelForm):
         # required_date để null=True/blank=True ở model chỉ vì lý do backfill dữ liệu cũ (mục 8,
         # docs/pur/02_stage2_fsd.md) — bắt buộc ở tầng form cho mọi dòng tạo/sửa từ Stage 2 trở đi.
         self.fields['required_date'].required = True
+        # estimated_unit_price cũng để blank=True ở DB vì dữ liệu cũ, nhưng từ Stage 2 trở đi bắt buộc
+        # nhập ở tầng form theo FSD.
+        self.fields['estimated_unit_price'].required = True
         _bootstrapify(self.fields)
+
+    def clean_required_date(self):
+        required_date = self.cleaned_data.get('required_date')
+        if required_date and required_date < timezone.localdate():
+            raise forms.ValidationError('Ngày cần hàng không được là ngày trong quá khứ.')
+        return required_date
+
+    def clean(self):
+        cleaned_data = super().clean()
+        product = cleaned_data.get('product')
+        budget_category = (cleaned_data.get('budget_category') or '').strip()
+        # budget_category bắt buộc cho mọi dòng; riêng catalog được phép để trống ở input vì model
+        # clean() sẽ fallback tự động từ product.category.
+        if not product and not budget_category:
+            self.add_error('budget_category', 'Trường này là bắt buộc.')
+        return cleaned_data
 
 
 PurchaseRequestItemFormSet = inlineformset_factory(

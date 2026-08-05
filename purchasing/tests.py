@@ -1301,6 +1301,7 @@ class PrCreatePrefillTest(TestCase):
             'items-0-qty_requested': 50,
             'items-0-currency': 'VND',
             'items-0-required_date': timezone.localdate().isoformat(),
+            'items-0-estimated_unit_price': '1000',
         }
         payload.update(overrides)
         return payload
@@ -1430,6 +1431,7 @@ class PurchaseRequestCrudTest(TestCase):
             'items-0-qty_requested': 20,
             'items-0-currency': 'VND',
             'items-0-required_date': timezone.localdate().isoformat(),
+            'items-0-estimated_unit_price': '1000',
         }
         payload.update(overrides)
         return payload
@@ -3595,7 +3597,20 @@ class PurchaseRequestItemFormTest(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_non_catalog_line_valid_without_product(self):
-        form = PurchaseRequestItemForm(data=self._base_data(non_catalog_name='Ống nhựa', non_catalog_uom='cây'))
+        form = PurchaseRequestItemForm(data=self._base_data(
+            non_catalog_name='Ống nhựa', non_catalog_uom='cây', budget_category='Vật tư'))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_TC_PUR_PR_01_002_non_catalog_two_required_fields_note_optional_valid(self):
+        """TC-PUR-PR-01-002: dòng non-catalog đủ 2 field bắt buộc (name/uom), note để
+        trống vẫn hợp lệ."""
+        form = PurchaseRequestItemForm(data=self._base_data(
+            product='',
+            non_catalog_name='Ống nhựa PVC',
+            non_catalog_uom='cây',
+            non_catalog_note='',
+            budget_category='Vật tư',
+        ))
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_neither_product_nor_non_catalog_invalid(self):
@@ -3606,6 +3621,20 @@ class PurchaseRequestItemFormTest(TestCase):
         form = PurchaseRequestItemForm(data=self._base_data(product=self.product.pk, budget_category=''))
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.instance.budget_category, 'Nguyên liệu')
+
+    def test_TC_PUR_PR_01_004_catalog_prefill_hint_and_user_override_persisted(self):
+        """TC-PUR-PR-01-004: catalog line có hint category để prefill trên UI và nếu
+        user sửa budget_category trước khi lưu thì giữ nguyên giá trị user nhập."""
+        form_unbound = PurchaseRequestItemForm()
+        rendered_product = str(form_unbound['product'])
+        self.assertIn('data-category="Nguyên liệu"', rendered_product)
+
+        form = PurchaseRequestItemForm(data=self._base_data(
+            product=self.product.pk,
+            budget_category='Theo dự án',
+        ))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.instance.budget_category, 'Theo dự án')
 
     def test_product_select_with_category_widget_renders_without_error(self):
         Product.objects.create(product_code='NVL-0002', name='Đường', uom='kg', category='Phụ gia')
@@ -3621,6 +3650,26 @@ class PurchaseRequestItemFormTest(TestCase):
         form = PurchaseRequestItemForm(data=data)
         self.assertFalse(form.is_valid())
         self.assertIn('required_date', form.errors)
+
+    def test_required_date_in_past_invalid(self):
+        data = self._base_data(product=self.product.pk)
+        data['required_date'] = (timezone.localdate() - timedelta(days=1)).isoformat()
+        form = PurchaseRequestItemForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('required_date', form.errors)
+
+    def test_missing_estimated_unit_price_invalid(self):
+        data = self._base_data(product=self.product.pk)
+        data['estimated_unit_price'] = ''
+        form = PurchaseRequestItemForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('estimated_unit_price', form.errors)
+
+    def test_non_catalog_missing_budget_category_invalid(self):
+        data = self._base_data(non_catalog_name='Ống nhựa', non_catalog_uom='cây', budget_category='')
+        form = PurchaseRequestItemForm(data=data)
+        self.assertFalse(form.is_valid())
+        self.assertIn('budget_category', form.errors)
 
 
 class PrItemCancelOpenQtyViewTest(TestCase):
@@ -4125,9 +4174,11 @@ class Phase3FullFlowIntegrationTest(TestCase):
             'items-0-product': self.product.pk, 'items-0-qty_requested': '10',
             'items-0-required_date': timezone.localdate().isoformat(), 'items-0-currency': 'VND',
             'items-0-estimated_unit_price': '1000',
+            'items-0-budget_category': 'Nguyên liệu',
             'items-1-non_catalog_name': 'Ống nhựa PVC', 'items-1-non_catalog_uom': 'cây', 'items-1-qty_requested': '5',
             'items-1-required_date': timezone.localdate().isoformat(), 'items-1-currency': 'VND',
             'items-1-estimated_unit_price': '5000',
+            'items-1-budget_category': 'Vật tư',
         }
         response = self.client.post(reverse('purchasing:pr_create'), create_payload)
         self.assertEqual(response.status_code, 302, response.context['form'].errors if response.status_code == 200 else None)
