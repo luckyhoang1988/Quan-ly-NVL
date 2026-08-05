@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
@@ -5,6 +7,7 @@ from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import AuditLog
 from catalog.models import Product
@@ -12,10 +15,10 @@ from inventory.models import Batch, Inventory
 from inventory.services import transfer_stock
 from partners.models import Supplier
 
-from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
+from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, STAGING_AGING_DAYS, Warehouse
 from .services import (
     activate_warehouse, deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse,
-    location_capacity_alerts, location_occupancy,
+    location_capacity_alerts, location_occupancy, ops_snapshot,
 )
 
 User = get_user_model()
@@ -145,6 +148,80 @@ class WarehouseDetailCapacityBadgeTest(TestCase):
         self.assertIsNone(badges['A-04'])
         # tổng occupied kho = 10+95+150 = 255 / capacity 1000 = 0.255 -> OK
         self.assertEqual(response.context['warehouse_badge']['css'], 'bg-success')
+
+
+class OpsSnapshotServiceTest(TestCase):
+    """``ops_snapshot`` (A3). TC-WH-OPS-001, 002, 003."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+
+    def test_TC_WH_OPS_001_staging_counts_active_qty_and_aged(self):
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        location = Location.objects.create(warehouse=staging, code='A-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-FRESH', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.ACTIVE)
+        aged = Batch.objects.create(
+            product=self.product, batch_code='LOT-AGED', supplier=self.supplier,
+            location=location, qty_received=5, status=Batch.Status.ACTIVE)
+        Batch.objects.filter(pk=aged.pk).update(
+            created_at=timezone.now() - timedelta(days=STAGING_AGING_DAYS + 1))
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-CLOSED', supplier=self.supplier,
+            location=location, qty_received=1, qty_used=1, status=Batch.Status.CLOSED)
+        snapshot = ops_snapshot(staging)
+        self.assertEqual(snapshot['active_count'], 2)
+        self.assertEqual(snapshot['active_qty'], 15)
+        self.assertEqual(snapshot['aged_count'], 1)
+
+    def test_TC_WH_OPS_002_main_counts_pending_handoff_only(self):
+        """Mirror fixture pattern của ``inventory.tests.StockTransferPendingReceiptGuardTest``
+        (Grn không cần GrnItem, QcInspection không cần started_at, WarehouseHandoff tạo
+        thẳng bằng ``.objects.create`` — service ``create_handoff()`` chỉ cần khi test
+        quan tâm tới side-effect notify(), không phải trường hợp ở đây)."""
+        from inventory.models import WarehouseHandoff
+        from inventory.services import accept_handoff
+        from purchasing.models import PurchaseOrder
+        from quality.models import QcInspection
+        from receiving.models import Grn
+
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        main = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        other_main = Warehouse.objects.create(code='KHO-HCM', name='Kho HCM')
+        location = Location.objects.create(warehouse=main, code='A-01')
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=qc_user)
+        inspection = QcInspection.objects.create(grn=grn, inspector=qc_user)
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-PENDING', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.create(
+            batch=batch, qc_inspection=inspection, destination_warehouse=main)
+
+        self.assertEqual(ops_snapshot(main)['pending_handoff_count'], 1)
+        self.assertEqual(ops_snapshot(other_main)['pending_handoff_count'], 0)
+
+        accept_handoff(handoff, actor=qc_user)
+        self.assertEqual(ops_snapshot(main)['pending_handoff_count'], 0)
+
+    def test_TC_WH_OPS_003_scrap_sums_quarantine_qty_only(self):
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        location = Location.objects.create(warehouse=scrap, code='A-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-Q1', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.QUARANTINE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-Q2', supplier=self.supplier,
+            location=location, qty_received=5, qty_used=2, status=Batch.Status.QUARANTINE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-CLOSED', supplier=self.supplier,
+            location=location, qty_received=1, qty_used=1, status=Batch.Status.CLOSED)
+        snapshot = ops_snapshot(scrap)
+        self.assertEqual(snapshot['quarantine_qty'], 13)
 
 
 class LocationCapacityAlertsServiceTest(TestCase):

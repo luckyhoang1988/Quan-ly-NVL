@@ -9,6 +9,9 @@ MIN_LOCATIONS_PER_WAREHOUSE = 10
 #: A2 (Wave A hardening): occupied/capacity >= ngưỡng này -> "gần đầy" (soft-warn, không chặn).
 CAPACITY_WARN_RATIO = 0.9
 
+#: A3 (Wave A hardening): batch STAGING ACTIVE có created_at quá số ngày này -> tính "tồn đọng".
+STAGING_AGING_DAYS = 3
+
 
 class Warehouse(models.Model):
     """Kho vật lý (FR-WM-01).

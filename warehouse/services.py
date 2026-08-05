@@ -4,14 +4,17 @@
 ``'warehouse.Warehouse'``/``'warehouse.Location'``) nên import trực tiếp ở đây
 không tạo vòng lặp.
 """
+from datetime import datetime, time, timedelta
+
 from django.core.exceptions import ValidationError
-from django.db.models import F, Sum
+from django.db.models import Count, F, Sum
+from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
-from inventory.models import Batch, Inventory, PHYSICAL_BATCH_STATUSES
+from inventory.models import Batch, Inventory, PHYSICAL_BATCH_STATUSES, WarehouseHandoff
 
-from .models import CAPACITY_WARN_RATIO, Warehouse
+from .models import CAPACITY_WARN_RATIO, STAGING_AGING_DAYS, Warehouse
 
 
 def _get_singleton(warehouse_type, label):
@@ -160,3 +163,39 @@ def capacity_badge(occupied, capacity):
     level, css = _capacity_level(occupied / capacity)
     label = {'OVER': 'Vượt dung tích', 'WARN': 'Gần đầy', 'OK': 'Bình thường'}[level]
     return {'css': css, 'label': label}
+
+
+def _staging_ops_snapshot(warehouse):
+    batches = Batch.objects.filter(location__warehouse=warehouse, status=Batch.Status.ACTIVE)
+    agg = batches.aggregate(count=Count('pk'), qty=Sum(F('qty_received') - F('qty_used')))
+    cutoff_date = timezone.localdate() - timedelta(days=STAGING_AGING_DAYS)
+    cutoff_dt = timezone.make_aware(datetime.combine(cutoff_date, time.min))
+    return {
+        'active_count': agg['count'] or 0,
+        'active_qty': agg['qty'] or 0,
+        'aged_count': batches.filter(created_at__lt=cutoff_dt).count(),
+    }
+
+
+def _main_ops_snapshot(warehouse):
+    pending_handoff_count = WarehouseHandoff.objects.filter(
+        destination_warehouse=warehouse, status=WarehouseHandoff.Status.PENDING,
+    ).count()
+    return {'pending_handoff_count': pending_handoff_count}
+
+
+def _scrap_ops_snapshot(warehouse):
+    qty = Batch.objects.filter(
+        location__warehouse=warehouse, status=Batch.Status.QUARANTINE,
+    ).aggregate(total=Sum(F('qty_received') - F('qty_used')))['total'] or 0
+    return {'quarantine_qty': qty}
+
+
+def ops_snapshot(warehouse):
+    """A3: KPI vận hành theo warehouse_type — trả dict cho đúng 1 loại kho.
+    Template chọn khối hiển thị theo obj.warehouse_type, không theo key dict."""
+    if warehouse.warehouse_type == Warehouse.WarehouseType.STAGING:
+        return _staging_ops_snapshot(warehouse)
+    if warehouse.warehouse_type == Warehouse.WarehouseType.MAIN:
+        return _main_ops_snapshot(warehouse)
+    return _scrap_ops_snapshot(warehouse)
