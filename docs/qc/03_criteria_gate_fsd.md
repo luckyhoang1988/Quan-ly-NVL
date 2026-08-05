@@ -1,6 +1,6 @@
 # QC Expansion — 03. FSD Wave 2: Criteria Gate Nhẹ
 
-> Trạng thái: **Spec — chưa triển khai**
+> Trạng thái: **Đã triển khai** — xem [implementation plan](04_criteria_gate_implementation_plan.md)
 > Nguồn: [`qc_plan.md`](../../qc_plan.md) §2 mục P1 / §4 lộ trình (Wave 2)
 > Phạm vi: bắt buộc ghi nhận ≥1 dòng `QcInspectionItem` trước khi ghi kết quả QC tổng, cảnh báo
 > (không chặn) khi kết quả tổng mâu thuẫn với dòng criteria đã lưu, và gợi ý nhập tên tiêu chuẩn

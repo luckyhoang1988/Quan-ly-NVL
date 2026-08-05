@@ -436,6 +436,21 @@ rather than rediscovering the failure.
   (`override_allocation` itself only needs `GIN → Allocation → Batch`, since it never touches
   `Inventory`) — and re-reading `gin.status`/`allocation`/`new_batch` fresh from the DB under those locks
   before repeating every existing check, rather than trusting the caller's objects at all.
+- **A gate check on a related/child queryset needs to run again after the lock, not just before it** — a
+  pre-lock check is only a fail-fast UX shortcut; it does not itself close the race, because
+  `select_for_update()` on the parent row does not lock a separate child table. `quality.services.qc_pass`/
+  `qc_fail`/`qc_partial_pass` (Wave 2 criteria gate) originally checked `inspection.items.exists()` once,
+  before `_lock_pending_inspection()` — but `quality.views.qc_result` has a second, independent `<form>`
+  (`QcInspectionItemFormSet`, `can_delete=True`) that saves in its own request/transaction, so a concurrent
+  submit deleting every `QcInspectionItem` could commit in the gap between the pre-lock check and the lock,
+  leaving the first transaction to proceed on stale information. Fixed via `_require_criteria_items()`
+  called twice — once before `_lock_pending_inspection()` (fail fast) and again immediately after, before
+  any Batch/Inventory side-effect. Regression-tested deterministically (no threading needed) by patching
+  `_lock_pending_inspection` with a `side_effect` that deletes the child rows before delegating to the real
+  function — the established substitute pattern for this class of bug, same shape as the `get_object_or_404`
+  side_effect patch used for the `*_update` TOCTOU bullet above. Apply generally: whenever two independent
+  forms/views can both act on state a service function gates on, a pre-lock check alone is not sufficient — it
+  must be repeated after the lock, right before the first mutation.
 - **A per-target quantity check must sum every existing claim on that target, not just the one being
   changed** — `override_allocation` originally checked `new_batch.qty_available` against only the
   allocation being overridden, so two allocations from the same GIN (e.g. one `GinItem` FIFO-split across

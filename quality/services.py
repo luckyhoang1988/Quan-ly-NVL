@@ -92,6 +92,24 @@ def _credit_inventory(product, warehouse, qty, batch=None, reference='', actor=N
     return inv
 
 
+def _require_criteria_items(inspection):
+    """Chặn PASS/FAIL/PARTIAL khi phiếu QC chưa có dòng kết quả tiêu chuẩn nào
+    (Wave 2 — AC-QC-CRIT-01). Gọi 2 lần trong mỗi hàm ``qc_pass``/``qc_fail``/
+    ``qc_partial_pass``: TRƯỚC ``_lock_pending_inspection`` (fail nhanh, không
+    tốn khoá khi rõ ràng chưa có item) và NGAY SAU (``_lock_pending_inspection``
+    chỉ khoá ``Grn``/``QcInspection``, không khoá được bảng ``QcInspectionItem``
+    — form riêng "Lưu kết quả từng tiêu chuẩn" (``QcInspectionItemFormSet``,
+    ``quality.views.qc_result``) xoá hết dòng criteria qua 1 request/transaction
+    độc lập vẫn commit được giữa 2 lần gọi này, nên phải đọc lại NGAY SAU khi đã
+    khoá, TRƯỚC khi đụng Batch/Inventory — cùng dạng TOCTOU đã chốt cho các
+    view ``*_update`` DRAFT-only, xem CLAUDE.md).
+    """
+    if not inspection.items.exists():
+        raise ValidationError(
+            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
+        )
+
+
 def _lock_pending_inspection(inspection):
     """Khoá + tải lại ``Grn`` rồi ``QcInspection`` mới nhất (theo đúng thứ tự
     ``Grn -> QcInspection`` mà ``receiving.services.cancel_grn`` /
@@ -284,11 +302,9 @@ def qc_pass(inspection, actor=None, location=None, ip_address=None, assigned_to=
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     if not location.warehouse.is_active:
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
-    if not inspection.items.exists():
-        raise ValidationError(
-            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
-        )
+    _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
+    _require_criteria_items(inspection)
     staging_warehouse = get_staging_warehouse()
 
     for item in grn.items.select_for_update().order_by('product_id', 'pk'):
@@ -338,11 +354,9 @@ def qc_fail(inspection, actor=None, reason='QC Fail', ip_address=None):
     dần — cùng lý do đã nêu ở ``qc_pass``/``start_qc`` (BUG-17, 2026-07-29,
     xem CLAUDE.md).
     """
-    if not inspection.items.exists():
-        raise ValidationError(
-            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
-        )
+    _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
+    _require_criteria_items(inspection)
     staging_warehouse = get_staging_warehouse()
     scrap_warehouse = get_scrap_warehouse()
     scrap_location = get_default_location(scrap_warehouse)
@@ -401,11 +415,9 @@ def qc_partial_pass(inspection, item_results, actor=None, location=None, ip_addr
         raise ValidationError('Vị trí đích PASS phải thuộc kho loại "Kho thành phẩm".')
     if not location.warehouse.is_active:
         raise ValidationError(f'Kho "{location.warehouse}" đã ngừng hoạt động.')
-    if not inspection.items.exists():
-        raise ValidationError(
-            'Phải nhập ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn trước khi ghi nhận kết quả QC.'
-        )
+    _require_criteria_items(inspection)
     grn, inspection = _lock_pending_inspection(inspection)
+    _require_criteria_items(inspection)
     items = list(grn.items.select_for_update().order_by('product_id', 'pk'))
 
     missing = {item.pk for item in items} - set(item_results)

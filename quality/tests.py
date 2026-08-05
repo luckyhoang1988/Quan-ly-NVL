@@ -2,6 +2,7 @@ import datetime
 import shutil
 import tempfile
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -24,6 +25,7 @@ from .forms import QcInspectionItemForm, QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem, validate_image_upload
 from .services import (
     _get_staging_batch,
+    _lock_pending_inspection,
     overdue_inspections,
     qc_fail,
     qc_partial_pass,
@@ -416,6 +418,61 @@ class QcCriteriaGateTest(QcServiceTestBase):
         self.assertEqual(inspection.status, QcInspection.Result.PASS)
 
 
+class QcCriteriaGateToctouTest(QcServiceTestBase):
+    """TOCTOU giữa lần check ``inspection.items.exists()`` SỚM (trước khoá) và
+    lúc khoá thật (``_lock_pending_inspection``): form riêng "Lưu kết quả từng
+    tiêu chuẩn" (``QcInspectionItemFormSet``, có ``can_delete``) chạy trên 1
+    request/transaction độc lập, không bị khoá ``Grn``/``QcInspection`` của
+    ``qc_pass``/``qc_fail``/``qc_partial_pass`` chặn — 1 request khác có thể
+    xoá hết dòng criteria và commit đúng lúc request hiện tại đã qua check sớm
+    nhưng chưa khoá xong. Mô phỏng bằng ``side_effect`` patch lên
+    ``_lock_pending_inspection`` (xoá item ngay trước khi khoá thật chạy) thay
+    vì threading thật — cùng kỹ thuật ``receiving.tests`` đã dùng cho lớp TOCTOU
+    ``*_update`` (patch ``get_object_or_404`` với side_effect mutate state giữa
+    2 lần gọi, xem CLAUDE.md)."""
+
+    def _delete_items_then_lock(self):
+        def _sneaky_lock(inspection):
+            QcInspectionItem.objects.filter(inspection=inspection).delete()
+            return _lock_pending_inspection(inspection)
+
+        return patch('quality.services._lock_pending_inspection', side_effect=_sneaky_lock)
+
+    def test_qc_pass_rejected_when_items_deleted_between_precheck_and_lock(self):
+        inspection = self._start_qc()
+        self._add_criteria_item(inspection)
+        with self._delete_items_then_lock():
+            with self.assertRaises(ValidationError):
+                qc_pass(inspection, actor=self.qc_user, location=self.location)
+        self.grn.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertFalse(Batch.objects.filter(status=Batch.Status.PENDING_RECEIPT).exists())
+        inv = Inventory.objects.get(product=self.product, warehouse=self.staging_warehouse)
+        self.assertEqual(inv.qty_on_hand, 10)
+
+    def test_qc_fail_rejected_when_items_deleted_between_precheck_and_lock(self):
+        inspection = self._start_qc()
+        self._add_criteria_item(inspection)
+        with self._delete_items_then_lock():
+            with self.assertRaises(ValidationError):
+                qc_fail(inspection, actor=self.qc_user, reason='x')
+        self.grn.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertFalse(Batch.objects.filter(status=Batch.Status.QUARANTINE).exists())
+
+    def test_qc_partial_pass_rejected_when_items_deleted_between_precheck_and_lock(self):
+        inspection = self._start_qc()
+        self._add_criteria_item(inspection)
+        with self._delete_items_then_lock():
+            with self.assertRaises(ValidationError):
+                qc_partial_pass(
+                    inspection, {self.grn_item.pk: 6}, actor=self.qc_user, location=self.location)
+        self.grn.refresh_from_db()
+        self.assertEqual(self.grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertFalse(Batch.objects.filter(status=Batch.Status.PENDING_RECEIPT).exists())
+        self.assertFalse(Batch.objects.filter(status=Batch.Status.QUARANTINE).exists())
+
+
 class WarehouseHandoffTest(QcServiceTestBase):
     """Bàn giao batch PASS/PARTIAL_PASS (``PENDING_RECEIPT``) cho kho xác nhận
     nhận hàng (Phase D, mục 5/6) — ``create_handoff``/``accept_handoff``/
@@ -680,6 +737,25 @@ class QcResultViewTest(QcServiceTestBase):
         response = self.client.get(reverse('quality:qc_result', args=[empty_grn.pk]))
         self.assertContains(response, 'disabled', count=3)
         self.assertContains(response, 'Chưa có dòng kết quả tiêu chuẩn nào')
+
+    def test_TC_QC_CRIT_005_02_post_action_pass_bypass_blocked_when_no_items(self):
+        empty_grn = Grn.objects.create(po=self.po, supplier=self.supplier, created_by=self.purchasing_user)
+        empty_item = GrnItem.objects.create(
+            grn=empty_grn, product=self.product, qty_ordered=5, qty_received=5,
+            unit_price=Decimal('15000.00'),
+        )
+        start_qc(empty_grn, self.qc_user, actor=self.qc_user)
+        response = self.client.post(reverse('quality:qc_result', args=[empty_grn.pk]), {
+            'action': 'pass', 'location': self.location.pk, 'reason': '',
+            'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1',
+            'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+            'items-0-id': empty_item.pk, 'items-0-qty_pass': 5,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'ít nhất 1 dòng kết quả kiểm tra tiêu chuẩn')
+        empty_grn.refresh_from_db()
+        self.assertEqual(empty_grn.status, Grn.Status.QC_IN_PROGRESS)
+        self.assertFalse(Batch.objects.filter(grn_item=empty_item, status=Batch.Status.PENDING_RECEIPT).exists())
 
     def test_TC_QC_CRIT_006_fail_item_warns_near_pass_partial_buttons(self):
         self._add_criteria_item(self.inspection, result=QcInspectionItem.Result.FAIL)
