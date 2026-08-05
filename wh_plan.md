@@ -8,7 +8,7 @@
 ## Todos
 
 - [x] **Ngay (độc lập Wave A):** xác minh test cover BR-WM-003/004 rồi tick checkbox trên `BACKLOG.md` — xong, xem chi tiết dưới mục A4
-- [ ] Wave A — Hardening (inventory theo vị trí, capacity soft-warn gồm STAGING receipt, ops snapshot, test/doc)
+- [x] Wave A — Hardening (inventory theo vị trí, capacity soft-warn gồm STAGING receipt, ops snapshot, test/doc)
 - [ ] Wave B — Mở rộng vận hành (zone/aisle, capacity hard-block, putaway suggest, nhãn vị trí) — chỉ khi vận hành thật nghẽn sau Wave A
 - [ ] Viết FSD + implementation plan Wave A tại `docs/wh/01_*.md` / `02_*.md` trước khi code
 - [ ] Wave B: chỉ viết `docs/wh/03_*.md` / `04_*.md` sau khi Ryan xác nhận cần
@@ -20,10 +20,14 @@
 | FR-WM-01..06 | Đã tick — CRUD kho/vị trí; tồn/Min-Max/transfer ở `inventory` |
 | Singleton STAGING/SCRAP + type lock | Đã có (DB + form + activate service) |
 | `Warehouse.staff` M2M | Có UI — test còn mỏng |
-| Capacity kho/vị trí | Field metadata — **chưa enforce / chưa cảnh báo** |
-| Inventory theo vị trí | Có qua Batch — **chưa** bảng trên `warehouse_detail` |
+| Capacity kho/vị trí | Wave A: soft-warn 3 điểm (detail badge, transfer/QC đích, GRN→STAGING) — hard-block vẫn Wave B |
+| Inventory theo vị trí | Wave A: card "Tồn kho theo vị trí" trên `warehouse_detail`, phân trang 30/trang |
 | Auto-PO khi dưới Min | Còn `⏸️` (Phase 5 / Celery) — **ngoài phạm vi** roadmap này |
 | BR-WM-003 / BR-WM-004 | **Đã tick** trên BACKLOG — test `TC_GIN_ISSUE_001` / `TC_QC_START_002_001` xác nhận |
+
+> Lưu ý kỹ thuật (Wave A): `capacity == 0` được xử lý giống hệt `capacity is None` (không hiện
+> badge/cảnh báo) — tránh `ZeroDivisionError`, xem "Ràng buộc chung" trong
+> `docs/wh/02_wave_a_implementation_plan.md`.
 
 ## Gap vận hành đáng làm
 
