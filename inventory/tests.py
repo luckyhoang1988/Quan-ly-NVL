@@ -1169,6 +1169,32 @@ class StockTransferViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class TransferCreateCapacityAlertTest(TestCase):
+    """A2(b): transfer_create cảnh báo (không chặn) khi đích gần/vượt dung tích. TC-WH-CAP-004."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.location2 = Location.objects.create(warehouse=self.warehouse, code='A-02', capacity=10)
+        self.batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-0001', supplier=self.supplier,
+            location=self.location, qty_received=20,
+        )
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=20)
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_CAP_004_transfer_over_capacity_still_created_with_warning(self):
+        response = self.client.post(reverse('inventory:transfer_create'), {
+            'batch': self.batch.pk, 'to_location': self.location2.pk, 'qty': 20, 'note': '',
+        }, follow=True)
+        self.assertEqual(StockTransfer.objects.count(), 1)
+        warning_messages = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
+
+
 class InventoryListPaginationFilterTest(TestCase):
     """Phân trang + bộ lọc (warehouse/tìm kiếm) trên inventory_list."""
 
