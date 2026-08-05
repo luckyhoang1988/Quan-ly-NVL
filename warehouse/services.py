@@ -5,12 +5,13 @@
 không tạo vòng lặp.
 """
 from django.core.exceptions import ValidationError
+from django.db.models import F, Sum
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
 from inventory.models import Batch, Inventory, PHYSICAL_BATCH_STATUSES
 
-from .models import Warehouse
+from .models import CAPACITY_WARN_RATIO, Warehouse
 
 
 def _get_singleton(warehouse_type, label):
@@ -93,3 +94,48 @@ def location_occupancy(warehouse):
         .select_related('product', 'location')
         .order_by('location__code', 'batch_code')
     )
+
+
+def location_occupied_qty(location):
+    """A2: occupied qty tại 1 vị trí = tổng qty_available mọi batch vật lý (FSD 3.1)."""
+    return Batch.objects.filter(
+        location=location, status__in=PHYSICAL_BATCH_STATUSES,
+    ).aggregate(total=Sum(F('qty_received') - F('qty_used')))['total'] or 0
+
+
+def warehouse_occupied_qty(warehouse):
+    """A2: occupied qty cấp kho = tổng occupied qty mọi location thuộc kho đó
+    (kể cả location đang được kiểm tra riêng — xem AC-WH-CAP-08)."""
+    return Batch.objects.filter(
+        location__warehouse=warehouse, status__in=PHYSICAL_BATCH_STATUSES,
+    ).aggregate(total=Sum(F('qty_received') - F('qty_used')))['total'] or 0
+
+
+def _capacity_level(ratio):
+    """('OVER'|'WARN'|'OK', css class Bootstrap) theo ngưỡng CAPACITY_WARN_RATIO/1.0."""
+    if ratio >= 1.0:
+        return 'OVER', 'bg-danger'
+    if ratio >= CAPACITY_WARN_RATIO:
+        return 'WARN', 'bg-warning text-dark'
+    return 'OK', 'bg-success'
+
+
+def location_capacity_alerts(location):
+    """A2(b)(c): list[str] cảnh báo (không chặn), gọi SAU khi transfer_stock()/
+    qc_pass()/qc_partial_pass()/start_qc() đã commit. capacity None hoặc 0 (chưa
+    khai) -> bỏ qua cấp đó. 0/1/2 message tuỳ mấy cấp đạt ngưỡng gần đầy/vượt."""
+    alerts = []
+    if location.capacity:
+        level, _ = _capacity_level(location_occupied_qty(location) / location.capacity)
+        if level == 'OVER':
+            alerts.append(f'Vị trí "{location}" đã vượt dung tích.')
+        elif level == 'WARN':
+            alerts.append(f'Vị trí "{location}" gần đầy dung tích.')
+    warehouse = location.warehouse
+    if warehouse.capacity:
+        level, _ = _capacity_level(warehouse_occupied_qty(warehouse) / warehouse.capacity)
+        if level == 'OVER':
+            alerts.append(f'Kho "{warehouse.code}" đã vượt dung tích.')
+        elif level == 'WARN':
+            alerts.append(f'Kho "{warehouse.code}" gần đầy dung tích.')
+    return alerts

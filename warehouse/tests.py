@@ -15,7 +15,7 @@ from partners.models import Supplier
 from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
 from .services import (
     activate_warehouse, deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse,
-    location_occupancy,
+    location_capacity_alerts, location_occupancy,
 )
 
 User = get_user_model()
@@ -111,6 +111,63 @@ class WarehouseDetailOccupancyCardTest(TestCase):
         with CaptureQueriesContext(connection) as ctx_few:
             self.client.get(url)
         self.assertEqual(len(ctx_many.captured_queries), len(ctx_few.captured_queries))
+
+
+class LocationCapacityAlertsServiceTest(TestCase):
+    """``location_capacity_alerts`` (A2). TC-WH-CAP-001, 002, 003, 009."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+
+    def _batch(self, code, location, qty_received):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier,
+            location=location, qty_received=qty_received, status=Batch.Status.ACTIVE,
+        )
+
+    def test_TC_WH_CAP_001_empty_when_both_capacity_none(self):
+        self._batch('LOT-01', self.location, 100)
+        self.assertEqual(location_capacity_alerts(self.location), [])
+
+    def test_capacity_zero_treated_as_not_configured(self):
+        self.location.capacity = 0
+        self.location.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 5)
+        self.assertEqual(location_capacity_alerts(self.location), [])
+
+    def test_TC_WH_CAP_002_location_near_full_warehouse_capacity_none(self):
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 95)  # ratio 0.95
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn('gần đầy', alerts[0])
+
+    def test_TC_WH_CAP_003_location_over_capacity_warehouse_below_warn(self):
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self.warehouse.capacity = 10000
+        self.warehouse.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 120)  # location ratio 1.2, warehouse ratio 0.012
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn('vượt dung tích', alerts[0])
+
+    def test_TC_WH_CAP_009_both_levels_over_warn_return_two_messages(self):
+        """AC-WH-CAP-08: warehouse ratio cộng dồn MỌI location của kho, gồm cả
+        location đang xét (100) cộng location2 (90) -> 190/200 = 0.95 >= 0.9."""
+        location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self.warehouse.capacity = 200
+        self.warehouse.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 100)  # location ratio 1.0 -> OVER
+        self._batch('LOT-02', location2, 90)
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 2)
 
 
 class WarehouseCrudTest(TestCase):
