@@ -787,6 +787,34 @@ class GrnViewTest(TestCase):
         warning_messages = [str(m) for m in response.context['messages']]
         self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
 
+    def test_TC_WH_CAP_008_receive_qty_survives_staging_location_deactivated_after_start_qc(self):
+        """start_qc() da commit that (GRN -> QC_IN_PROGRESS) khi vi tri Kho cho
+        bi vo hieu hoa ngay sau do (gia lap race) -> view khong duoc van 500,
+        chi bo qua canh bao dung tich (best-effort, khong chan luong chinh)."""
+        grn = self._create_grn(status=Grn.Status.PENDING_QC)
+        item = grn.items.first()
+        staging_location = Location.objects.get(warehouse=self.staging_warehouse, code='A-01')
+
+        real_start_qc = receiving_views.start_qc
+
+        def _start_qc_then_deactivate_location(*args, **kwargs):
+            inspection = real_start_qc(*args, **kwargs)
+            staging_location.is_active = False
+            staging_location.save(update_fields=['is_active'])
+            return inspection
+
+        with patch('receiving.views.start_qc', side_effect=_start_qc_then_deactivate_location):
+            response = self.client.post(reverse('receiving:grn_receive_qty', args=[grn.pk]), {
+                'items-TOTAL_FORMS': '1', 'items-INITIAL_FORMS': '1',
+                'items-MIN_NUM_FORMS': '0', 'items-MAX_NUM_FORMS': '1000',
+                'items-0-id': item.pk, 'items-0-qty_received': 10,
+                'inspector': self.qc_user.pk,
+            }, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, Grn.Status.QC_IN_PROGRESS)
+
 
 class GrnPoQtyValidationTest(TestCase):
     """BR mục 2a "Qty validation" (FR-GRN-07 hard cap) + FR-GRN-04 (nhận nhiều

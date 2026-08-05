@@ -338,9 +338,13 @@ def grn_receive_qty(request, pk):
         else:
             for alert in tolerance_alerts(obj):
                 messages.warning(request, alert)
-            staging_location = get_default_location(get_staging_warehouse())
-            for alert in location_capacity_alerts(staging_location):
-                messages.warning(request, alert)
+            try:
+                staging_location = get_default_location(get_staging_warehouse())
+            except ValidationError:
+                staging_location = None
+            if staging_location is not None:
+                for alert in location_capacity_alerts(staging_location):
+                    messages.warning(request, alert)
             messages.success(request, f'Đã submit GRN "{obj.grn_no}" sang QC ({inspection.qc_no}).')
             return redirect('receiving:grn_detail', pk=obj.pk)
     return render(request, 'receiving/grn_receive_qty.html', {
