@@ -37,25 +37,11 @@ from django.utils import timezone
 
 from accounts.audit import log_action
 from accounts.models import AuditLog
-from inventory.models import Batch, Inventory, StockMovement, WarehouseHandoff
+from inventory.models import PHYSICAL_BATCH_STATUSES, Batch, Inventory, StockMovement, WarehouseHandoff
 from inventory.services import record_movement
 from warehouse.services import get_default_location
 
 from .models import StocktakeItem, StocktakeSession
-
-#: Status nào cũng tính là tồn vật lý đang nằm trong kho (phản ánh trong
-#: ``Inventory.qty_on_hand`` — xem CLAUDE.md "Batch status enum"), trừ
-#: ``CLOSED`` (đã dùng hết, ``qty_available`` luôn 0). Dùng khi cần trừ đúng
-#: phần thiếu phát hiện qua kiểm kê, KHÁC với danh sách FIFO-eligible hẹp hơn
-#: (``ACTIVE``/``PARTIAL_USED`` only) mà ``inventory.services.
-#: suggest_fifo_batches`` dùng để chọn batch cho GIN xuất kho.
-PHYSICAL_BATCH_STATUSES = [
-    Batch.Status.ACTIVE,
-    Batch.Status.PARTIAL_USED,
-    Batch.Status.PENDING_RECEIPT,
-    Batch.Status.EXPIRED,
-    Batch.Status.QUARANTINE,
-]
 
 
 @transaction.atomic

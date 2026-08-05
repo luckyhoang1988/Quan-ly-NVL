@@ -310,9 +310,13 @@ class WarehouseDetailOccupancyCardTest(TestCase):
         self.assertEqual(len(ctx_many.captured_queries), len(ctx_few.captured_queries))
 ```
 
-- [ ] **Bước 2: Chạy test, xác nhận FAIL** — kỳ vọng `KeyError: 'page_obj'` (context chưa có key này)
-  ở cả 2 method (`test_query_count_does_not_grow_with_batch_count` FAIL ngay ở request đầu, trước
-  khi kịp xoá batch).
+- [ ] **Bước 2: Chạy test, xác nhận FAIL** — `test_TC_WH_LOC_003_card_paginates_default_30_and_shows_ui_text`
+  kỳ vọng `KeyError: 'page_obj'` (context chưa có key này). `test_query_count_does_not_grow_with_batch_count`
+  **PASS ngay từ bước này** — trước Task 3, `warehouse_detail` chưa gọi `location_occupancy`/`Batch` nào cả,
+  nên query count không phụ thuộc số batch (0 dù 35 hay 5), assertEqual tự nhiên đúng. Đây không phải test
+  đang kiểm hành vi đã tồn tại theo nghĩa xấu (không có code nào để xoá/viết lại) — nó là regression guard
+  cho N+1 sẽ có nguy cơ xuất hiện ở Task 5-10 (khi các view khác/`location_occupied_qty_map` thêm query),
+  nên chấp nhận PASS sớm ở đây, không cần sửa lại test.
 
 - [ ] **Bước 3: Viết code tối thiểu để PASS**
 ```python

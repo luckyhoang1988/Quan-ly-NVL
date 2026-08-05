@@ -21,7 +21,7 @@ from warehouse.models import Location, Warehouse
 
 from .admin import BatchAdmin, InventoryAdmin, StockMovementAdmin, StockTransferAdmin
 from .forms import StockTransferForm
-from .models import Batch, Inventory, StockMovement, StockTransfer, WarehouseHandoff
+from .models import Batch, Inventory, PHYSICAL_BATCH_STATUSES, StockMovement, StockTransfer, WarehouseHandoff
 from .services import (
     accept_handoff, calculate_eoq, expiring_soon_batches, move_batch_qty, record_movement, reject_handoff,
     release_quarantine_to_main, return_quarantine_to_supplier, scrap_writeoff,
@@ -29,6 +29,24 @@ from .services import (
 )
 
 User = get_user_model()
+
+
+class PhysicalBatchStatusesConstantTest(TestCase):
+    """Refactor Wave A A1: định nghĩa duy nhất tại inventory.models (FSD 2.1)."""
+
+    def test_contains_every_non_closed_status(self):
+        self.assertEqual(
+            set(PHYSICAL_BATCH_STATUSES),
+            {
+                Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
+                Batch.Status.EXPIRED, Batch.Status.QUARANTINE,
+            },
+        )
+        self.assertNotIn(Batch.Status.CLOSED, PHYSICAL_BATCH_STATUSES)
+
+    def test_stocktake_services_reexports_same_object(self):
+        import stocktake.services as stocktake_services
+        self.assertIs(stocktake_services.PHYSICAL_BATCH_STATUSES, PHYSICAL_BATCH_STATUSES)
 
 
 class InventoryModelTest(TestCase):
