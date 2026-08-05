@@ -1,18 +1,315 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import AuditLog
+from catalog.models import Product
+from inventory.models import Batch, Inventory
+from inventory.services import transfer_stock
+from partners.models import Supplier
 
-from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, Warehouse
+from .models import Location, MIN_LOCATIONS_PER_WAREHOUSE, STAGING_AGING_DAYS, Warehouse
 from .services import (
     activate_warehouse, deactivate_warehouse, get_default_location, get_scrap_warehouse, get_staging_warehouse,
+    location_capacity_alerts, location_occupancy, ops_snapshot,
 )
 
 User = get_user_model()
+
+
+class LocationOccupancyServiceTest(TestCase):
+    """``location_occupancy`` (A1). TC-WH-LOC-001, 002, 004."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        self.other_warehouse = Warehouse.objects.create(code='KHO-HCM', name='Kho HCM')
+        self.other_location = Location.objects.create(warehouse=self.other_warehouse, code='A-01')
+
+    def _batch(self, code, location, status, qty_received=10, qty_used=0):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier,
+            location=location, qty_received=qty_received, qty_used=qty_used, status=status,
+        )
+
+    def test_TC_WH_LOC_001_excludes_closed_and_other_warehouse(self):
+        active = self._batch('LOT-01', self.location, Batch.Status.ACTIVE)
+        self._batch('LOT-02', self.location, Batch.Status.CLOSED, qty_used=10)
+        self._batch('LOT-03', self.other_location, Batch.Status.ACTIVE)
+        result = list(location_occupancy(self.warehouse))
+        self.assertEqual(result, [active])
+
+    def test_TC_WH_LOC_002_includes_every_physical_status(self):
+        statuses = [
+            Batch.Status.ACTIVE, Batch.Status.PARTIAL_USED, Batch.Status.PENDING_RECEIPT,
+            Batch.Status.EXPIRED, Batch.Status.QUARANTINE,
+        ]
+        expected_codes = set()
+        for i, status in enumerate(statuses):
+            code = f'LOT-{i:02d}'
+            self._batch(code, self.location, status, qty_used=1 if status == Batch.Status.PARTIAL_USED else 0)
+            expected_codes.add(code)
+        result_codes = {b.batch_code for b in location_occupancy(self.warehouse)}
+        self.assertEqual(result_codes, expected_codes)
+
+    def test_TC_WH_LOC_004_batch_closed_by_transfer_is_excluded(self):
+        location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        batch = self._batch('LOT-01', self.location, Batch.Status.ACTIVE, qty_received=10)
+        Inventory.objects.create(product=self.product, warehouse=self.warehouse, qty_on_hand=10)
+        transfer_stock(batch=batch, to_location=location2, qty=10, actor=None)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, Batch.Status.CLOSED)
+        result_ids = {b.pk for b in location_occupancy(self.warehouse)}
+        self.assertNotIn(batch.pk, result_ids)
+
+
+class WarehouseDetailOccupancyCardTest(TestCase):
+    """Card "Tồn kho theo vị trí" (A1) trên warehouse_detail. TC-WH-LOC-003."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+        Batch.objects.bulk_create([
+            Batch(
+                product=self.product, batch_code=f'LOT-{i:03d}', supplier=self.supplier,
+                location=self.location, qty_received=1, status=Batch.Status.ACTIVE,
+            )
+            for i in range(35)
+        ])
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_LOC_003_card_paginates_default_30_and_shows_ui_text(self):
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Tồn kho theo vị trí')
+        self.assertEqual(len(response.context['page_obj']), 30)
+        self.assertEqual(response.context['page_obj'].paginator.count, 35)
+
+    def test_query_count_does_not_grow_with_batch_count(self):
+        """N+1 guard (AC-WH-LOC-02): không dùng ngưỡng tuyệt đối (giòn khi Task 8/10
+        thêm query sau này) — so query count khi 35 batch vs 5 batch, phải BẰNG NHAU vì
+        select_related đã gộp join và trang chỉ đọc tối đa page_size=30 dòng bất kể
+        tổng số batch thật có bao nhiêu. Warmup request trước mỗi lần đo để tránh sai
+        lệch do cache nguội (ContentType/session...) — request đầu tiên trong test luôn
+        tốn thêm vài query so với các request sau, không liên quan gì đến N+1."""
+        url = reverse('warehouse:warehouse_detail', args=[self.warehouse.pk])
+        self.client.get(url)  # warmup — bỏ kết quả, không đo
+        with CaptureQueriesContext(connection) as ctx_many:
+            self.client.get(url)
+        Batch.objects.filter(location=self.location).exclude(
+            batch_code__in=[f'LOT-{i:03d}' for i in range(5)]).delete()
+        self.client.get(url)  # warmup lại sau khi đổi dữ liệu
+        with CaptureQueriesContext(connection) as ctx_few:
+            self.client.get(url)
+        self.assertEqual(len(ctx_many.captured_queries), len(ctx_few.captured_queries))
+
+
+class WarehouseDetailCapacityBadgeTest(TestCase):
+    """Badge OK/Gần đầy/Vượt trên warehouse_detail (A2.a). TC-WH-CAP-008."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội', capacity=1000)
+        self.loc_ok = Location.objects.create(warehouse=self.warehouse, code='A-01', capacity=100)
+        self.loc_warn = Location.objects.create(warehouse=self.warehouse, code='A-02', capacity=100)
+        self.loc_over = Location.objects.create(warehouse=self.warehouse, code='A-03', capacity=100)
+        self.loc_none = Location.objects.create(warehouse=self.warehouse, code='A-04')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-OK', supplier=self.supplier,
+            location=self.loc_ok, qty_received=10, status=Batch.Status.ACTIVE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-WARN', supplier=self.supplier,
+            location=self.loc_warn, qty_received=95, status=Batch.Status.ACTIVE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-OVER', supplier=self.supplier,
+            location=self.loc_over, qty_received=150, status=Batch.Status.ACTIVE)
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_CAP_008_badges_match_ratio_thresholds(self):
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        badges = {loc.code: loc.capacity_badge for loc in response.context['locations']}
+        self.assertEqual(badges['A-01']['css'], 'bg-success')
+        self.assertEqual(badges['A-02']['css'], 'bg-warning text-dark')
+        self.assertEqual(badges['A-03']['css'], 'bg-danger')
+        self.assertIsNone(badges['A-04'])
+        # tổng occupied kho = 10+95+150 = 255 / capacity 1000 = 0.255 -> OK
+        self.assertEqual(response.context['warehouse_badge']['css'], 'bg-success')
+
+
+class OpsSnapshotServiceTest(TestCase):
+    """``ops_snapshot`` (A3). TC-WH-OPS-001, 002, 003."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+
+    def test_TC_WH_OPS_001_staging_counts_active_qty_and_aged(self):
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        location = Location.objects.create(warehouse=staging, code='A-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-FRESH', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.ACTIVE)
+        aged = Batch.objects.create(
+            product=self.product, batch_code='LOT-AGED', supplier=self.supplier,
+            location=location, qty_received=5, status=Batch.Status.ACTIVE)
+        Batch.objects.filter(pk=aged.pk).update(
+            created_at=timezone.now() - timedelta(days=STAGING_AGING_DAYS + 1))
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-CLOSED', supplier=self.supplier,
+            location=location, qty_received=1, qty_used=1, status=Batch.Status.CLOSED)
+        snapshot = ops_snapshot(staging)
+        self.assertEqual(snapshot['active_count'], 2)
+        self.assertEqual(snapshot['active_qty'], 15)
+        self.assertEqual(snapshot['aged_count'], 1)
+
+    def test_TC_WH_OPS_002_main_counts_pending_handoff_only(self):
+        """Mirror fixture pattern của ``inventory.tests.StockTransferPendingReceiptGuardTest``
+        (Grn không cần GrnItem, QcInspection không cần started_at, WarehouseHandoff tạo
+        thẳng bằng ``.objects.create`` — service ``create_handoff()`` chỉ cần khi test
+        quan tâm tới side-effect notify(), không phải trường hợp ở đây)."""
+        from inventory.models import WarehouseHandoff
+        from inventory.services import accept_handoff
+        from purchasing.models import PurchaseOrder
+        from quality.models import QcInspection
+        from receiving.models import Grn
+
+        qc_user = User.objects.create_user(username='qc1', password='qc-pass-123', role=User.Role.QC)
+        main = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        other_main = Warehouse.objects.create(code='KHO-HCM', name='Kho HCM')
+        location = Location.objects.create(warehouse=main, code='A-01')
+        po = PurchaseOrder.objects.create(po_no='PO-0001', supplier=self.supplier)
+        grn = Grn.objects.create(po=po, supplier=self.supplier, created_by=qc_user)
+        inspection = QcInspection.objects.create(grn=grn, inspector=qc_user)
+        batch = Batch.objects.create(
+            product=self.product, batch_code='LOT-PENDING', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.PENDING_RECEIPT)
+        handoff = WarehouseHandoff.objects.create(
+            batch=batch, qc_inspection=inspection, destination_warehouse=main)
+
+        self.assertEqual(ops_snapshot(main)['pending_handoff_count'], 1)
+        self.assertEqual(ops_snapshot(other_main)['pending_handoff_count'], 0)
+
+        accept_handoff(handoff, actor=qc_user)
+        self.assertEqual(ops_snapshot(main)['pending_handoff_count'], 0)
+
+    def test_TC_WH_OPS_003_scrap_sums_quarantine_qty_only(self):
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        location = Location.objects.create(warehouse=scrap, code='A-01')
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-Q1', supplier=self.supplier,
+            location=location, qty_received=10, status=Batch.Status.QUARANTINE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-Q2', supplier=self.supplier,
+            location=location, qty_received=5, qty_used=2, status=Batch.Status.QUARANTINE)
+        Batch.objects.create(
+            product=self.product, batch_code='LOT-CLOSED', supplier=self.supplier,
+            location=location, qty_received=1, qty_used=1, status=Batch.Status.CLOSED)
+        snapshot = ops_snapshot(scrap)
+        self.assertEqual(snapshot['quarantine_qty'], 13)
+
+
+class WarehouseDetailOpsSnapshotCardTest(TestCase):
+    """Card "Snapshot vận hành" (A3) — chỉ hiện đúng 1 khối theo warehouse_type. TC-WH-OPS-004."""
+
+    def setUp(self):
+        self.staff = User.objects.create_user(username='kho1', password='kho-pass-123', role=User.Role.STAFF)
+        self.client.force_login(self.staff)
+
+    def test_TC_WH_OPS_004_staging_page_shows_only_staging_block(self):
+        staging = Warehouse.objects.create(
+            code='KHO-CHO', name='Kho chờ', warehouse_type=Warehouse.WarehouseType.STAGING)
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[staging.pk]))
+        self.assertContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Phiếu chờ nhận hàng đang chờ')
+        self.assertNotContains(response, 'Tổng số lượng đang Quarantine')
+
+    def test_TC_WH_OPS_004_main_page_shows_only_main_block(self):
+        main = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[main.pk]))
+        self.assertContains(response, 'Phiếu chờ nhận hàng đang chờ')
+        self.assertNotContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Tổng số lượng đang Quarantine')
+
+    def test_TC_WH_OPS_004_scrap_page_shows_only_scrap_block(self):
+        scrap = Warehouse.objects.create(
+            code='KHO-PHE', name='Kho phế', warehouse_type=Warehouse.WarehouseType.SCRAP)
+        response = self.client.get(reverse('warehouse:warehouse_detail', args=[scrap.pk]))
+        self.assertContains(response, 'Tổng số lượng đang Quarantine')
+        self.assertNotContains(response, 'Số lô đang hoạt động')
+        self.assertNotContains(response, 'Phiếu chờ nhận hàng đang chờ')
+
+
+class LocationCapacityAlertsServiceTest(TestCase):
+    """``location_capacity_alerts`` (A2). TC-WH-CAP-001, 002, 003, 009."""
+
+    def setUp(self):
+        self.product = Product.objects.create(product_code='NVL-0001', name='Bột mì', uom='kg')
+        self.supplier = Supplier.objects.create(supplier_code='NCC-0001', name='Công ty TNHH ABC')
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01')
+
+    def _batch(self, code, location, qty_received):
+        return Batch.objects.create(
+            product=self.product, batch_code=code, supplier=self.supplier,
+            location=location, qty_received=qty_received, status=Batch.Status.ACTIVE,
+        )
+
+    def test_TC_WH_CAP_001_empty_when_both_capacity_none(self):
+        self._batch('LOT-01', self.location, 100)
+        self.assertEqual(location_capacity_alerts(self.location), [])
+
+    def test_capacity_zero_treated_as_not_configured(self):
+        self.location.capacity = 0
+        self.location.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 5)
+        self.assertEqual(location_capacity_alerts(self.location), [])
+
+    def test_TC_WH_CAP_002_location_near_full_warehouse_capacity_none(self):
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 95)  # ratio 0.95
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn('gần đầy', alerts[0])
+
+    def test_TC_WH_CAP_003_location_over_capacity_warehouse_below_warn(self):
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self.warehouse.capacity = 10000
+        self.warehouse.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 120)  # location ratio 1.2, warehouse ratio 0.012
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 1)
+        self.assertIn('vượt dung tích', alerts[0])
+
+    def test_TC_WH_CAP_009_both_levels_over_warn_return_two_messages(self):
+        """AC-WH-CAP-08: warehouse ratio cộng dồn MỌI location của kho, gồm cả
+        location đang xét (100) cộng location2 (90) -> 190/200 = 0.95 >= 0.9."""
+        location2 = Location.objects.create(warehouse=self.warehouse, code='A-02')
+        self.location.capacity = 100
+        self.location.save(update_fields=['capacity'])
+        self.warehouse.capacity = 200
+        self.warehouse.save(update_fields=['capacity'])
+        self._batch('LOT-01', self.location, 100)  # location ratio 1.0 -> OVER
+        self._batch('LOT-02', location2, 90)
+        alerts = location_capacity_alerts(self.location)
+        self.assertEqual(len(alerts), 2)
 
 
 class WarehouseCrudTest(TestCase):
@@ -117,6 +414,55 @@ class WarehouseCrudTest(TestCase):
         self.assertTrue(warehouse.is_active)
 
 
+class WarehouseStaffAssignmentTest(TestCase):
+    """``Warehouse.staff`` M2M qua ``WarehouseForm`` (A4 test gap)."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff1 = User.objects.create_user(
+            username='nv1', password='nv-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.staff2 = User.objects.create_user(
+            username='nv2', password='nv-pass-123', role=User.Role.STAFF,
+            department=User.Department.WAREHOUSE)
+        self.client.force_login(self.manager)
+
+    def test_create_assigns_staff(self):
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.MAIN,
+            'staff': [self.staff1.pk, self.staff2.pk],
+        })
+        warehouse = Warehouse.objects.get(code='KHO-HN')
+        self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[warehouse.pk]))
+        self.assertEqual(set(warehouse.staff.all()), {self.staff1, self.staff2})
+
+    def test_update_replaces_staff(self):
+        warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        warehouse.staff.add(self.staff1)
+        self.client.post(reverse('warehouse:warehouse_update', args=[warehouse.pk]), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'staff': [self.staff2.pk],
+        })
+        warehouse.refresh_from_db()
+        self.assertEqual(set(warehouse.staff.all()), {self.staff2})
+
+    def test_non_warehouse_department_user_not_selectable_as_staff(self):
+        """WarehouseForm.__init__ giới hạn queryset staff chỉ department=WAREHOUSE,
+        is_active=True — user phòng khác POST được cũng phải bị từ chối, không chỉ
+        ẩn khỏi dropdown."""
+        outsider = User.objects.create_user(
+            username='qc1', password='qc-pass-123', role=User.Role.QC, department=User.Department.QC)
+        response = self.client.post(reverse('warehouse:warehouse_create'), {
+            'code': 'KHO-HN', 'name': 'Kho Hà Nội', 'address': '', 'capacity': '',
+            'warehouse_type': Warehouse.WarehouseType.MAIN,
+            'staff': [outsider.pk],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Warehouse.objects.filter(code='KHO-HN').exists())
+
+
 class LocationCrudTest(TestCase):
     """FR-WM-02: CRUD vị trí lưu trữ (TC-WM-02-*)."""
 
@@ -178,6 +524,51 @@ class LocationCrudTest(TestCase):
         response = self.client.post(
             reverse('warehouse:location_create', args=[self.warehouse.pk]), {'code': 'B-01'})
         self.assertEqual(response.status_code, 403)
+
+
+class LocationUpdateViewTest(TestCase):
+    """``location_update`` (A4 test gap) — sửa mã/dung tích 1 vị trí."""
+
+    def setUp(self):
+        self.manager = User.objects.create_user(
+            username='wm', password='wm-pass-123', role=User.Role.MANAGER)
+        self.staff = User.objects.create_user(
+            username='staff', password='staff-pass-123', role=User.Role.STAFF)
+        self.warehouse = Warehouse.objects.create(code='KHO-HN', name='Kho Hà Nội')
+        self.location = Location.objects.create(warehouse=self.warehouse, code='A-01', capacity=100)
+        self.client.force_login(self.manager)
+
+    def test_update_changes_code_and_capacity_and_audits(self):
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-01-B', 'capacity': 200},
+        )
+        self.location.refresh_from_db()
+        self.assertRedirects(response, reverse('warehouse:warehouse_detail', args=[self.warehouse.pk]))
+        self.assertEqual(self.location.code, 'A-01-B')
+        self.assertEqual(self.location.capacity, 200)
+        self.assertTrue(AuditLog.objects.filter(
+            action=AuditLog.Action.UPDATE, target_id=str(self.location.pk)).exists())
+
+    def test_update_duplicate_code_in_same_warehouse_rejected(self):
+        Location.objects.create(warehouse=self.warehouse, code='A-02')
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-02', 'capacity': ''},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.location.refresh_from_db()
+        self.assertEqual(self.location.code, 'A-01')
+
+    def test_non_manager_forbidden(self):
+        self.client.force_login(self.staff)
+        response = self.client.post(
+            reverse('warehouse:location_update', args=[self.warehouse.pk, self.location.pk]),
+            {'code': 'A-01-B', 'capacity': ''},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.location.refresh_from_db()
+        self.assertEqual(self.location.code, 'A-01')
 
 
 class WarehouseListPaginationFilterTest(TestCase):
@@ -339,6 +730,10 @@ class WarehouseSingletonHelpersTest(TestCase):
     def test_get_staging_warehouse_raises_when_missing(self):
         with self.assertRaises(ValidationError):
             get_staging_warehouse()
+
+    def test_get_scrap_warehouse_raises_when_missing(self):
+        with self.assertRaises(ValidationError):
+            get_scrap_warehouse()
 
     def test_get_staging_warehouse_returns_active_singleton(self):
         warehouse = Warehouse.objects.create(

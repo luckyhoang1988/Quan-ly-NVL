@@ -901,6 +901,22 @@ class QcResultViewTest(QcServiceTestBase):
         self.assertIn('Trọng lượng', response.context['criteria_by_category']['Bột mì'][0]['name'])
         self.assertEqual(len(response.context['criteria_by_category']['Bột mì']), 1)
 
+    def test_TC_WH_CAP_005_pass_action_over_capacity_location_warns(self):
+        self.location.capacity = 5
+        self.location.save(update_fields=['capacity'])
+        response = self.client.post(self._url(), self._payload(action='pass'), follow=True)
+        warning_messages = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
+        self.assertTrue(Batch.objects.filter(product=self.product, status=Batch.Status.PENDING_RECEIPT).exists())
+
+    def test_TC_WH_CAP_006_partial_action_over_capacity_location_warns(self):
+        self.location.capacity = 3
+        self.location.save(update_fields=['capacity'])
+        response = self.client.post(
+            self._url(), self._payload(**{'items-0-qty_pass': 6, 'action': 'partial'}), follow=True)
+        warning_messages = [str(m) for m in response.context['messages']]
+        self.assertTrue(any('vượt dung tích' in m for m in warning_messages))
+
 
 class QcOverrideViewTest(QcServiceTestBase):
     """QC approval override (BACKLOG mục 2b) — ``TC-QC-OVERRIDE-<seq>``.

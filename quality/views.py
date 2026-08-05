@@ -23,6 +23,7 @@ from accounts.audit import client_ip, log_action
 from accounts.models import AuditLog
 from accounts.pagination import paginate_queryset
 from receiving.models import Grn
+from warehouse.services import location_capacity_alerts
 
 from .forms import QcCriteriaForm, QcInspectionItemFormSet, QcItemResultFormSet, QcOverrideForm, QcResultForm
 from .models import QcCriteria, QcInspection, QcInspectionItem
@@ -119,6 +120,9 @@ def qc_result(request, grn_pk):
                         inspection, item_results, actor=request.user,
                         location=location, ip_address=ip_address, assigned_to=assigned_to,
                     )
+                if action in ('pass', 'partial'):
+                    for alert in location_capacity_alerts(location):
+                        messages.warning(request, alert)
                 messages.success(request, f'Đã ghi kết quả QC cho "{grn.grn_no}".')
                 return redirect('receiving:grn_detail', pk=grn.pk)
             except ValidationError as exc:

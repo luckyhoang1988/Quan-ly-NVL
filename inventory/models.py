@@ -119,6 +119,19 @@ class Batch(models.Model):
         return self.qty_received - self.qty_used
 
 
+#: Status coi là tồn vật lý còn nằm trong kho (phản ánh trong Inventory.qty_on_hand),
+#: trừ CLOSED (dùng hết, qty=0 luôn). Dùng bởi warehouse.services.location_occupancy/
+#: location_occupied_qty và stocktake.services._consume_shortage_batches — KHÁC tập
+#: FIFO-eligible hẹp hơn (ACTIVE/PARTIAL_USED only) của suggest_fifo_batches.
+PHYSICAL_BATCH_STATUSES = [
+    Batch.Status.ACTIVE,
+    Batch.Status.PARTIAL_USED,
+    Batch.Status.PENDING_RECEIPT,
+    Batch.Status.EXPIRED,
+    Batch.Status.QUARANTINE,
+]
+
+
 class WarehouseHandoff(models.Model):
     """Bàn giao 1 batch PASS/PARTIAL_PASS (``PENDING_RECEIPT``) cho nhân viên kho
     xác nhận nhận hàng (Phase D) — tách rời "QC PASS" khỏi "khả dụng FIFO ngay".

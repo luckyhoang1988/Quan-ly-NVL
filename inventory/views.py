@@ -23,6 +23,7 @@ from accounts.models import User
 from accounts.pagination import paginate_queryset
 from catalog.models import Product
 from warehouse.models import Warehouse
+from warehouse.services import location_capacity_alerts
 
 from .forms import QuarantineDisposeForm, StockTransferForm
 from .models import Batch, Inventory, StockTransfer, WarehouseHandoff
@@ -354,6 +355,8 @@ def transfer_create(request):
                 qty=form.cleaned_data['qty'], note=form.cleaned_data['note'],
                 actor=request.user, ip_address=client_ip(request),
             )
+            for alert in location_capacity_alerts(form.cleaned_data['to_location']):
+                messages.warning(request, alert)
             messages.success(request, f'Đã tạo phiếu điều chuyển "{transfer.transfer_no}".')
             return redirect('inventory:transfer_list')
         except ValidationError as exc:

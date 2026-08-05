@@ -22,8 +22,11 @@ from accounts.models import AuditLog
 from accounts.pagination import paginate_queryset
 
 from .forms import LocationForm, WarehouseForm
-from .models import MIN_LOCATIONS_PER_WAREHOUSE, Location, Warehouse
-from .services import activate_warehouse, deactivate_warehouse
+from .models import MIN_LOCATIONS_PER_WAREHOUSE, STAGING_AGING_DAYS, Location, Warehouse
+from .services import (
+    activate_warehouse, capacity_badge, deactivate_warehouse, location_occupancy,
+    location_occupied_qty_map, ops_snapshot, warehouse_occupied_qty,
+)
 
 User = get_user_model()
 
@@ -79,13 +82,22 @@ def warehouse_list(request):
 
 @login_required
 def warehouse_detail(request, pk):
-    """READ — chi tiết kho + danh sách vị trí lưu trữ."""
+    """READ — chi tiết kho + vị trí lưu trữ + tồn kho theo vị trí (A1) + badge dung tích (A2)."""
     if not request.user.can_view_menu('warehouse'):
         raise PermissionDenied('Bạn không có quyền truy cập mục "Kho hàng".')
     obj = get_object_or_404(Warehouse, pk=pk)
-    locations = obj.locations.all()
+    locations = list(obj.locations.all())
+    occupied_map = location_occupied_qty_map(obj)
+    for loc in locations:
+        loc.capacity_badge = capacity_badge(occupied_map.get(loc.pk, 0), loc.capacity)
+    warehouse_occupied = warehouse_occupied_qty(obj)
+    page_obj, page_size = paginate_queryset(request, location_occupancy(obj))
     return render(request, 'warehouse/warehouse_detail.html', {
         'obj': obj, 'locations': locations, 'location_form': LocationForm(),
+        'page_obj': page_obj, 'page_size': page_size,
+        'warehouse_badge': capacity_badge(warehouse_occupied, obj.capacity),
+        'warehouse_occupied': warehouse_occupied,
+        'ops_snapshot': ops_snapshot(obj), 'staging_aging_days': STAGING_AGING_DAYS,
     })
 
 

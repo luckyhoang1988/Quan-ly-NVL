@@ -47,6 +47,12 @@
           <th class="text-nowrap">Dung tích</th>
           <td>{{ obj.capacity|default:"—" }}</td>
         </tr>
+        {% if warehouse_badge %}
+        <tr>
+          <th class="text-nowrap">Dung tích sử dụng</th>
+          <td><span class="badge {{ warehouse_badge.css }}">{{ warehouse_badge.label }} ({{ warehouse_occupied }}/{{ obj.capacity }})</span></td>
+        </tr>
+        {% endif %}
         <tr>
           <th class="text-nowrap">Trạng thái</th>
           <td>
@@ -91,7 +97,10 @@
           {% for loc in locations %}
           <tr class="{% if not loc.is_active %}table-secondary text-muted{% endif %}">
             <td>{{ loc.code }}</td>
-            <td>{{ loc.capacity|default:"—" }}</td>
+            <td>
+              {{ loc.capacity|default:"—" }}
+              {% if loc.capacity_badge %}<span class="badge {{ loc.capacity_badge.css }}">{{ loc.capacity_badge.label }}</span>{% endif %}
+            </td>
             <td>
               {% if loc.is_active %}
                 <span class="badge bg-success">Hoạt động</span>
@@ -117,6 +126,60 @@
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Tồn kho theo vị trí ({{ page_obj.paginator.count }})</h2>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped align-middle table-accent">
+        <thead>
+          <tr>
+            <th>Vị trí</th>
+            <th>SKU</th>
+            <th>Mã lô</th>
+            <th>Trạng thái</th>
+            <th>Số lượng khả dụng</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in page_obj %}
+          <tr>
+            <td>{{ batch.location.code }}</td>
+            <td>{{ batch.product.product_code }} — {{ batch.product.name }}</td>
+            <td><a href="{% url 'inventory:batch_detail' batch.pk %}">{{ batch.batch_code }}</a></td>
+            <td><span class="badge bg-secondary">{{ batch.get_status_display }}</span></td>
+            <td>{{ batch.qty_available }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="text-center text-muted">Không có tồn kho tại vị trí nào.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include 'partials/pagination.html' %}
+  </div>
+</div>
+
+<div class="card shadow-sm mt-3">
+  <div class="card-header panel-toolbar">
+    <h2 class="panel-title">Snapshot vận hành</h2>
+  </div>
+  <div class="card-body">
+    {% if obj.warehouse_type == 'STAGING' %}
+      <p class="mb-1">Số lô đang hoạt động: <strong>{{ ops_snapshot.active_count }}</strong> (tổng số lượng {{ ops_snapshot.active_qty }})</p>
+      <p class="mb-0">Số lô tồn quá {{ staging_aging_days }} ngày: <strong>{{ ops_snapshot.aged_count }}</strong></p>
+    {% elif obj.warehouse_type == 'MAIN' %}
+      <p class="mb-0">
+        Phiếu chờ nhận hàng đang chờ: <strong>{{ ops_snapshot.pending_handoff_count }}</strong>
+        <a href="{% url 'inventory:handoff_list' %}" class="btn btn-sm btn-outline-secondary ms-2">Xem</a>
+      </p>
+    {% else %}
+      <p class="mb-0">Tổng số lượng đang Quarantine: <strong>{{ ops_snapshot.quarantine_qty }}</strong></p>
+    {% endif %}
   </div>
 </div>
 
