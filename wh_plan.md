@@ -55,8 +55,11 @@ Wave A Hardening  →  (vận hành ổn)  →  Wave B Ops expand (khi cần)
 
 ### A1. Inventory theo vị trí trên `warehouse_detail`
 
-- Helper `warehouse.services.location_occupancy(warehouse)`: Batch còn qty (`qty_received - qty_used > 0`), status ∈ tập “còn vật lý” (không `CLOSED`).
-- **Đã chốt (Refactor constant):** trước khi A1 dùng tập status đó — **chuyển `PHYSICAL_BATCH_STATUSES` từ `stocktake.services` sang `inventory.services`** (re-export/import lại ở stocktake nếu cần). Tránh `warehouse` (Phase 1) import ngược từ `stocktake` (Phase 4).
+- Helper `warehouse.services.location_occupancy(warehouse)`: status ∈ tập "còn vật lý"
+  (`PHYSICAL_BATCH_STATUSES`, không `CLOSED`) — **không** lọc thêm predicate riêng
+  `qty_received - qty_used > 0`: `CLOSED` đã bao phủ đúng trường hợp qty cạn, mọi điểm trừ qty
+  trong dự án đều đóng batch về `CLOSED` ngay khi hết qty (xem FSD 2.2).
+- **Đã chốt (Refactor constant):** trước khi A1 dùng tập status đó — **chuyển `PHYSICAL_BATCH_STATUSES` từ `stocktake.services` sang `inventory.models`** (đích cuối — không phải `inventory.services`, circular import thật, xem FSD 2.1). Tránh `warehouse` (Phase 1) import ngược từ `stocktake` (Phase 4).
 - UI bảng trên `warehouse_detail`: vị trí / SKU / batch / status / qty available / link `batch_detail`.
 - Áp dụng cả MAIN / STAGING / SCRAP. Tránh N+1 (`select_related`).
 - Hằng `STAGING_AGING_DAYS = 3` đặt trong `warehouse` (dùng ở A3).
@@ -104,7 +107,7 @@ assertion riêng. Đã tick BR-WM-003/004 trên `BACKLOG.md` kèm tham chiếu t
 ### Phases triển khai Wave A
 
 0. Spec: FSD `docs/wh/01_wave_a_hardening_fsd.md` + plan `docs/wh/02_wave_a_implementation_plan.md` — **duyệt trước khi code**
-1. Chuyển `PHYSICAL_BATCH_STATUSES` → `inventory.services` + `location_occupancy` + UI bảng
+1. Chuyển `PHYSICAL_BATCH_STATUSES` → `inventory.models` + `location_occupancy` + UI bảng
 2. Capacity soft-warn (detail + transfer/QC đích + STAGING receipt)
 3. Ops snapshot (+ badge list nếu rẻ); dùng `STAGING_AGING_DAYS`
 4. Test gap (staff / location_update / …) + regression `warehouse inventory quality shipping stocktake receiving`
@@ -121,7 +124,7 @@ assertion riêng. Đã tick BR-WM-003/004 trên `BACKLOG.md` kèm tham chiếu t
 | 1 | Capacity basis (A2) | Cộng dồn `qty_available` (xấp xỉ); ghi giới hạn khác UOM trong FSD |
 | 2 | Phạm vi warn (A2) | Detail + transfer/QC đích + **STAGING receipt (`start_qc`)**; soft only |
 | 3 | BR-WM-003/004 | Tick **ngay, độc lập** Wave A sau khi xác minh test cover |
-| 4 | PHYSICAL_BATCH_STATUSES | **Chuyển sang `inventory.services` trong A1** trước khi warehouse dùng |
+| 4 | PHYSICAL_BATCH_STATUSES | **Chuyển sang `inventory.models` trong A1** trước khi warehouse dùng (đổi từ `inventory.services` — circular import thật, xem FSD 2.1) |
 
 ---
 

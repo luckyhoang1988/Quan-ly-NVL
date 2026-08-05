@@ -65,3 +65,6 @@ desktop.ini
 
 # --- Docker (Phase 1+) ---
 # docker-compose.override.yml
+
+# --- Git worktrees (không gian làm việc cách ly) ---
+.worktrees/
